@@ -153,5 +153,5 @@ still owed, and a checking/savings/investment/other account's is a
 literal balance.
 
 **Where's my data if I want to back it up?**
-`%APPDATA%\com.joeyf.pennyworth\pennyworth.db` is the entire ledger — copy
+`%APPDATA%\com.<user>.pennyworth\pennyworth.db` is the entire ledger — copy
 that one file to back it up or move it to another computer.
