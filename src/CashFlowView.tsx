@@ -1,0 +1,264 @@
+import type { CashFlow, CategoryAmount, YoyCashFlow } from "./types";
+import { BarChart, DonutChart, fmtMoneyShort } from "./charts";
+import { formatAmount } from "./format";
+
+const CATEGORY_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9"];
+
+export function CashFlowView({
+  cashFlow,
+  range,
+  onSetRange,
+  compareLastYear,
+  onToggleCompareLastYear,
+  yoyCashFlow,
+  onMonthClick,
+  topCategoriesData,
+  topCategoriesMonth,
+  onSetTopCategoriesMonth,
+  previousMonthCategorySpending,
+}: {
+  cashFlow: CashFlow | null;
+  range: number;
+  onSetRange: (months: number) => void;
+  compareLastYear: boolean;
+  onToggleCompareLastYear: () => void;
+  yoyCashFlow: YoyCashFlow | null;
+  /** Called with the (year, month) behind a clicked bar, "this year"'s
+   * side of the pair when comparing to last year. */
+  onMonthClick: (year: number, month: number) => void;
+  /** "Top categories"/"Top merchants" below are scoped to one month at a
+   * time (defaulting to the current month), independent of the bar
+   * chart's own trailing-window range above. */
+  topCategoriesData: CashFlow | null;
+  topCategoriesMonth: { year: number; month: number };
+  onSetTopCategoriesMonth: (year: number, month: number) => void;
+  /** Uncapped per-category spend for the month right before
+   * `topCategoriesMonth`, used only to compute each displayed category's
+   * month-over-month trend. */
+  previousMonthCategorySpending: CategoryAmount[];
+}) {
+  if (!cashFlow) {
+    return <p className="empty-state">Loading…</p>;
+  }
+
+  const totalIncome = parseFloat(cashFlow.total_income);
+  const totalExpense = parseFloat(cashFlow.total_expense);
+  const net = totalIncome - totalExpense;
+  const savingsRate = totalIncome ? (net / totalIncome) * 100 : 0;
+
+  // Kept index-aligned with barData so a click on bar `i` can resolve back
+  // to the real calendar month behind it (a "Jan"-style label alone can't
+  // disambiguate which year, and in compare mode the click should always
+  // drill into "this year"'s side of the pair).
+  const barMonths = compareLastYear && yoyCashFlow ? yoyCashFlow.current : cashFlow.months;
+
+  const barData =
+    compareLastYear && yoyCashFlow
+      ? yoyCashFlow.current.map((m, i) => {
+          const prior = yoyCashFlow.prior_year[i];
+          return {
+            label: m.month_label,
+            values: [
+              { value: parseFloat(m.income) - parseFloat(m.expense), color: "var(--positive)", name: "This year" },
+              {
+                value: prior ? parseFloat(prior.income) - parseFloat(prior.expense) : 0,
+                color: "var(--accent)",
+                name: "Last year",
+              },
+            ],
+          };
+        })
+      : cashFlow.months.map((m) => ({
+          label: m.month_label,
+          values: [
+            { value: parseFloat(m.income), color: "var(--positive)", name: "Income" },
+            { value: parseFloat(m.expense), color: "var(--negative)", name: "Expenses" },
+          ],
+        }));
+
+  // Month-over-month trend per displayed category — "New" when it had no
+  // spend at all the prior month (a percent change would be either
+  // meaningless (0 -> 0) or a nonsensical infinite jump (0 -> something)).
+  const previousMonthByCategory = new Map(previousMonthCategorySpending.map((c) => [c.category, parseFloat(c.amount)]));
+
+  const donutData = (topCategoriesData?.top_categories ?? []).map((c, i) => {
+    const current = parseFloat(c.amount);
+    const previous = previousMonthByCategory.get(c.category) ?? 0;
+    const trend: { pct: number; isNew: boolean } | null =
+      previous > 0 ? { pct: ((current - previous) / previous) * 100, isNew: false } : current > 0 ? { pct: 0, isNew: true } : null;
+    return {
+      label: c.category,
+      value: current,
+      color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
+      trend,
+    };
+  });
+
+  const topMerchants = topCategoriesData?.top_merchants ?? [];
+  const maxMerchant = topMerchants.length ? parseFloat(topMerchants[0].amount) : 1;
+
+  // Year-to-date only: January of the current year through the current
+  // month — never a past year, and never a future month that has no data
+  // yet. Descending so the current month (the default) sorts first.
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonthNum = now.getMonth() + 1;
+  const monthOptions = Array.from({ length: currentMonthNum }, (_, i) => currentMonthNum - i).map((month) => ({
+    year: currentYear,
+    month,
+    label: new Date(currentYear, month - 1, 1).toLocaleDateString("en-US", { month: "long" }),
+  }));
+  // "Top categories" has no selector of its own — it follows the same
+  // month picked in "Top merchants" below, so its header shows the
+  // selection read-only rather than duplicating a second control.
+  const selectedMonthLabel = monthOptions.find((o) => o.month === topCategoriesMonth.month)?.label ?? "";
+
+  return (
+    <div className="reports-view">
+      <div className="tabs">
+        {[3, 6].map((m) => (
+          <button
+            key={m}
+            className={range === m ? "tab-btn tab-btn-active" : "tab-btn"}
+            onClick={() => onSetRange(m)}
+          >
+            {m} months
+          </button>
+        ))}
+        <label className="compare-last-year-toggle">
+          <input type="checkbox" checked={compareLastYear} onChange={onToggleCompareLastYear} />
+          Compare to last year
+        </label>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <span className="reports-section-title">
+            {compareLastYear ? "Net cash flow — this year vs. last year" : "Income vs. expenses"}
+          </span>
+        </div>
+        <BarChart
+          data={barData}
+          height={240}
+          onBarClick={(i) => {
+            const m = barMonths[i];
+            if (m) onMonthClick(m.year, m.month);
+          }}
+        />
+        <p className="chart-hint">Click a bar to see where that month's expenses went.</p>
+        {compareLastYear && yoyCashFlow ? (
+          <div className="chart-legend">
+            <div className="chart-legend-item">
+              <span className="chart-legend-swatch" style={{ background: "var(--positive)" }}></span>
+              This year
+            </div>
+            <div className="chart-legend-item">
+              <span className="chart-legend-swatch" style={{ background: "var(--accent)" }}></span>
+              Last year
+            </div>
+          </div>
+        ) : (
+          <div className="chart-legend">
+            <div className="chart-legend-item">
+              <span className="chart-legend-swatch" style={{ background: "var(--positive)" }}></span>
+              Income · {formatAmount(cashFlow.total_income)}
+            </div>
+            <div className="chart-legend-item">
+              <span className="chart-legend-swatch" style={{ background: "var(--negative)" }}></span>
+              Expenses · {formatAmount(cashFlow.total_expense)}
+            </div>
+            <div className="chart-legend-item" style={{ marginLeft: "auto", fontWeight: 700 }}>
+              Net {formatAmount(net.toFixed(2))} ({savingsRate.toFixed(0)}% savings rate)
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="grid-2">
+        <div className="card cashflow-category-card">
+          <div className="card-head">
+            <span className="reports-section-title">Top categories</span>
+            <span className="account-col" title="Follows the month picked in Top merchants">
+              {selectedMonthLabel}
+            </span>
+          </div>
+          <div className="cashflow-category-body">
+            {!topCategoriesData ? (
+              <p className="empty-state">Loading…</p>
+            ) : donutData.length > 0 ? (
+              <div className="donut-with-legend">
+                <DonutChart data={donutData} size={132} />
+                <div>
+                  {donutData.map((d) => (
+                    <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
+                      <span className="chart-legend-swatch" style={{ background: d.color }}></span>
+                      {d.label}
+                      <span className="account-col" style={{ marginLeft: "auto" }}>
+                        {fmtMoneyShort(d.value)}
+                      </span>
+                      {d.trend && (
+                        <span
+                          className={
+                            d.trend.isNew
+                              ? "category-trend category-trend-new"
+                              : d.trend.pct > 0
+                                ? "category-trend category-trend-up"
+                                : d.trend.pct < 0
+                                  ? "category-trend category-trend-down"
+                                  : "category-trend"
+                          }
+                          title="Vs. the prior month"
+                        >
+                          {d.trend.isNew ? "New" : `${d.trend.pct > 0 ? "▲" : d.trend.pct < 0 ? "▼" : "–"} ${Math.abs(d.trend.pct).toFixed(0)}%`}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="empty-state">No spending yet.</p>
+            )}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-head">
+            <span className="reports-section-title">Top merchants</span>
+            <select
+              className="month-select"
+              value={topCategoriesMonth.month}
+              onChange={(e) => onSetTopCategoriesMonth(topCategoriesMonth.year, Number(e.target.value))}
+              title="Also changes the Top categories chart"
+            >
+              {monthOptions.map((opt) => (
+                <option key={opt.month} value={opt.month}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {!topCategoriesData ? (
+            <p className="empty-state">Loading…</p>
+          ) : topMerchants.length > 0 ? (
+            topMerchants.map((m) => (
+              <div key={m.description} style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: 5 }}>
+                  <span style={{ fontWeight: 600 }}>{m.description}</span>
+                  <span className="amount-col">{formatAmount(m.amount)}</span>
+                </div>
+                <div className="bucket-progress-track">
+                  <div
+                    className="bucket-progress-fill"
+                    style={{ width: `${(parseFloat(m.amount) / maxMerchant) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ))
+          ) : (
+            <p className="empty-state">No spending yet.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

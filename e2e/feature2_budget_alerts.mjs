@@ -1,0 +1,45 @@
+// E2E smoke test for budget threshold alerts: seeds a category budgeted at
+// $400 with $450 already spent this month (over budget), launches the app,
+// and confirms both the Budget page's "Over" badge and the Dashboard's
+// alert banner render.
+//
+// Run with: node e2e/feature2_budget_alerts.mjs
+
+import { launchApp } from "./harness.mjs";
+import { seedFixture } from "./lib/seed.mjs";
+
+const today = new Date();
+const period = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+const dateStr = `${period}-05`;
+
+const dbDir = await seedFixture(`
+cur.execute("INSERT INTO accounts (name, account_type, starting_balance) VALUES ('Checking', 'checking', '1000.00')")
+checking_id = cur.lastrowid
+cur.execute("INSERT INTO budgets (category, period, monthly_amount, budget_group) VALUES ('Groceries', '${period}', '400.00', 'flexible')")
+cur.execute("INSERT OR IGNORE INTO budget_periods (period) VALUES ('${period}')")
+cur.execute(
+    "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
+    (checking_id, "${dateStr}", "Big Grocery Run", "-450.00", "Groceries", f"{checking_id}|${dateStr}|big grocery run|-450.00"),
+)
+`);
+
+const app = await launchApp({ dbDir });
+try {
+  // Dashboard is the default tab — the alert banner should already show.
+  const banner = await app.browser.$(".budget-alert-banner");
+  await banner.waitForExist({ timeout: 10000 });
+  const bannerText = await banner.getText();
+  console.log("dashboard banner:", bannerText);
+  if (!bannerText.includes("over budget")) throw new Error(`expected banner to mention "over budget", got "${bannerText}"`);
+
+  const budgetNav = await app.browser.$("button*=Budget");
+  await budgetNav.click();
+
+  const badge = await app.browser.$(".budget-alert-over");
+  await badge.waitForExist({ timeout: 10000 });
+  console.log("budget row badge text:", await badge.getText());
+
+  console.log("FEATURE 2 E2E TEST PASSED");
+} finally {
+  await app.close();
+}

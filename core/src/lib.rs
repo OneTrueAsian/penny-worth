@@ -1,0 +1,15 @@
+//! Core categorization/learning engine for Penny Worth. No Tauri/webview
+//! dependencies here on purpose, so `cargo test -p budget_core` stays fast.
+
+pub mod categorizer;
+pub mod classifier;
+pub mod csv_loader;
+pub mod learner;
+pub mod models;
+pub mod rules;
+pub mod setup_import;
+pub mod store;
+
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
