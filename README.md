@@ -104,7 +104,7 @@ instead of one at a time through the UI, use the two buttons on the
 
 **Is my data private?**
 Yes. Everything is stored in one SQLite file on your own computer
-(`%APPDATA%\com.joeyf.pennyworth\pennyworth.db`), created fresh the first
+(`%APPDATA%\com.<user>.pennyworth\pennyworth.db`), created fresh the first
 time you launch the app. There's no account, no server, and nothing is
 ever uploaded — a fresh install on someone else's computer starts
 completely empty, never with your data.
