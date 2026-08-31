@@ -20,6 +20,16 @@ export function NavIcon({ name }: { name: string }) {
       </svg>
     );
   }
+  if (name === "settings") {
+    return (
+      <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 6h18M3 12h18M3 18h18" />
+        <circle cx="15" cy="6" r="2.2" fill="currentColor" stroke="none" />
+        <circle cx="9" cy="12" r="2.2" fill="currentColor" stroke="none" />
+        <circle cx="17" cy="18" r="2.2" fill="currentColor" stroke="none" />
+      </svg>
+    );
+  }
   return (
     <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d={PATHS[name] ?? ""} />

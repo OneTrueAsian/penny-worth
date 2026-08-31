@@ -1,4 +1,6 @@
+mod backups;
 mod commands;
+mod config;
 
 use commands::{AppState, AppStateHandle};
 use std::sync::Mutex;
@@ -9,6 +11,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Identifier (tauri.conf.json) and this filename were renamed
             // from "com.joeyf.meadow" / "meadow.db" to "com.joeyf.pennywise"
@@ -21,22 +24,47 @@ pub fn run() {
             //
             // PENNYWORTH_DB_DIR lets E2E tests (see e2e/) point the app at a
             // throwaway directory instead of the real AppData folder, so
-            // automated UI testing never touches the user's real data.
-            // Unset in every normal launch, so real usage is unaffected.
-            let data_dir = match std::env::var_os("PENNYWORTH_DB_DIR") {
+            // automated UI testing never touches the user's real data —
+            // this substitutes for the *whole* notion of "default
+            // location" (including where config.json lives), not just the
+            // final db_path, so a test that relocates/restores never
+            // touches the real AppData folder's config.json either. Unset
+            // in every normal launch, so real usage is unaffected.
+            //
+            // The default directory is where config.json lives (the one
+            // fixed, discoverable location) even after the user relocates
+            // their actual database elsewhere via the Reports tab's
+            // Settings section — see config::resolve_db_path.
+            let default_dir = match std::env::var_os("PENNYWORTH_DB_DIR") {
                 Some(dir) => std::path::PathBuf::from(dir),
                 None => app.path().app_data_dir()?,
             };
-            std::fs::create_dir_all(&data_dir)?;
-            let db_path = data_dir.join("pennyworth.db");
+            std::fs::create_dir_all(&default_dir)?;
+            let config_path = default_dir.join("config.json");
+            let db_path = config::resolve_db_path(&config_path, &default_dir);
 
             let state = AppState::open(&db_path).map_err(std::io::Error::other)?;
+
+            // A failed automatic backup (disk full, permissions, ...)
+            // must never block the user from opening the app — logged,
+            // not propagated with `?`.
+            let backups_dir = backups::backups_dir_for(&db_path);
+            if let Err(e) = backups::create_backup_if_due(&state.store, &backups_dir, chrono::Local::now().naive_local()) {
+                eprintln!("automatic backup failed (continuing anyway): {e}");
+            }
+
             app.manage::<AppStateHandle>(Mutex::new(state));
+            app.manage(config::AppPaths { config_path, db_path: Mutex::new(db_path) });
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::write_text_file,
+            commands::get_data_file_location,
+            commands::relocate_data_file,
+            commands::list_backups,
+            commands::create_backup_now,
+            commands::restore_backup,
             commands::preview_setup_import,
             commands::commit_setup_import,
             commands::preview_import,
@@ -49,6 +77,8 @@ pub fn run() {
             commands::create_account,
             commands::list_accounts,
             commands::set_account_starting_balance,
+            commands::set_account_interest_rate,
+            commands::set_account_excluded_from_debt_payoff,
             commands::update_account_type,
             commands::delete_account,
             commands::set_account_details,
@@ -78,19 +108,29 @@ pub fn run() {
             commands::budget_actuals_for_month,
             commands::transactions_for_category,
             commands::budget_alerts_for_month,
+            commands::dashboard_insights,
+            commands::debt_payoff_projection,
             commands::list_anomaly_flags,
             commands::create_recurring,
+            commands::update_recurring,
             commands::list_recurring,
             commands::delete_recurring,
+            commands::list_recurring_candidates,
+            commands::dismiss_recurring_candidate,
             commands::create_holding,
             commands::list_holdings,
             commands::update_holding_price,
             commands::delete_holding,
+            commands::create_asset,
+            commands::list_assets,
+            commands::update_asset_value,
+            commands::delete_asset,
             commands::get_cash_flow,
             commands::cash_flow_for_range,
             commands::category_spending_for_month,
             commands::month_expense_detail,
             commands::year_over_year_cash_flow,
+            commands::cash_flow_forecast,
             commands::net_worth_history,
             commands::spending_this_month,
             commands::check_monthly_rollover,

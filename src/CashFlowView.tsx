@@ -1,8 +1,10 @@
-import type { CashFlow, CategoryAmount, YoyCashFlow } from "./types";
-import { BarChart, DonutChart, fmtMoneyShort } from "./charts";
+import type { Account, CashFlow, CategoryAmount, DebtPayoffPlan, ForecastPoint, YoyCashFlow } from "./types";
+import { BarChart, DonutChart, LineChart, fmtMoneyShort } from "./charts";
 import { formatAmount } from "./format";
+import { DebtPayoffPlannerSection } from "./ReportsView";
 
 const CATEGORY_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9"];
+const FORECAST_DAY_OPTIONS = [30, 60, 90];
 
 export function CashFlowView({
   cashFlow,
@@ -16,6 +18,13 @@ export function CashFlowView({
   topCategoriesMonth,
   onSetTopCategoriesMonth,
   previousMonthCategorySpending,
+  forecastData,
+  forecastDays,
+  onSetForecastDays,
+  accounts,
+  onSetAccountInterestRate,
+  onCalculateDebtPayoff,
+  onSetAccountExcludedFromDebtPayoff,
 }: {
   cashFlow: CashFlow | null;
   range: number;
@@ -36,6 +45,20 @@ export function CashFlowView({
    * `topCategoriesMonth`, used only to compute each displayed category's
    * month-over-month trend. */
   previousMonthCategorySpending: CategoryAmount[];
+  /** Projected daily cash balance for the next `forecastDays` days, based
+   * on recurring items only — a separate what-if view, independent of the
+   * bar chart's historical window above. */
+  forecastData: ForecastPoint[] | null;
+  forecastDays: number;
+  onSetForecastDays: (days: number) => void;
+  accounts: Account[];
+  onSetAccountInterestRate: (accountId: number, rate: string | null) => void;
+  onCalculateDebtPayoff: (
+    strategy: string,
+    extraPayment: string,
+    minimums: { accountId: number; minimumPayment: string }[],
+  ) => Promise<DebtPayoffPlan | null>;
+  onSetAccountExcludedFromDebtPayoff: (accountId: number, excluded: boolean) => void;
 }) {
   if (!cashFlow) {
     return <p className="empty-state">Loading…</p>;
@@ -173,6 +196,50 @@ export function CashFlowView({
           </div>
         )}
       </div>
+
+      <div className="card">
+        <div className="card-head">
+          <span className="reports-section-title">Forecast</span>
+          <div className="tabs" style={{ marginBottom: 0 }}>
+            {FORECAST_DAY_OPTIONS.map((d) => (
+              <button
+                key={d}
+                className={forecastDays === d ? "tab-btn tab-btn-active" : "tab-btn"}
+                onClick={() => onSetForecastDays(d)}
+              >
+                {d} days
+              </button>
+            ))}
+          </div>
+        </div>
+        {forecastData ? (
+          <LineChart
+            // LineChart renders one axis label per point with no built-in
+            // thinning — fine for the ~6-month net-worth trend elsewhere,
+            // but 30-90 daily points would overlap into an unreadable mess.
+            // Only label roughly every 8th point; every point still
+            // contributes to the line/tooltip itself.
+            points={forecastData.map((p, i) => ({
+              label: i % Math.max(1, Math.ceil(forecastData.length / 8)) === 0 ? p.date.slice(5) : "",
+              value: parseFloat(p.balance),
+            }))}
+            height={200}
+          />
+        ) : (
+          <p className="empty-state">Loading…</p>
+        )}
+        <p className="chart-hint">
+          Projects your cash balance (checking/savings) forward as a smooth trend, based on your actual net cash flow
+          (income minus spending) over roughly the last 90 days — not specific upcoming bills.
+        </p>
+      </div>
+
+      <DebtPayoffPlannerSection
+        accounts={accounts}
+        onSetAccountInterestRate={onSetAccountInterestRate}
+        onCalculateDebtPayoff={onCalculateDebtPayoff}
+        onSetAccountExcludedFromDebtPayoff={onSetAccountExcludedFromDebtPayoff}
+      />
 
       <div className="grid-2">
         <div className="card cashflow-category-card">

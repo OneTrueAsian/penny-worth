@@ -1,3 +1,29 @@
+export type Asset = {
+  id: number;
+  name: string;
+  asset_type: string;
+  value: string;
+  valued_on: string;
+  notes: string | null;
+};
+
+export type ForecastPoint = {
+  date: string;
+  balance: string;
+};
+
+export type Backup = {
+  filename: string;
+  created_at: string;
+  size_bytes: number;
+};
+
+export type Insight = {
+  severity: "warning" | "info";
+  kind: "pace" | "category_jump" | "large_expense";
+  message: string;
+};
+
 export type AppliedDebtPayment = {
   debt_account_id: number;
   debt_account_name: string;
@@ -34,6 +60,22 @@ export type Account = {
   current_balance: string;
   institution: string | null;
   mask: string | null;
+  interest_rate: string | null;
+  excluded_from_debt_payoff: boolean;
+};
+
+export type DebtPayoffLine = {
+  account_id: number;
+  account_name: string;
+  starting_balance: string;
+  payoff_date: string | null;
+  total_interest_paid: string;
+};
+
+export type DebtPayoffPlan = {
+  per_account: DebtPayoffLine[];
+  total_months: number | null;
+  total_interest_paid: string;
 };
 
 export type Bucket = {
@@ -65,6 +107,15 @@ export type Recurring = {
   next_date: string;
   account_id: number | null;
   account_name: string | null;
+};
+
+export type RecurringCandidate = {
+  merchant: string;
+  category: string | null;
+  amount: string;
+  cadence: string;
+  anchor_date: string;
+  occurrence_count: number;
 };
 
 export type Holding = {

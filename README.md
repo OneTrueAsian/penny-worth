@@ -30,8 +30,10 @@ file on your own computer, and nothing is ever sent anywhere else.
 
 ## A tour of the tabs
 
-- **Dashboard** — net worth, this month's spending, and budget alerts at a
-  glance.
+- **Dashboard** — net worth, this month's spending, budget alerts, and an
+  **Insights** feed that surfaces things worth a look on its own: a
+  category on pace to go over budget, a month-over-month spending jump, or
+  an unusually large charge.
 - **Ledger** — every transaction, filterable by account/category/tag,
   with inline category correction (one at a time or in bulk), splitting a
   transaction across multiple categories, tagging, and applying a payment
@@ -47,23 +49,37 @@ file on your own computer, and nothing is ever sent anywhere else.
   spending by category and any unusually large charges. The "Top
   categories"/"Top merchants" cards below are scoped to a single month
   (defaulting to the current one, with a picker to look back further) and
-  show a month-over-month trend per category.
-- **Recurring** — a manually maintained list of recurring bills/income,
-  each showing its next expected date.
+  show a month-over-month trend per category. Further down, a **Forecast**
+  projects your checking/savings balance 30, 60, or 90 days out, and the
+  **Debt Payoff Planner** shows how fast your credit cards and loans clear
+  under a snowball or avalanche strategy.
+- **Recurring** — a maintained list of recurring bills/income, each
+  showing its next expected date and editable in place. A **Suggested**
+  section above it auto-detects merchant/amount pairs in your ledger that
+  look recurring but aren't tracked yet, so you can add them with one
+  click instead of typing them in by hand.
 - **Investments** — holdings per account (shares, price, cost basis) with
-  computed value and gain/loss. This is a manual tracker, not a live
-  market-data feed.
+  computed value and gain/loss, plus a **goal projection** calculator that
+  projects a future balance from a starting amount, a monthly
+  contribution, and an assumed annual return. This is a manual tracker,
+  not a live market-data feed.
 - **Reports** — accounts management, net worth breakdown, total saved,
-  all-time income, spending by tag, this month's budget snapshot, and the
-  CSV/PDF export and setup-data import/export tools described below.
+  all-time income, spending by tag, this month's budget snapshot,
+  **Property & Valuables** (manually tracked assets like a home or a
+  vehicle, folded into your net worth), and the CSV/PDF export and
+  setup-data import/export tools described below.
+- **Settings** — where your data file lives (and a button to move it),
+  plus your backup history with a manual "Back up now" and per-backup
+  restore.
 
 ## Importing transactions
 
-From the **Ledger** tab, click **"Import CSV…"**:
+From the **Ledger** tab, click **"Import transactions…"**:
 
 1. Pick which account the file belongs to (or create a new one on the
    spot).
-2. Choose the CSV file exported from your bank or credit card.
+2. Choose the file exported from your bank or credit card — CSV, OFX/QFX,
+   or QIF are all supported.
 3. Confirm which way the amounts go. Penny Worth's convention is
    *negative = money out*; if your file shows charges as positive numbers
    (common for credit card exports), choose "Flip the signs" — otherwise
@@ -114,12 +130,25 @@ That's Windows SmartScreen, and it appears because this installer isn't
 signed with a certificate Microsoft already recognizes — it doesn't mean
 anything is actually wrong. Click **"More info"**, then **"Run anyway."**
 
+**Will I get a reminder before a bill is due?**
+If a recurring bill (Recurring tab) is due within 3 days, Penny Worth
+shows a native Windows notification — but only when you actually open the
+app. This isn't a background reminder service; it doesn't run, and can't
+notify you, while the app is closed.
+
 **What happens if I import the same file twice?**
 Every transaction is fingerprinted from its date, description, amount,
 and account. An exact repeat is flagged as a likely duplicate in the
 import preview and left unchecked by default, so re-importing the same
 statement won't create doubled entries unless you explicitly check it
 back in.
+
+**How does Penny Worth suggest recurring items?**
+The Recurring tab's "Suggested" section looks for a merchant and amount
+that's repeated at least 3 times on a roughly consistent schedule (weekly,
+biweekly, monthly, or annual) but isn't tracked yet. Add it with one click
+to start it, or dismiss it if it's not actually recurring — a dismissed
+suggestion won't reappear.
 
 **How does auto-categorization work?**
 New transactions are matched against rules first — an exact merchant
@@ -152,6 +181,38 @@ works: a credit card's balance is available credit, a loan's is what's
 still owed, and a checking/savings/investment/other account's is a
 literal balance.
 
-**Where's my data if I want to back it up?**
+**How is the cash-flow forecast calculated?**
+It's based on your actual history, not your listed recurring bills: it
+takes your average daily net cash flow (income minus spending) over
+roughly the last 90 days and projects that trend forward from your current
+checking/savings balance. It's meant to answer "am I trending up or down,"
+not to predict any specific upcoming bill.
+
+**Can I exclude a debt from the payoff planner?**
+Yes — uncheck "Include" on that debt's row. It's meant for something like
+a credit card you pay off in full every month, which isn't really debt to
+pay down and would otherwise distort the plan.
+
+**Does net worth include my property and valuables?**
+Yes — whatever you've entered under Property & Valuables (Reports tab) is
+included in the current net worth figure everywhere it's shown. One
+caveat on the Dashboard's net worth *trend* chart specifically: since a
+manual asset only carries a value as of today, past points on that chart
+apply today's value throughout rather than tracking what it was actually
+worth back then.
+
+**How do automatic backups work, and can I restore one?**
+Penny Worth backs up your data file automatically once a day when you
+open it, keeping the most recent 15 (Settings tab — also has a manual
+"Back up now"). Restoring one first backs up your current data (so
+restoring is itself reversible), then loads the restored data immediately
+— no restart needed.
+
+**Can I move my data file to a different folder?**
+Yes — "Move data file…" on the Settings tab copies your live database to
+a new folder you pick and starts using it right away. The old file is
+left behind untouched, in case you want it back.
+
+**Where's my data if I want to back it up myself?**
 `%APPDATA%\com.<user>.pennyworth\pennyworth.db` is the entire ledger — copy
 that one file to back it up or move it to another computer.

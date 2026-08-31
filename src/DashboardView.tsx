@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Account, BudgetAlert, CategoryAmount, NetWorthPoint, Recurring, Report, Transaction } from "./types";
+import type { Account, BudgetAlert, CategoryAmount, Insight, NetWorthPoint, Recurring, Report, Transaction } from "./types";
 import { DonutChart, LineChart, fmtMoneyShort } from "./charts";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
@@ -49,6 +49,8 @@ export function DashboardView({
   recurring,
   transactions,
   budgetAlerts,
+  insights,
+  assetsTotal,
 }: {
   accounts: Account[];
   netWorthHistory: NetWorthPoint[];
@@ -57,6 +59,13 @@ export function DashboardView({
   recurring: Recurring[];
   transactions: Transaction[];
   budgetAlerts: BudgetAlert[];
+  insights: Insight[];
+  /** Total value of manually-tracked assets (Property & Valuables, see the
+   * Reports tab) — folded into the *current* Net Worth figure shown here,
+   * but deliberately not part of `netWorthHistory`'s trend line (an asset
+   * carries only a current value, no history — see `total_assets_value` in
+   * the core crate for the full reasoning). */
+  assetsTotal: number;
 }) {
   const [expandedStat, setExpandedStat] = useState<StatKey | null>(null);
   const [showBudgetAlerts, setShowBudgetAlerts] = useState(false);
@@ -64,7 +73,11 @@ export function DashboardView({
   const warningCount = budgetAlerts.filter((a) => a.level === "warning").length;
 
   const netWorth = netWorthHistory.length ? parseFloat(netWorthHistory[netWorthHistory.length - 1].value) : 0;
+  // The trend delta stays purely history-based (comparing two points on the
+  // same series); only the headline figure below folds in assetsTotal,
+  // since the trend line itself doesn't include it.
   const netWorthDelta = netWorthHistory.length ? netWorth - parseFloat(netWorthHistory[0].value) : 0;
+  const netWorthWithAssets = netWorth + assetsTotal;
 
   const cashAccounts = accounts.filter((a) => accountGroup(a.account_type) === "cash");
   const debtAccounts = accounts.filter((a) => {
@@ -78,7 +91,10 @@ export function DashboardView({
   const investments = investmentAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
 
   const breakdowns: Record<StatKey, { name: string; amount: number }[]> = {
-    networth: accounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
+    networth: [
+      ...accounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
+      ...(assetsTotal !== 0 ? [{ name: "Property & Valuables", amount: assetsTotal }] : []),
+    ],
     cash: cashAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
     debt: debtAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
     investments: investmentAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
@@ -113,7 +129,7 @@ export function DashboardView({
           className={expandedStat === "networth" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
           onClick={() => toggleStat("networth")}
         >
-          <span className="stat-value">{fmtMoneyShort(netWorth)}</span>
+          <span className="stat-value">{fmtMoneyShort(netWorthWithAssets)}</span>
           <span className="stat-label">Net Worth</span>
         </button>
         <button
@@ -167,15 +183,40 @@ export function DashboardView({
         />
       )}
 
+      {insights.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <span className="reports-section-title">Insights</span>
+          </div>
+          <ul className="insights-list">
+            {insights.map((insight, i) => (
+              <li key={i} className={`insight-row insight-${insight.severity}`}>
+                <span className={`confidence-badge insight-badge-${insight.severity}`}>{insight.severity}</span>
+                <span>{insight.message}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="grid-2">
         <div className="card">
           <div className="card-head">
             <span className="reports-section-title">Net worth trend</span>
           </div>
-          <LineChart points={netWorthHistory.map((p) => ({ label: p.month_label, value: parseFloat(p.value) }))} height={210} />
+          <LineChart
+            points={netWorthHistory.map((p) => ({ label: p.month_label, value: parseFloat(p.value) + assetsTotal }))}
+            height={210}
+          />
           <p className="account-col" style={{ marginTop: 8 }}>
             {netWorthDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(netWorthDelta))} over this period
           </p>
+          {assetsTotal !== 0 && (
+            <p className="modal-message-secondary" style={{ marginTop: 4 }}>
+              Includes Property &amp; Valuables at their current value throughout — since they only carry a value as
+              of today, past points assume that same value applied back then too.
+            </p>
+          )}
         </div>
         <div className="card">
           <div className="card-head">

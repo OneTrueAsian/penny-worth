@@ -1,8 +1,68 @@
 import { FormEvent, useState } from "react";
-import type { Account, Recurring } from "./types";
+import type { Account, Recurring, RecurringCandidate } from "./types";
 import { formatAmount } from "./format";
 
 const CADENCE_OPTIONS = ["weekly", "biweekly", "monthly", "annual"];
+
+function SuggestedRecurringSection({
+  candidates,
+  onAdd,
+  onDismiss,
+}: {
+  candidates: RecurringCandidate[];
+  onAdd: (candidate: RecurringCandidate) => void;
+  onDismiss: (candidate: RecurringCandidate) => void;
+}) {
+  if (candidates.length === 0) return null;
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">Suggested</span>
+      </div>
+      <p className="modal-message-secondary">
+        Detected from your ledger — a merchant and amount that's repeated on a consistent schedule but isn't tracked
+        here yet.
+      </p>
+      <table className="ledger">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th>Cadence</th>
+            <th>Seen</th>
+            <th className="amount-col">Amount</th>
+            <th className="actions-col"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {candidates.map((c) => (
+            <tr key={`${c.merchant}|${c.amount}|${c.cadence}`}>
+              <td>
+                <div className="account-name-cell">{c.merchant}</div>
+                {c.category && <span className="account-col">{c.category}</span>}
+              </td>
+              <td>
+                <span className="confidence-badge">{c.cadence}</span>
+              </td>
+              <td>{c.occurrence_count} times</td>
+              <td className="amount-col">{formatAmount(c.amount)}</td>
+              <td className="actions-col">
+                <span className="row-delete-confirm">
+                  <button type="button" className="modal-secondary" onClick={() => onDismiss(c)}>
+                    Dismiss
+                  </button>
+                  <button type="button" onClick={() => onAdd(c)}>
+                    Add
+                  </button>
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function NewRecurringForm({
   accounts,
@@ -79,13 +139,97 @@ function NewRecurringForm({
   );
 }
 
+function EditRecurringRow({
+  item,
+  accounts,
+  onSave,
+  onCancel,
+}: {
+  item: Recurring;
+  accounts: Account[];
+  onSave: (
+    merchant: string,
+    category: string | null,
+    amount: string,
+    cadence: string,
+    anchorDate: string,
+    accountId: number | null,
+  ) => void;
+  onCancel: () => void;
+}) {
+  const [merchant, setMerchant] = useState(item.merchant);
+  const [amount, setAmount] = useState(item.amount);
+  const [cadence, setCadence] = useState(item.cadence);
+  const [anchorDate, setAnchorDate] = useState(item.anchor_date);
+  const [accountId, setAccountId] = useState(item.account_id !== null ? String(item.account_id) : "");
+
+  const valid = merchant.trim() !== "" && amount.trim() !== "" && anchorDate !== "";
+
+  function handleSave() {
+    if (!valid) return;
+    onSave(merchant.trim(), item.category, amount.trim(), cadence, anchorDate, accountId ? Number(accountId) : null);
+  }
+
+  return (
+    <tr>
+      <td>
+        <input autoFocus className="row-edit-input" value={merchant} onChange={(e) => setMerchant(e.target.value)} />
+        <select className="row-edit-input" value={accountId} onChange={(e) => setAccountId(e.target.value)} style={{ marginTop: 4 }}>
+          <option value="">No linked account</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+      </td>
+      <td>
+        <select className="row-edit-input" value={cadence} onChange={(e) => setCadence(e.target.value)}>
+          {CADENCE_OPTIONS.map((c) => (
+            <option key={c} value={c}>
+              {c[0].toUpperCase() + c.slice(1)}
+            </option>
+          ))}
+        </select>
+      </td>
+      <td>
+        <input
+          type="date"
+          className="row-edit-input"
+          value={anchorDate}
+          onChange={(e) => setAnchorDate(e.target.value)}
+          title="Next/anchor date"
+        />
+      </td>
+      <td className="amount-col">
+        <input className="amount-edit-input" value={amount} onChange={(e) => setAmount(e.target.value)} />
+      </td>
+      <td className="actions-col">
+        <span className="row-delete-confirm">
+          <button type="button" className="modal-secondary" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="button" onClick={handleSave} disabled={!valid}>
+            Save
+          </button>
+        </span>
+      </td>
+    </tr>
+  );
+}
+
 export function RecurringView({
   recurring,
+  candidates,
   accounts,
   onCreate,
+  onUpdate,
   onDelete,
+  onAddCandidate,
+  onDismissCandidate,
 }: {
   recurring: Recurring[];
+  candidates: RecurringCandidate[];
   accounts: Account[];
   onCreate: (
     merchant: string,
@@ -95,9 +239,21 @@ export function RecurringView({
     anchorDate: string,
     accountId: number | null,
   ) => void;
+  onUpdate: (
+    id: number,
+    merchant: string,
+    category: string | null,
+    amount: string,
+    cadence: string,
+    anchorDate: string,
+    accountId: number | null,
+  ) => void;
   onDelete: (id: number) => void;
+  onAddCandidate: (candidate: RecurringCandidate) => void;
+  onDismissCandidate: (candidate: RecurringCandidate) => void;
 }) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
 
   const monthlyExpense = recurring
     .filter((r) => parseFloat(r.amount) < 0 && r.cadence === "monthly")
@@ -113,7 +269,7 @@ export function RecurringView({
     <div className="buckets-view">
       <div className="stats">
         <div className="stat">
-          <span className="stat-value">{formatAmount((-monthlyExpense).toFixed(2))}</span>
+          <span className="stat-value">{formatAmount(monthlyExpense.toFixed(2))}</span>
           <span className="stat-label">Monthly recurring expenses</span>
         </div>
         <div className="stat">
@@ -126,6 +282,8 @@ export function RecurringView({
         </div>
       </div>
 
+      <SuggestedRecurringSection candidates={candidates} onAdd={onAddCandidate} onDismiss={onDismissCandidate} />
+
       <table className="ledger">
         <thead>
           <tr>
@@ -137,35 +295,53 @@ export function RecurringView({
           </tr>
         </thead>
         <tbody>
-          {recurring.map((r) => (
-            <tr key={r.id}>
-              <td>
-                <div className="account-name-cell">{r.merchant}</div>
-                {r.account_name && <span className="account-col">{r.account_name}</span>}
-              </td>
-              <td>
-                <span className="confidence-badge">{r.cadence}</span>
-              </td>
-              <td>{r.next_date}</td>
-              <td className="amount-col">{formatAmount(r.amount)}</td>
-              <td className="actions-col">
-                {confirmingDeleteId === r.id ? (
-                  <span className="row-delete-confirm">
-                    <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
-                      Cancel
-                    </button>
-                    <button type="button" onClick={() => onDelete(r.id)}>
-                      Delete
-                    </button>
-                  </span>
-                ) : (
-                  <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(r.id)}>
-                    Delete
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
+          {recurring.map((r) =>
+            editingId === r.id ? (
+              <EditRecurringRow
+                key={r.id}
+                item={r}
+                accounts={accounts}
+                onCancel={() => setEditingId(null)}
+                onSave={(merchant, category, amount, cadence, anchorDate, accountId) => {
+                  onUpdate(r.id, merchant, category, amount, cadence, anchorDate, accountId);
+                  setEditingId(null);
+                }}
+              />
+            ) : (
+              <tr key={r.id}>
+                <td>
+                  <div className="account-name-cell">{r.merchant}</div>
+                  {r.account_name && <span className="account-col">{r.account_name}</span>}
+                </td>
+                <td>
+                  <span className="confidence-badge">{r.cadence}</span>
+                </td>
+                <td>{r.next_date}</td>
+                <td className="amount-col">{formatAmount(r.amount)}</td>
+                <td className="actions-col">
+                  {confirmingDeleteId === r.id ? (
+                    <span className="row-delete-confirm">
+                      <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
+                        Cancel
+                      </button>
+                      <button type="button" onClick={() => onDelete(r.id)}>
+                        Delete
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="row-delete-confirm">
+                      <button type="button" className="modal-secondary" onClick={() => setEditingId(r.id)}>
+                        Edit
+                      </button>
+                      <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(r.id)}>
+                        Delete
+                      </button>
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ),
+          )}
           {recurring.length === 0 && (
             <tr>
               <td colSpan={5} className="empty-state">

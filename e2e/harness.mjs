@@ -91,6 +91,14 @@ export async function launchApp({ dbDir } = {}) {
       const src = await browser.getPageSource().catch(() => "<getPageSource failed>");
       throw new Error(`App loaded but never rendered .brand-word. Page source:\n${src}\n\n${waitErr.stack || waitErr}`);
     }
+    // Every fresh test DB (localStorage is per-webview-origin, not shared
+    // with a real install) hits the first-launch welcome dialog, which
+    // blocks clicks on everything behind its overlay — dismiss it here once
+    // so no individual spec needs to know about it.
+    const getStarted = await browser.$("button*=Just get started");
+    if (await getStarted.isExisting()) {
+      await getStarted.click();
+    }
   } catch (e) {
     driverProcess.kill();
     throw new Error(`Failed to start session (tauri-driver log below):\n${driverLog}\n\n${e.stack || e}`);

@@ -36,7 +36,10 @@ export function HelpView() {
         <ul>
           <li>
             <strong>Dashboard</strong> — net worth, this month's spending,
-            and budget alerts at a glance.
+            budget alerts, and an <strong>Insights</strong> feed that
+            surfaces things worth a look on its own: a category on pace to
+            go over budget, a month-over-month spending jump, or an
+            unusually large charge.
           </li>
           <li>
             <strong>Ledger</strong> — every transaction, filterable by
@@ -64,22 +67,40 @@ export function HelpView() {
             unusually large charges. "Top categories"/"Top merchants" below
             are scoped to a single month (defaulting to the current one,
             with a picker to look back further) and show a month-over-month
-            trend per category.
+            trend per category. Further down, a <strong>Forecast</strong>
+            projects your checking/savings balance 30, 60, or 90 days out,
+            and the <strong>Debt Payoff Planner</strong> shows how fast
+            your credit cards and loans clear under a snowball or avalanche
+            strategy.
           </li>
           <li>
-            <strong>Recurring</strong> — a manually maintained list of
-            recurring bills/income, each showing its next expected date.
+            <strong>Recurring</strong> — a maintained list of recurring
+            bills/income, each showing its next expected date and editable
+            in place. A <strong>Suggested</strong> section above it
+            auto-detects merchant/amount pairs in your ledger that look
+            recurring but aren't tracked yet, so you can add them with one
+            click instead of typing them in by hand.
           </li>
           <li>
             <strong>Investments</strong> — holdings per account (shares,
-            price, cost basis) with computed value and gain/loss. This is a
-            manual tracker, not a live market-data feed.
+            price, cost basis) with computed value and gain/loss, plus a
+            <strong> goal projection</strong> calculator that projects a
+            future balance from a starting amount, a monthly contribution,
+            and an assumed annual return. This is a manual tracker, not a
+            live market-data feed.
           </li>
           <li>
             <strong>Reports</strong> — accounts management, net worth
             breakdown, total saved, all-time income, spending by tag, this
-            month's budget snapshot, and the CSV/PDF export and setup-data
+            month's budget snapshot, <strong>Property & Valuables</strong>
+            (manually tracked assets like a home or a vehicle, folded into
+            your net worth), and the CSV/PDF export and setup-data
             import/export tools described below.
+          </li>
+          <li>
+            <strong>Settings</strong> — where your data file lives (and a
+            button to move it), plus your backup history with a manual
+            "Back up now" and per-backup restore.
           </li>
         </ul>
       </div>
@@ -88,14 +109,17 @@ export function HelpView() {
         <h2 className="reports-section-title">Importing transactions</h2>
         <p>
           From the <strong>Ledger</strong> tab, click <strong>"Import
-          CSV…"</strong>:
+          transactions…"</strong>:
         </p>
         <ol>
           <li>
             Pick which account the file belongs to (or create a new one on
             the spot).
           </li>
-          <li>Choose the CSV file exported from your bank or credit card.</li>
+          <li>
+            Choose the file exported from your bank or credit card — CSV,
+            OFX/QFX, or QIF are all supported.
+          </li>
           <li>
             Confirm which way the amounts go. Penny Worth's convention is
             <em> negative = money out</em>; if your file shows charges as
@@ -181,6 +205,14 @@ export function HelpView() {
           "Run anyway."
         </p>
 
+        <h3>Will I get a reminder before a bill is due?</h3>
+        <p>
+          If a recurring bill (Recurring tab) is due within 3 days, Penny
+          Worth shows a native Windows notification — but only when you
+          actually open the app. This isn't a background reminder service;
+          it doesn't run, and can't notify you, while the app is closed.
+        </p>
+
         <h3>What happens if I import the same file twice?</h3>
         <p>
           Every transaction is fingerprinted from its date, description,
@@ -199,6 +231,15 @@ export function HelpView() {
           transactions the rules don't cover. Anything neither can
           confidently place is left Uncategorized rather than guessing —
           setting it yourself teaches the app for next time.
+        </p>
+
+        <h3>How does Penny Worth suggest recurring items?</h3>
+        <p>
+          The Recurring tab's "Suggested" section looks for a merchant and
+          amount that's repeated at least 3 times on a roughly consistent
+          schedule (weekly, biweekly, monthly, or annual) but isn't tracked
+          yet. Add it with one click to start it, or dismiss it if it's not
+          actually recurring — a dismissed suggestion won't reappear.
         </p>
 
         <h3>Can I fix a transaction's category after the fact?</h3>
@@ -232,6 +273,51 @@ export function HelpView() {
           actually works: a credit card's balance is available credit, a
           loan's is what's still owed, and a checking/savings/investment/
           other account's is a literal balance.
+        </p>
+
+        <h3>How is the cash-flow forecast calculated?</h3>
+        <p>
+          It's based on your actual history, not your listed recurring
+          bills: it takes your average daily net cash flow (income minus
+          spending) over roughly the last 90 days and projects that trend
+          forward from your current checking/savings balance. It's meant to
+          answer "am I trending up or down," not to predict any specific
+          upcoming bill.
+        </p>
+
+        <h3>Can I exclude a debt from the payoff planner?</h3>
+        <p>
+          Yes — uncheck "Include" on that debt's row. It's meant for
+          something like a credit card you pay off in full every month,
+          which isn't really debt to pay down and would otherwise distort
+          the plan.
+        </p>
+
+        <h3>Does net worth include my property and valuables?</h3>
+        <p>
+          Yes — whatever you've entered under Property & Valuables (Reports
+          tab) is included in the current net worth figure everywhere it's
+          shown. One caveat on the Dashboard's net worth <em>trend</em>{" "}
+          chart specifically: since a manual asset only carries a value as
+          of today, past points on that chart apply today's value
+          throughout rather than tracking what it was actually worth back
+          then.
+        </p>
+
+        <h3>How do automatic backups work, and can I restore one?</h3>
+        <p>
+          Penny Worth backs up your data file automatically once a day when
+          you open it, keeping the most recent 15 (Settings tab — also has
+          a manual "Back up now"). Restoring one first backs up your
+          current data (so restoring is itself reversible), then loads the
+          restored data immediately — no restart needed.
+        </p>
+
+        <h3>Can I move my data file to a different folder?</h3>
+        <p>
+          Yes — "Move data file…" on the Settings tab copies your live
+          database to a new folder you pick and starts using it right away.
+          The old file is left behind untouched, in case you want it back.
         </p>
       </div>
     </div>

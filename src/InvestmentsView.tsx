@@ -1,9 +1,80 @@
 import { FormEvent, useState } from "react";
 import type { Account, Holding } from "./types";
-import { DonutChart, fmtMoneyShort } from "./charts";
+import { DonutChart, LineChart, fmtMoneyShort } from "./charts";
 import { formatAmount } from "./format";
+import { projectGoal } from "./projections";
 
 const CLASS_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9"];
+
+const PROJECTION_YEAR_OPTIONS = [5, 10, 15, 20, 25, 30, 40];
+
+function GoalProjectionCalculator({ currentTotal }: { currentTotal: number }) {
+  const [startingBalance, setStartingBalance] = useState(currentTotal.toFixed(2));
+  const [monthlyContribution, setMonthlyContribution] = useState("0");
+  const [annualReturnPct, setAnnualReturnPct] = useState("7");
+  const [years, setYears] = useState(20);
+
+  const parsedStart = parseFloat(startingBalance) || 0;
+  const parsedContribution = parseFloat(monthlyContribution) || 0;
+  const parsedReturn = parseFloat(annualReturnPct) || 0;
+  const points = projectGoal(parsedStart, parsedContribution, parsedReturn, years);
+  const finalBalance = points[points.length - 1].balance;
+  const totalContributed = parsedStart + parsedContribution * 12 * years;
+  const totalGrowth = finalBalance - totalContributed;
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">Goal projection</span>
+      </div>
+      <p className="modal-message-secondary">
+        A simple what-if calculator — not tied to your actual holdings beyond the starting balance suggestion.
+        Assumes a constant monthly contribution and a constant annual return, compounded monthly.
+      </p>
+      <form className="labeled-field-form" onSubmit={(e) => e.preventDefault()}>
+        <label className="labeled-field">
+          <span className="labeled-field-label">Starting balance</span>
+          <input value={startingBalance} onChange={(e) => setStartingBalance(e.target.value)} placeholder="0.00" />
+        </label>
+        <label className="labeled-field">
+          <span className="labeled-field-label">Monthly contribution</span>
+          <input value={monthlyContribution} onChange={(e) => setMonthlyContribution(e.target.value)} placeholder="0.00" />
+        </label>
+        <label className="labeled-field">
+          <span className="labeled-field-label">Assumed annual return %</span>
+          <input value={annualReturnPct} onChange={(e) => setAnnualReturnPct(e.target.value)} placeholder="7" />
+        </label>
+        <label className="labeled-field">
+          <span className="labeled-field-label">Time horizon</span>
+          <select value={years} onChange={(e) => setYears(Number(e.target.value))}>
+            {PROJECTION_YEAR_OPTIONS.map((y) => (
+              <option key={y} value={y}>
+                {y} years
+              </option>
+            ))}
+          </select>
+        </label>
+      </form>
+
+      <div className="stats">
+        <div className="stat">
+          <span className="stat-value">{formatAmount(finalBalance.toFixed(2))}</span>
+          <span className="stat-label">Projected in {years} years</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value">{formatAmount(totalContributed.toFixed(2))}</span>
+          <span className="stat-label">Total contributed</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value">{formatAmount(totalGrowth.toFixed(2))}</span>
+          <span className="stat-label">Projected growth</span>
+        </div>
+      </div>
+
+      <LineChart points={points.map((p) => ({ label: `Yr ${p.year}`, value: p.balance }))} height={180} />
+    </div>
+  );
+}
 
 function NewHoldingForm({
   accounts,
@@ -184,6 +255,8 @@ export function InvestmentsView({
           </div>
         </div>
       )}
+
+      <GoalProjectionCalculator currentTotal={totalValue} />
 
       {Array.from(byAccount.entries()).map(([accountName, accountHoldings]) => (
         <div key={accountName}>

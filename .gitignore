@@ -35,7 +35,13 @@ data/incoming/*
 !data/incoming/.gitkeep
 !data/incoming/sample.csv
 !data/incoming/sample_month2.csv
+!data/incoming/sample.ofx
+!data/incoming/sample.qif
 db-backups/
+
+# Throwaway database used by `npm run tauri:dev:sandbox` — never the real
+# AppData file, safe to test against freely.
+.dev-sandbox/
 
 # Code-signing material — never commit a private key/certificate
 *.pfx

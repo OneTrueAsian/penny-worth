@@ -1,9 +1,170 @@
-import { useState } from "react";
-import type { Account, Bucket, Report, Transaction } from "./types";
+import { FormEvent, useState } from "react";
+import type { Account, Asset, Bucket, DebtPayoffPlan, Report, Transaction } from "./types";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 
 const ACCOUNT_TYPE_OPTIONS = ["checking", "savings", "credit", "loan", "investment", "other"];
+
+const ASSET_TYPE_OPTIONS = ["real_estate", "vehicle", "other"];
+const ASSET_TYPE_LABELS: Record<string, string> = {
+  real_estate: "Real Estate",
+  vehicle: "Vehicle",
+  other: "Other",
+};
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function NewAssetForm({ onCreate }: { onCreate: (name: string, assetType: string, value: string, valuedOn: string, notes: string | null) => void }) {
+  const [name, setName] = useState("");
+  const [assetType, setAssetType] = useState(ASSET_TYPE_OPTIONS[0]);
+  const [value, setValue] = useState("");
+  const [notes, setNotes] = useState("");
+  const [open, setOpen] = useState(false);
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || !value.trim()) return;
+    onCreate(name.trim(), assetType, value.trim(), todayIso(), notes.trim() || null);
+    setName("");
+    setValue("");
+    setNotes("");
+    setOpen(false);
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}>Add property or valuable…</button>
+    );
+  }
+
+  return (
+    <form className="bucket-new-form" onSubmit={handleSubmit}>
+      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder='e.g. "Home"' />
+      <select value={assetType} onChange={(e) => setAssetType(e.target.value)}>
+        {ASSET_TYPE_OPTIONS.map((t) => (
+          <option key={t} value={t}>
+            {ASSET_TYPE_LABELS[t]}
+          </option>
+        ))}
+      </select>
+      <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Current value" />
+      <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" />
+      <button type="submit" disabled={!name.trim() || !value.trim()}>
+        Save
+      </button>
+      <button type="button" className="modal-secondary" onClick={() => setOpen(false)}>
+        Cancel
+      </button>
+    </form>
+  );
+}
+
+function PropertyAssetsSection({
+  assets,
+  onCreate,
+  onUpdateValue,
+  onDelete,
+}: {
+  assets: Asset[];
+  onCreate: (name: string, assetType: string, value: string, valuedOn: string, notes: string | null) => void;
+  onUpdateValue: (id: number, value: string, valuedOn: string) => void;
+  onDelete: (id: number) => void;
+}) {
+  const [editing, setEditing] = useState<{ id: number; value: string } | null>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
+
+  const total = assets.reduce((s, a) => s + parseFloat(a.value), 0);
+
+  function commitEdit(id: number, value: string) {
+    setEditing(null);
+    if (!value.trim()) return;
+    onUpdateValue(id, value.trim(), todayIso());
+  }
+
+  return (
+    <div>
+      <h2 className="reports-section-title">
+        Property &amp; Valuables <span className="account-col">{formatAmount(total)}</span>
+      </h2>
+      <table className="ledger">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th className="amount-col">Value</th>
+            <th>Updated</th>
+            <th className="actions-col"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {assets.map((a) => (
+            <tr key={a.id}>
+              <td>
+                <div className="account-name-cell">{a.name}</div>
+                {a.notes && <span className="account-col">{a.notes}</span>}
+              </td>
+              <td>{ASSET_TYPE_LABELS[a.asset_type] ?? a.asset_type}</td>
+              <td className="amount-col">
+                {editing?.id === a.id ? (
+                  <input
+                    autoFocus
+                    className="amount-edit-input"
+                    value={editing.value}
+                    onChange={(e) => setEditing({ id: a.id, value: e.target.value })}
+                    onBlur={() => commitEdit(a.id, editing.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitEdit(a.id, editing.value);
+                      if (e.key === "Escape") setEditing(null);
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="amount-editable"
+                    title="Click to update the value"
+                    onClick={() => setEditing({ id: a.id, value: a.value })}
+                  >
+                    {formatAmount(a.value)}
+                  </span>
+                )}
+              </td>
+              <td>{a.valued_on}</td>
+              <td className="actions-col">
+                {confirmingDeleteId === a.id ? (
+                  <span className="row-delete-confirm">
+                    <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
+                      Cancel
+                    </button>
+                    <button type="button" onClick={() => onDelete(a.id)}>
+                      Delete
+                    </button>
+                  </span>
+                ) : (
+                  <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(a.id)}>
+                    Delete
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+          {assets.length === 0 && (
+            <tr>
+              <td colSpan={5} className="empty-state">
+                No property or valuables tracked yet.
+              </td>
+            </tr>
+          )}
+          <tr>
+            <td colSpan={5}>
+              <NewAssetForm onCreate={onCreate} />
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 const GROUP_ORDER = ["cash", "credit", "loan", "investment", "other"] as const;
 type AccountGroup = (typeof GROUP_ORDER)[number];
@@ -52,6 +213,169 @@ const REPORT_STAT_LABELS: Record<ReportStatKey, string> = {
   liabilities: "Total Liabilities",
   networth: "Net Worth",
 };
+
+/** How much is actually owed on a debt account — the positive counterpart
+ * to `netWorthContribution`'s (negative) debt contribution. Matches
+ * `AccountRow`'s own `owed` calculation. */
+function owedAmount(a: Account): number {
+  const group = groupOf(a.account_type);
+  if (group === "loan") return parseFloat(a.current_balance);
+  return parseFloat(a.starting_balance) - parseFloat(a.current_balance);
+}
+
+const DEBT_STRATEGY_OPTIONS: { value: string; label: string }[] = [
+  { value: "snowball", label: "Snowball (smallest balance first)" },
+  { value: "avalanche", label: "Avalanche (highest rate first)" },
+];
+
+export function DebtPayoffPlannerSection({
+  accounts,
+  onSetAccountInterestRate,
+  onCalculateDebtPayoff,
+  onSetAccountExcludedFromDebtPayoff,
+}: {
+  accounts: Account[];
+  onSetAccountInterestRate: (accountId: number, rate: string | null) => void;
+  onCalculateDebtPayoff: (
+    strategy: string,
+    extraPayment: string,
+    minimums: { accountId: number; minimumPayment: string }[],
+  ) => Promise<DebtPayoffPlan | null>;
+  onSetAccountExcludedFromDebtPayoff: (accountId: number, excluded: boolean) => void;
+}) {
+  // Every debt with a balance owed is listed — including ones the user has
+  // excluded (e.g. a card paid off in full every month) — so excluding is
+  // reversible via the checkbox rather than making the account disappear
+  // from view entirely.
+  const debtAccounts = accounts.filter((a) => {
+    const g = groupOf(a.account_type);
+    return (g === "credit" || g === "loan") && owedAmount(a) > 0;
+  });
+
+  const [strategy, setStrategy] = useState("snowball");
+  const [extraPayment, setExtraPayment] = useState("0");
+  const [minimums, setMinimums] = useState<Record<number, string>>({});
+  const [plan, setPlan] = useState<DebtPayoffPlan | null>(null);
+  const [calculating, setCalculating] = useState(false);
+
+  if (debtAccounts.length === 0) return null;
+
+  async function handleCalculate() {
+    setCalculating(true);
+    setPlan(
+      await onCalculateDebtPayoff(
+        strategy,
+        extraPayment.trim() || "0",
+        debtAccounts.map((a) => ({ accountId: a.id, minimumPayment: minimums[a.id]?.trim() || "0" })),
+      ),
+    );
+    setCalculating(false);
+  }
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">Debt Payoff Planner</span>
+      </div>
+      <table className="ledger">
+        <thead>
+          <tr>
+            <th>Include</th>
+            <th>Debt</th>
+            <th className="amount-col">Balance</th>
+            <th className="amount-col">APR %</th>
+            <th className="amount-col">Minimum payment</th>
+          </tr>
+        </thead>
+        <tbody>
+          {debtAccounts.map((a) => (
+            <tr key={a.id}>
+              <td>
+                <input
+                  type="checkbox"
+                  checked={!a.excluded_from_debt_payoff}
+                  title="Include in payoff plan — uncheck for a debt you already pay off in full, like a credit card, so it isn't treated as debt to pay down"
+                  onChange={(e) => onSetAccountExcludedFromDebtPayoff(a.id, !e.target.checked)}
+                />
+              </td>
+              <td>{a.name}</td>
+              <td className="amount-col">{formatAmount(owedAmount(a))}</td>
+              <td className="amount-col">
+                <input
+                  className="amount-edit-input"
+                  defaultValue={a.interest_rate ?? ""}
+                  placeholder="0.00"
+                  onBlur={(e) => onSetAccountInterestRate(a.id, e.target.value.trim() || null)}
+                />
+              </td>
+              <td className="amount-col">
+                <input
+                  className="amount-edit-input"
+                  value={minimums[a.id] ?? ""}
+                  placeholder="0.00"
+                  onChange={(e) => setMinimums({ ...minimums, [a.id]: e.target.value })}
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <form className="labeled-field-form" onSubmit={(e) => { e.preventDefault(); handleCalculate(); }}>
+        <label className="labeled-field">
+          <span className="labeled-field-label">Strategy</span>
+          <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+            {DEBT_STRATEGY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="labeled-field">
+          <span className="labeled-field-label">Extra monthly payment</span>
+          <input value={extraPayment} onChange={(e) => setExtraPayment(e.target.value)} placeholder="0.00" />
+        </label>
+        <button type="submit" disabled={calculating} style={{ alignSelf: "flex-end" }}>
+          {calculating ? "Calculating…" : "Calculate"}
+        </button>
+      </form>
+
+      {plan && (
+        <>
+          <div className="stats">
+            <div className="stat">
+              <span className="stat-value">{plan.total_months !== null ? `${plan.total_months} mo` : "Never"}</span>
+              <span className="stat-label">Debt-free in</span>
+            </div>
+            <div className="stat">
+              <span className="stat-value">{formatAmount(plan.total_interest_paid)}</span>
+              <span className="stat-label">Total interest</span>
+            </div>
+          </div>
+          <table className="ledger">
+            <thead>
+              <tr>
+                <th>Debt</th>
+                <th>Payoff date</th>
+                <th className="amount-col">Interest paid</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plan.per_account.map((l) => (
+                <tr key={l.account_id}>
+                  <td>{l.account_name}</td>
+                  <td>{l.payoff_date ?? "Never at this payment level"}</td>
+                  <td className="amount-col">{formatAmount(l.total_interest_paid)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}
 
 function AccountRow({
   account: a,
@@ -196,6 +520,7 @@ function AccountRow({
 
 function AccountsSection({
   accounts,
+  manualAssetsTotal,
   onSetStartingBalance,
   onUpdateAccountType,
   onDeleteAccount,
@@ -205,6 +530,9 @@ function AccountsSection({
   onToggleStat,
 }: {
   accounts: Account[];
+  /** Sum of manually-tracked assets (Property & Valuables) — folded into
+   * the Total Assets / Net Worth stats here alongside real accounts. */
+  manualAssetsTotal: number;
   onSetStartingBalance: (accountId: number, balance: string) => void;
   onUpdateAccountType: (accountId: number, accountType: string) => void;
   onDeleteAccount: (accountId: number) => void;
@@ -221,14 +549,15 @@ function AccountsSection({
 
   const assetAccounts = accounts.filter((a) => groupOf(a.account_type) !== "credit" && groupOf(a.account_type) !== "loan");
   const liabilityAccounts = accounts.filter((a) => groupOf(a.account_type) === "credit" || groupOf(a.account_type) === "loan");
-  const assets = assetAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
+  const assets = assetAccounts.reduce((s, a) => s + netWorthContribution(a), 0) + manualAssetsTotal;
   const liabilities = liabilityAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
   const netWorth = assets + liabilities;
 
+  const manualAssetsRow = manualAssetsTotal !== 0 ? [{ name: "Property & Valuables", amount: manualAssetsTotal }] : [];
   const accountBreakdowns: Record<"assets" | "liabilities" | "networth", { name: string; amount: number }[]> = {
-    assets: assetAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
+    assets: [...assetAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })), ...manualAssetsRow],
     liabilities: liabilityAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
-    networth: accounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
+    networth: [...accounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })), ...manualAssetsRow],
   };
 
   const rowProps = {
@@ -300,11 +629,11 @@ function AccountsSection({
             </h2>
             <table className="ledger accounts-table">
               <colgroup>
-                <col style={{ width: "30%" }} />
-                <col style={{ width: "14%" }} />
-                <col style={{ width: "16%" }} />
-                <col style={{ width: "30%" }} />
-                <col style={{ width: "10%" }} />
+                <col style={{ width: "26%" }} />
+                <col style={{ width: "12%" }} />
+                <col style={{ width: "15%" }} />
+                <col style={{ width: "27%" }} />
+                <col style={{ width: "20%" }} />
               </colgroup>
               <thead>
                 <tr>
@@ -334,6 +663,7 @@ export function ReportsView({
   accounts,
   buckets,
   transactions,
+  assets,
   onSetStartingBalance,
   onUpdateAccountType,
   onDeleteAccount,
@@ -343,11 +673,15 @@ export function ReportsView({
   onPrint,
   onDownloadSetupTemplate,
   onImportSetupData,
+  onCreateAsset,
+  onUpdateAssetValue,
+  onDeleteAsset,
 }: {
   report: Report | null;
   accounts: Account[];
   buckets: Bucket[];
   transactions: Transaction[];
+  assets: Asset[];
   onSetStartingBalance: (accountId: number, balance: string) => void;
   onUpdateAccountType: (accountId: number, accountType: string) => void;
   onDeleteAccount: (accountId: number) => void;
@@ -357,6 +691,9 @@ export function ReportsView({
   onPrint: () => void;
   onDownloadSetupTemplate: () => void;
   onImportSetupData: () => void;
+  onCreateAsset: (name: string, assetType: string, value: string, valuedOn: string, notes: string | null) => void;
+  onUpdateAssetValue: (id: number, value: string, valuedOn: string) => void;
+  onDeleteAsset: (id: number) => void;
 }) {
   const [expandedStat, setExpandedStat] = useState<ReportStatKey | null>(null);
 
@@ -457,6 +794,7 @@ export function ReportsView({
 
       <AccountsSection
         accounts={accounts}
+        manualAssetsTotal={assets.reduce((s, a) => s + parseFloat(a.value), 0)}
         onSetStartingBalance={onSetStartingBalance}
         onUpdateAccountType={onUpdateAccountType}
         onDeleteAccount={onDeleteAccount}
@@ -464,6 +802,13 @@ export function ReportsView({
         onAddAccount={onAddAccount}
         expandedStat={expandedStat}
         onToggleStat={toggleStat}
+      />
+
+      <PropertyAssetsSection
+        assets={assets}
+        onCreate={onCreateAsset}
+        onUpdateValue={onUpdateAssetValue}
+        onDelete={onDeleteAsset}
       />
 
       <h2 className="reports-section-title">{report.month_label}'s budget</h2>

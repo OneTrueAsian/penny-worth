@@ -110,6 +110,14 @@ pub struct StoredAccount {
     pub current_balance: Decimal,
     pub institution: Option<String>,
     pub mask: Option<String>,
+    /// Annual interest rate as a percentage (e.g. `24.99` for 24.99% APR) —
+    /// only meaningful for credit/loan accounts, used by
+    /// `Store::debt_payoff_projection`. `None` if never set.
+    pub interest_rate: Option<Decimal>,
+    /// Opts a debt account out of `debt_payoff_projection` without
+    /// deleting it — e.g. a credit card the user pays off in full every
+    /// month shouldn't be treated as debt to pay down.
+    pub excluded_from_debt_payoff: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +179,17 @@ pub struct AnomalyFlag {
     pub transaction_id: i64,
     pub kind: String,
     pub detail: String,
+}
+
+/// A proactive note for the Dashboard (see `Store::dashboard_insights`) —
+/// `severity` is `"warning"` or `"info"`; `kind` is `"pace"` (on pace to
+/// exceed a budget), `"category_jump"` (a month-over-month spending jump),
+/// or `"large_expense"` (an unusually large charge this month).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Insight {
+    pub severity: String,
+    pub kind: String,
+    pub message: String,
 }
 
 /// A "large" anomaly (see `Store::anomaly_flags`) with enough transaction
@@ -237,6 +256,18 @@ pub struct StoredRecurring {
     pub account_name: Option<String>,
 }
 
+/// A pattern detected in the ledger that looks recurring but isn't yet
+/// tracked in `recurring` — see `Store::detect_recurring_candidates`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecurringCandidate {
+    pub merchant: String,
+    pub category: Option<String>,
+    pub amount: Decimal,
+    pub cadence: String,
+    pub anchor_date: NaiveDate,
+    pub occurrence_count: usize,
+}
+
 /// An investment holding, with `value` and `gain_loss` computed fresh
 /// from `shares`/`price`/`cost_basis` (never stored — a manually-entered
 /// price should always immediately recompute both).
@@ -253,6 +284,51 @@ pub struct StoredHolding {
     pub asset_class: Option<String>,
     pub value: Decimal,
     pub gain_loss: Decimal,
+}
+
+/// A manually-tracked asset outside the accounts model — real estate, a
+/// vehicle, or anything else with a value worth counting toward net worth
+/// but no transaction history of its own. See `Store::total_assets_value`
+/// for how (and deliberately how not) this feeds into net worth.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredAsset {
+    pub id: i64,
+    pub name: String,
+    pub asset_type: String,
+    pub value: Decimal,
+    pub valued_on: NaiveDate,
+    pub notes: Option<String>,
+}
+
+/// One debt's projected payoff (see `Store::debt_payoff_projection`) —
+/// `payoff_date` is `None` if it isn't projected to clear within the
+/// simulation's cap.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebtPayoffLine {
+    pub account_id: i64,
+    pub account_name: String,
+    pub starting_balance: Decimal,
+    pub payoff_date: Option<NaiveDate>,
+    pub total_interest_paid: Decimal,
+}
+
+/// The full result of `Store::debt_payoff_projection` — `total_months` and
+/// `total_interest_paid` describe the plan as a whole (every debt clear,
+/// and what interest that costs in total), `None` if not every debt
+/// resolves within the simulation's cap.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebtPayoffPlan {
+    pub per_account: Vec<DebtPayoffLine>,
+    pub total_months: Option<u32>,
+    pub total_interest_paid: Decimal,
+}
+
+/// One day's projected total cash balance (see
+/// `Store::cash_flow_forecast`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForecastPoint {
+    pub date: NaiveDate,
+    pub balance: Decimal,
 }
 
 pub struct Store {
@@ -284,7 +360,9 @@ impl Store {
                 account_type TEXT NOT NULL,
                 starting_balance TEXT NOT NULL DEFAULT '0',
                 institution TEXT,
-                mask TEXT
+                mask TEXT,
+                interest_rate TEXT,
+                excluded_from_debt_payoff INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -332,6 +410,12 @@ impl Store {
                 anchor_date TEXT NOT NULL,
                 account_id INTEGER
             );
+            CREATE TABLE IF NOT EXISTS recurring_dismissals (
+                merchant TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                cadence TEXT NOT NULL,
+                PRIMARY KEY (merchant, amount, cadence)
+            );
             CREATE TABLE IF NOT EXISTS holdings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL REFERENCES accounts(id),
@@ -341,6 +425,14 @@ impl Store {
                 price TEXT NOT NULL,
                 cost_basis TEXT NOT NULL,
                 asset_class TEXT
+            );
+            CREATE TABLE IF NOT EXISTS assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                asset_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                valued_on TEXT NOT NULL,
+                notes TEXT
             );
             CREATE TABLE IF NOT EXISTS categories (
                 name TEXT PRIMARY KEY COLLATE NOCASE
@@ -381,6 +473,8 @@ impl Store {
         self.migrate_add_confidence_if_missing()?;
         self.migrate_add_starting_balance_if_missing()?;
         self.migrate_add_institution_and_mask_if_missing()?;
+        self.migrate_add_interest_rate_if_missing()?;
+        self.migrate_add_excluded_from_debt_payoff_if_missing()?;
         self.migrate_add_budget_group_if_missing()?;
         self.migrate_budgets_to_period_scoped_if_missing()?;
         self.backfill_budget_periods_if_missing()?;
@@ -651,6 +745,59 @@ impl Store {
         Ok(())
     }
 
+    /// Same pattern once more: `interest_rate` (an annual percentage, used
+    /// by the debt payoff planner) is nullable and optional — a missing-
+    /// column database just needs the column added, `NULL` already meaning
+    /// "not set" (treated as 0% by `debt_payoff_projection`).
+    fn migrate_add_interest_rate_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(accounts)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_interest_rate = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "interest_rate" {
+                has_interest_rate = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_interest_rate {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE accounts ADD COLUMN interest_rate TEXT", [])?;
+        Ok(())
+    }
+
+    /// Same pattern once more: `excluded_from_debt_payoff` lets a debt
+    /// account (e.g. a credit card paid in full every month) opt out of
+    /// `debt_payoff_projection` without deleting the account itself.
+    /// Defaults to `0` (included) for every pre-existing row.
+    fn migrate_add_excluded_from_debt_payoff_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(accounts)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "excluded_from_debt_payoff" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn
+            .execute("ALTER TABLE accounts ADD COLUMN excluded_from_debt_payoff INTEGER NOT NULL DEFAULT 0", [])?;
+        Ok(())
+    }
+
     /// Finds an account by name, or creates it — so the UI can let a user
     /// re-type an existing account's name at import time without erroring.
     pub fn get_or_create_account(&self, name: &str, account_type: AccountType) -> rusqlite::Result<i64> {
@@ -730,9 +877,9 @@ impl Store {
     /// it's never out of sync with either the transaction log or any
     /// monthly reset.
     pub fn list_accounts(&self, today: NaiveDate) -> rusqlite::Result<Vec<StoredAccount>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, account_type, starting_balance, institution, mask FROM accounts ORDER BY name")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, account_type, starting_balance, institution, mask, interest_rate, excluded_from_debt_payoff FROM accounts ORDER BY name",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -741,15 +888,19 @@ impl Store {
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, bool>(7)?,
             ))
         })?;
 
         let mut accounts = Vec::new();
         for row in rows {
-            let (id, name, account_type, starting_balance_str, institution, mask) = row?;
+            let (id, name, account_type, starting_balance_str, institution, mask, interest_rate_str, excluded_from_debt_payoff) = row?;
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
             let current_balance = self.account_balance_as_of(id, starting_balance, today)?;
+            let interest_rate = interest_rate_str
+                .map(|s| Decimal::from_str(&s).expect("interest_rate stored by this crate must be valid"));
             accounts.push(StoredAccount {
                 id,
                 account: Account {
@@ -761,6 +912,8 @@ impl Store {
                 current_balance,
                 institution,
                 mask,
+                interest_rate,
+                excluded_from_debt_payoff,
             });
         }
         Ok(accounts)
@@ -930,6 +1083,28 @@ impl Store {
         Ok(())
     }
 
+    /// Sets (or clears, with `None`) an account's annual interest rate —
+    /// used only by `debt_payoff_projection`, meaningless for a non-debt
+    /// account type but not restricted to one, same "don't over-validate"
+    /// convention as the rest of this crate.
+    pub fn set_account_interest_rate(&self, id: i64, rate: Option<Decimal>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET interest_rate = ?1 WHERE id = ?2",
+            params![rate.map(|r| r.to_string()), id],
+        )?;
+        Ok(())
+    }
+
+    /// Opts a debt account in or out of `debt_payoff_projection` (see
+    /// `StoredAccount::excluded_from_debt_payoff`) without deleting it.
+    pub fn set_account_excluded_from_debt_payoff(&self, id: i64, excluded: bool) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET excluded_from_debt_payoff = ?1 WHERE id = ?2",
+            params![excluded, id],
+        )?;
+        Ok(())
+    }
+
     /// Corrects an account's type after the fact (created as the wrong
     /// kind by mistake). An unknown id is a harmless no-op, same
     /// convention as everything else here.
@@ -945,15 +1120,34 @@ impl Store {
     /// can't be left behind with `transactions.account_id NOT NULL`
     /// pointing at nothing, so this cascades explicitly rather than
     /// erroring or orphaning rows (same reasoning as `delete_bucket`
-    /// cascading its contributions). Returns how many transactions were
+    /// cascading its contributions). Each transaction goes through
+    /// `delete_transaction` rather than a bare `DELETE`, so a debt-payment
+    /// link row (and, if this account holds the *source* side of one, the
+    /// paired transaction it generated on the debt account) is cleaned up
+    /// too — otherwise it trips a foreign key constraint or lingers
+    /// orphaned. Holdings and balance-reset snapshots for this account are
+    /// swept the same way. A recurring item pointing here just loses the
+    /// link (falls back to "no linked account") rather than being deleted
+    /// itself, since it doesn't stop existing just because the account
+    /// that used to pay it did. Returns how many transactions were
     /// removed, for the confirm dialog's copy. An unknown id is a
     /// harmless no-op.
     pub fn delete_account(&self, id: i64) -> rusqlite::Result<usize> {
-        let affected = self
-            .conn
-            .execute("DELETE FROM transactions WHERE account_id = ?1", params![id])?;
+        let mut stmt = self.conn.prepare("SELECT id FROM transactions WHERE account_id = ?1")?;
+        let tx_ids: Vec<i64> = stmt
+            .query_map(params![id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        for tx_id in &tx_ids {
+            self.delete_transaction(*tx_id)?;
+        }
+
+        self.conn
+            .execute("UPDATE recurring SET account_id = NULL WHERE account_id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM holdings WHERE account_id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM balance_resets WHERE account_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
-        Ok(affected)
+        Ok(tx_ids.len())
     }
 
     /// Persists a learned rule (see `learner::learn_from_correction`) so it
@@ -2090,6 +2284,98 @@ impl Store {
         Ok(result)
     }
 
+    /// Proactive notes for the Dashboard, combining three signals this
+    /// crate already computes elsewhere rather than inventing new
+    /// detection logic:
+    ///
+    /// 1. **Pace**: for each budgeted category (excluding income),
+    ///    projects this month's spend forward (`actual *
+    ///    days_in_month/days_elapsed`) and flags it if that projection
+    ///    exceeds the budget by more than 10% — skipped entirely before
+    ///    day 5 of the month, since too little of the month has happened
+    ///    yet to project anything meaningful from.
+    /// 2. **Category jump**: reuses `spending_by_category` to compare this
+    ///    month-to-date against the *same number of days* at the start of
+    ///    the previous month (not the previous month's full total — that
+    ///    would make every early-month comparison look like a decrease),
+    ///    flagging a rise of more than 30% and more than $50.
+    /// 3. **Large expense**: reuses `large_expenses_in_range` (the same
+    ///    detection already powering the Cash Flow drill-down) scoped to
+    ///    the current month.
+    ///
+    /// Warnings sort before info, capped at 5 total so the Dashboard card
+    /// never turns into another full list to scroll through.
+    pub fn dashboard_insights(&self, today: NaiveDate) -> rusqlite::Result<Vec<Insight>> {
+        let year = today.year();
+        let month = today.month();
+        let days_elapsed = today.day() as i64;
+        let first_of_month = NaiveDate::from_ymd_opt(year, month, 1).expect("valid first-of-month");
+
+        let mut insights = Vec::new();
+
+        if days_elapsed >= 5 {
+            let days_in_month = days_in_month(year, month);
+            for actual in self.monthly_budget_actuals(year, month)? {
+                if actual.budget_group == "income" || actual.budgeted <= Decimal::ZERO {
+                    continue;
+                }
+                let projected = actual.actual * Decimal::from(days_in_month) / Decimal::from(days_elapsed);
+                let threshold = actual.budgeted * Decimal::new(11, 1); // 1.1x
+                if projected > threshold {
+                    insights.push(Insight {
+                        severity: "warning".to_string(),
+                        kind: "pace".to_string(),
+                        message: format!(
+                            "You're on pace to exceed {} by ${:.2} this month (projected ${:.2} vs a ${:.2} budget).",
+                            actual.category,
+                            projected - actual.budgeted,
+                            projected,
+                            actual.budgeted
+                        ),
+                    });
+                }
+            }
+        }
+
+        let (prev_year, prev_month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
+        let prev_first = NaiveDate::from_ymd_opt(prev_year, prev_month, 1).expect("valid first-of-previous-month");
+        let comparable_days = days_elapsed.min(days_in_month(prev_year, prev_month));
+        let current_window_end = first_of_month + chrono::Duration::days(comparable_days - 1);
+        let prev_window_end = prev_first + chrono::Duration::days(comparable_days - 1);
+        let current_spend = self.spending_by_category(first_of_month, current_window_end)?;
+        let prev_spend: std::collections::HashMap<String, Decimal> =
+            self.spending_by_category(prev_first, prev_window_end)?.into_iter().collect();
+        for (category, current_amount) in current_spend {
+            let Some(&previous_amount) = prev_spend.get(&category) else { continue };
+            if previous_amount <= Decimal::ZERO {
+                continue;
+            }
+            let delta = current_amount - previous_amount;
+            let pct = delta / previous_amount * Decimal::from(100);
+            if pct > Decimal::from(30) && delta > Decimal::from(50) {
+                insights.push(Insight {
+                    severity: "warning".to_string(),
+                    kind: "category_jump".to_string(),
+                    message: format!(
+                        "{category} rose {pct:.0}% (${current_amount:.2} vs ${previous_amount:.2}) from last month."
+                    ),
+                });
+            }
+        }
+
+        for expense in self.large_expenses_in_range(first_of_month, today)? {
+            insights.push(Insight {
+                severity: "info".to_string(),
+                kind: "large_expense".to_string(),
+                message: format!("Unusually large charge: {} — {}", expense.description, expense.detail),
+            });
+        }
+
+        insights.sort_by_key(|i| if i.severity == "warning" { 0 } else { 1 });
+        insights.truncate(5);
+        Ok(insights)
+    }
+
     /// Logs a recurring bill or income line. `account_id` is purely
     /// informational, same as a bucket's linked account.
     pub fn create_recurring(
@@ -2107,6 +2393,26 @@ impl Store {
             params![merchant, category, amount.to_string(), cadence, anchor_date.to_string(), account_id],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Replaces every field of an existing recurring item. An unknown id
+    /// is a harmless no-op, same convention as everywhere else here.
+    pub fn update_recurring(
+        &self,
+        id: i64,
+        merchant: &str,
+        category: Option<&str>,
+        amount: Decimal,
+        cadence: &str,
+        anchor_date: NaiveDate,
+        account_id: Option<i64>,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE recurring SET merchant = ?1, category = ?2, amount = ?3, cadence = ?4, anchor_date = ?5, account_id = ?6
+             WHERE id = ?7",
+            params![merchant, category, amount.to_string(), cadence, anchor_date.to_string(), account_id, id],
+        )?;
+        Ok(())
     }
 
     /// Every recurring item, each with its next-due date computed fresh
@@ -2155,6 +2461,115 @@ impl Store {
     /// Removes a recurring item. An unknown id is a harmless no-op.
     pub fn delete_recurring(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM recurring WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Scans the whole ledger for merchant+amount pairs that recur on a
+    /// consistent weekly/biweekly/monthly/annual cadence (see
+    /// `classify_cadence`) but aren't yet tracked in `recurring` and haven't
+    /// been dismissed (see `dismiss_recurring_candidate`) — the offline
+    /// equivalent of a "detected subscription" feed. A group needs at least
+    /// 3 occurrences before it's considered: too little history to call
+    /// anything a pattern otherwise. Sorted most-recent-occurrence first.
+    pub fn detect_recurring_candidates(&self, today: NaiveDate) -> rusqlite::Result<Vec<RecurringCandidate>> {
+        struct Row {
+            date: NaiveDate,
+            description: String,
+            category: Option<String>,
+        }
+
+        let mut stmt = self
+            .conn
+            .prepare("SELECT date, description, amount, category FROM transactions ORDER BY date")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+
+        // Grouped by (normalized description, amount-as-stored) — the same
+        // normalization `anomaly_flags`'s duplicate detection already uses,
+        // so a varying store-number suffix doesn't split one merchant into
+        // several groups.
+        let mut groups: std::collections::BTreeMap<(String, String), Vec<Row>> = std::collections::BTreeMap::new();
+        for row in rows {
+            let (date_str, description, amount_str, category) = row?;
+            let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").expect("date stored by this crate must be valid");
+            let key = (normalize_description(&description), amount_str);
+            groups.entry(key).or_default().push(Row { date, description, category });
+        }
+
+        let mut existing_recurring: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut stmt = self.conn.prepare("SELECT merchant, amount FROM recurring")?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (merchant, amount) = row?;
+            existing_recurring.insert((normalize_description(&merchant), amount));
+        }
+
+        let mut dismissed: std::collections::HashSet<(String, String, String)> = std::collections::HashSet::new();
+        let mut stmt = self.conn.prepare("SELECT merchant, amount, cadence FROM recurring_dismissals")?;
+        for row in stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })? {
+            dismissed.insert(row?);
+        }
+
+        let mut result = Vec::new();
+        for ((norm_desc, amount_str), mut rows) in groups {
+            if rows.len() < 3 {
+                continue;
+            }
+            rows.sort_by_key(|r| r.date);
+            let gaps: Vec<i64> = rows.windows(2).map(|w| (w[1].date - w[0].date).num_days()).collect();
+            let Some(cadence) = classify_cadence(&gaps) else { continue };
+            let last_date = rows.last().expect("checked len >= 3 above").date;
+            // A pattern whose most recent occurrence is long overdue (more
+            // than 2 cadence periods ago) has likely stopped — e.g. a
+            // cancelled subscription — and shouldn't be suggested as if it
+            // were still active.
+            if (today - last_date).num_days() > cadence_days(cadence) * 2 {
+                continue;
+            }
+            if existing_recurring.contains(&(norm_desc.clone(), amount_str.clone())) {
+                continue;
+            }
+            if dismissed.contains(&(norm_desc, amount_str.clone(), cadence.to_string())) {
+                continue;
+            }
+
+            let mut category_counts: std::collections::BTreeMap<Option<String>, usize> = std::collections::BTreeMap::new();
+            for r in &rows {
+                *category_counts.entry(r.category.clone()).or_insert(0) += 1;
+            }
+            let category = category_counts.into_iter().max_by_key(|(_, count)| *count).and_then(|(cat, _)| cat);
+
+            let last = rows.last().expect("checked len >= 3 above");
+            result.push(RecurringCandidate {
+                merchant: last.description.clone(),
+                category,
+                amount: Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid"),
+                cadence: cadence.to_string(),
+                anchor_date: last.date,
+                occurrence_count: rows.len(),
+            });
+        }
+        result.sort_by(|a, b| b.anchor_date.cmp(&a.anchor_date));
+        Ok(result)
+    }
+
+    /// Marks a detected pattern as "not actually recurring" so it stops
+    /// being suggested — keyed on the same normalized-merchant/amount/
+    /// cadence triple `detect_recurring_candidates` groups by. Dismissing
+    /// the same candidate twice is a harmless no-op (the underlying table's
+    /// primary key already de-duplicates).
+    pub fn dismiss_recurring_candidate(&self, merchant: &str, amount: Decimal, cadence: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO recurring_dismissals (merchant, amount, cadence) VALUES (?1, ?2, ?3)",
+            params![normalize_description(merchant), amount.to_string(), cadence],
+        )?;
         Ok(())
     }
 
@@ -2248,6 +2663,318 @@ impl Store {
     pub fn delete_holding(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM holdings WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Adds a manually-tracked asset (see `StoredAsset`). `asset_type` is a
+    /// free string, same convention as `budget_group` — the UI suggests
+    /// "real_estate"/"vehicle"/"other" but nothing here enforces it.
+    pub fn create_asset(
+        &self,
+        name: &str,
+        asset_type: &str,
+        value: Decimal,
+        valued_on: NaiveDate,
+        notes: Option<&str>,
+    ) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO assets (name, asset_type, value, valued_on, notes) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![name, asset_type, value.to_string(), valued_on.to_string(), notes],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Every manually-tracked asset, alphabetical by name.
+    pub fn list_assets(&self) -> rusqlite::Result<Vec<StoredAsset>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, asset_type, value, valued_on, notes FROM assets ORDER BY name")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            let (id, name, asset_type, value, valued_on, notes) = row?;
+            result.push(StoredAsset {
+                id,
+                name,
+                asset_type,
+                value: Decimal::from_str(&value).expect("value stored by this crate must be valid"),
+                valued_on: NaiveDate::parse_from_str(&valued_on, "%Y-%m-%d")
+                    .expect("date stored by this crate must be valid"),
+                notes,
+            });
+        }
+        Ok(result)
+    }
+
+    /// Updates an asset's value and the date it was valued as of — the
+    /// only fields expected to change over time. An unknown id is a
+    /// harmless no-op.
+    pub fn update_asset_value(&self, id: i64, value: Decimal, valued_on: NaiveDate) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE assets SET value = ?1, valued_on = ?2 WHERE id = ?3",
+            params![value.to_string(), valued_on.to_string(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Removes an asset. An unknown id is a harmless no-op.
+    pub fn delete_asset(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM assets WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// The sum of every manually-tracked asset's current value.
+    ///
+    /// **Deliberately not part of `net_worth_as_of`/net worth history**: an
+    /// asset here carries only a current value with no history, so
+    /// retroactively applying today's value to every past point on the net
+    /// worth trend chart would misrepresent history. Callers that want a
+    /// "right now, including assets" figure (the Dashboard/Reports net
+    /// worth headline) add this on top of the *current* `net_worth_as_of`
+    /// result themselves, rather than this crate baking it into the
+    /// historical series.
+    pub fn total_assets_value(&self) -> rusqlite::Result<Decimal> {
+        let mut stmt = self.conn.prepare("SELECT value FROM assets")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut total = Decimal::ZERO;
+        for row in rows {
+            total += Decimal::from_str(&row?).expect("value stored by this crate must be valid");
+        }
+        Ok(total)
+    }
+
+    /// Copies this database to `dest_path` using SQLite's own online
+    /// backup API — safe to call against a live connection (unlike a raw
+    /// `fs::copy`, which risks copying a half-written page or missing a
+    /// `-wal`/`-shm` sidecar file if the database is in WAL mode). Used by
+    /// both the "move my data file" flow and automatic local backups.
+    pub fn backup_to(&self, dest_path: impl AsRef<Path>) -> rusqlite::Result<()> {
+        let mut dest = Connection::open(dest_path)?;
+        let backup = rusqlite::backup::Backup::new(&self.conn, &mut dest)?;
+        backup.run_to_completion(5, std::time::Duration::from_millis(50), None)?;
+        Ok(())
+    }
+
+    /// Simulates paying down every debt account (credit or loan, matching
+    /// `AccountType::group`) month by month, applying `minimum_payments`
+    /// (an account not present defaults to a $0 minimum) plus
+    /// `extra_monthly_payment` to whichever debt `strategy` prioritizes —
+    /// `"avalanche"` targets the highest `interest_rate` first (a missing
+    /// rate counts as 0% for both accrual and ordering), anything else
+    /// (including `"snowball"`) targets the smallest current balance
+    /// first, same lenient fallback convention as `next_occurrence`'s
+    /// cadence matching.
+    ///
+    /// Interest accrues monthly (`rate / 1200`, i.e. APR/12 as a
+    /// fraction) before that month's payments are applied. Once a debt's
+    /// minimum is no longer needed (it's paid off), that minimum rolls
+    /// into the extra-payment pool for every subsequent month — the
+    /// defining trait of a real snowball/avalanche plan, not just a set of
+    /// independent payoff timers.
+    ///
+    /// Capped at 600 months (50 years): a debt that never clears within
+    /// that (minimum too small to outpace interest) reports `payoff_date:
+    /// None`, and the whole plan's `total_months` is `None` too.
+    pub fn debt_payoff_projection(
+        &self,
+        strategy: &str,
+        extra_monthly_payment: Decimal,
+        minimum_payments: &[(i64, Decimal)],
+        today: NaiveDate,
+    ) -> rusqlite::Result<DebtPayoffPlan> {
+        const CAP_MONTHS: u32 = 600;
+
+        struct Debt {
+            account_id: i64,
+            name: String,
+            starting_balance: Decimal,
+            owed: Decimal,
+            rate: Decimal,
+            minimum: Decimal,
+            interest_paid: Decimal,
+            payoff_month: Option<u32>,
+        }
+
+        let minimums: std::collections::HashMap<i64, Decimal> = minimum_payments.iter().cloned().collect();
+
+        let mut debts: Vec<Debt> = self
+            .list_accounts(today)?
+            .into_iter()
+            .filter(|a| matches!(a.account.account_type.group(), "credit" | "loan"))
+            .filter(|a| !a.excluded_from_debt_payoff)
+            .filter_map(|a| {
+                let owed = match a.account.account_type.group() {
+                    "credit" => a.starting_balance - a.current_balance,
+                    _ => a.current_balance,
+                };
+                if owed <= Decimal::ZERO {
+                    return None;
+                }
+                Some(Debt {
+                    account_id: a.id,
+                    name: a.account.name,
+                    starting_balance: owed,
+                    owed,
+                    rate: a.interest_rate.unwrap_or(Decimal::ZERO),
+                    minimum: minimums.get(&a.id).copied().unwrap_or(Decimal::ZERO),
+                    interest_paid: Decimal::ZERO,
+                    payoff_month: None,
+                })
+            })
+            .collect();
+
+        if debts.is_empty() {
+            return Ok(DebtPayoffPlan {
+                per_account: Vec::new(),
+                total_months: Some(0),
+                total_interest_paid: Decimal::ZERO,
+            });
+        }
+
+        let mut freed_minimums = Decimal::ZERO;
+        let mut month = 0u32;
+        while debts.iter().any(|d| d.owed > Decimal::ZERO) && month < CAP_MONTHS {
+            month += 1;
+
+            for d in debts.iter_mut() {
+                if d.owed <= Decimal::ZERO {
+                    continue;
+                }
+                let interest = d.owed * d.rate / Decimal::from(1200);
+                d.owed += interest;
+                d.interest_paid += interest;
+            }
+
+            match strategy {
+                "avalanche" => debts.sort_by(|a, b| b.rate.cmp(&a.rate).then_with(|| a.owed.cmp(&b.owed))),
+                _ => debts.sort_by(|a, b| a.owed.cmp(&b.owed)),
+            }
+
+            for d in debts.iter_mut() {
+                if d.owed <= Decimal::ZERO {
+                    continue;
+                }
+                let pay = d.minimum.min(d.owed);
+                d.owed -= pay;
+            }
+
+            let mut pool = extra_monthly_payment + freed_minimums;
+            for d in debts.iter_mut() {
+                if pool <= Decimal::ZERO {
+                    break;
+                }
+                if d.owed <= Decimal::ZERO {
+                    continue;
+                }
+                let pay = pool.min(d.owed);
+                d.owed -= pay;
+                pool -= pay;
+            }
+
+            for d in debts.iter_mut() {
+                if d.owed <= Decimal::ZERO && d.payoff_month.is_none() {
+                    d.payoff_month = Some(month);
+                    freed_minimums += d.minimum;
+                }
+            }
+        }
+
+        let total_months = if debts.iter().all(|d| d.payoff_month.is_some()) {
+            debts.iter().map(|d| d.payoff_month.unwrap()).max()
+        } else {
+            None
+        };
+        let total_interest_paid = debts.iter().map(|d| d.interest_paid).sum();
+
+        let per_account = debts
+            .into_iter()
+            .map(|d| DebtPayoffLine {
+                account_id: d.account_id,
+                account_name: d.name,
+                starting_balance: d.starting_balance,
+                payoff_date: d.payoff_month.map(|m| add_months(today, m)),
+                total_interest_paid: d.interest_paid,
+            })
+            .collect();
+
+        Ok(DebtPayoffPlan {
+            per_account,
+            total_months,
+            total_interest_paid,
+        })
+    }
+
+    /// Projects total cash balance one point per day for `days` days
+    /// forward from `today` as a smooth trend — starting balance is the
+    /// sum of every "cash"-group account's current balance (checking/
+    /// savings only; deliberately not investment/other/debt, since this
+    /// answers "can I cover my bills," not total net worth), and the
+    /// day-over-day *slope* is the trailing ~90-day observed daily net
+    /// cash flow: `(balance today - balance at the start of the window) /
+    /// days in that window`.
+    ///
+    /// Deliberately not based on `Recurring` items: most people don't
+    /// bother entering their paycheck as a recurring item, only their
+    /// bills, which made an earlier recurring-only version of this always
+    /// trend straight down regardless of real income. A window built from
+    /// actual transaction history has no such blind spot — real income
+    /// already shows up in the observed balance change automatically. The
+    /// trade-off is losing the specific-date "rent hits on the 15th" dip
+    /// in favor of a smooth trend line.
+    ///
+    /// The window is capped at 90 days but shrinks to however much history
+    /// actually exists (via the ledger's earliest transaction date) so a
+    /// brand-new account with only two weeks of data isn't diluted by 76
+    /// days of assumed inactivity. With no transactions at all, the slope
+    /// is 0 (flat). `days = 0` returns just today's balance as a single
+    /// point.
+    pub fn cash_flow_forecast(&self, today: NaiveDate, days: i64) -> rusqlite::Result<Vec<ForecastPoint>> {
+        const TRAILING_WINDOW_DAYS: i64 = 90;
+
+        let cash_accounts: Vec<StoredAccount> = self
+            .list_accounts(today)?
+            .into_iter()
+            .filter(|a| a.account.account_type.group() == "cash")
+            .collect();
+        let starting_balance: Decimal = cash_accounts.iter().map(|a| a.current_balance).sum();
+
+        let earliest_transaction_date: Option<NaiveDate> = self
+            .conn
+            .query_row("SELECT MIN(date) FROM transactions", [], |row| row.get::<_, Option<String>>(0))?
+            .map(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").expect("date stored by this crate must be valid"));
+
+        let daily_net = match earliest_transaction_date {
+            None => Decimal::ZERO,
+            Some(earliest) => {
+                let window_start = earliest.max(today - chrono::Duration::days(TRAILING_WINDOW_DAYS));
+                let days_elapsed = (today - window_start).num_days().max(1);
+                let mut balance_at_window_start = Decimal::ZERO;
+                for a in &cash_accounts {
+                    balance_at_window_start += self.account_balance_as_of(a.id, a.starting_balance, window_start)?;
+                }
+                (starting_balance - balance_at_window_start) / Decimal::from(days_elapsed)
+            }
+        };
+
+        let mut points = Vec::with_capacity((days + 1).max(1) as usize);
+        let mut balance = starting_balance;
+        points.push(ForecastPoint { date: today, balance });
+        let mut date = today;
+        for _ in 0..days {
+            date += chrono::Duration::days(1);
+            balance += daily_net;
+            points.push(ForecastPoint { date, balance });
+        }
+        Ok(points)
     }
 
     /// Total income (positive amounts) and total expense (as a positive
@@ -2399,6 +3126,36 @@ fn normalize_description(s: &str) -> String {
         .to_string()
 }
 
+/// The four cadences `detect_recurring_candidates` recognizes, as a
+/// (name, typical days, tolerance in days) table shared by
+/// `classify_cadence` and `cadence_days` — the buckets don't overlap
+/// (5-9, 11-17, 25-35, 355-375), so a set of gaps matches at most one.
+const CADENCE_BUCKETS: [(&str, i64, i64); 4] = [("weekly", 7, 2), ("biweekly", 14, 3), ("monthly", 30, 5), ("annual", 365, 10)];
+
+/// Classifies a series of day-gaps between consecutive occurrences as one
+/// of the four recognized cadences, requiring every gap to fall within
+/// that cadence's tolerance of its typical length — an irregular series
+/// (gaps that don't consistently cluster around any one target) matches
+/// nothing, since it isn't actually a recurring pattern.
+fn classify_cadence(gaps: &[i64]) -> Option<&'static str> {
+    CADENCE_BUCKETS
+        .iter()
+        .find(|(_, target, tolerance)| gaps.iter().all(|g| (g - target).abs() <= *tolerance))
+        .map(|(name, _, _)| *name)
+}
+
+/// The typical day-length of a cadence name, for the "has this pattern
+/// gone stale" check in `detect_recurring_candidates`. Panics on an
+/// unrecognized name — every caller gets `cadence` from `classify_cadence`,
+/// so this should never see anything else.
+fn cadence_days(cadence: &str) -> i64 {
+    CADENCE_BUCKETS
+        .iter()
+        .find(|(name, _, _)| *name == cadence)
+        .map(|(_, days, _)| *days)
+        .expect("cadence must be one produced by classify_cadence")
+}
+
 /// The next date on/after `today` that a recurring item lands on, given
 /// its anchor date and cadence — computed fresh every call rather than
 /// stored, so it never goes stale once an occurrence passes. An anchor
@@ -2434,6 +3191,21 @@ fn next_occurrence(anchor: NaiveDate, cadence: &str, today: NaiveDate) -> NaiveD
     next
 }
 
+
+/// The number of days in a given calendar month — computed as the gap
+/// between its first day and the next month's first day, rather than a
+/// hand-maintained 30/31/28 table, so leap Februaries fall out for free.
+fn days_in_month(year: i32, month: u32) -> i64 {
+    let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid first-of-month");
+    let next_first = if month == 12 {
+        NaiveDate::from_ymd_opt(year + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(year, month + 1, 1)
+    }
+    .expect("valid first-of-next-month");
+    (next_first - first).num_days()
+}
+
 /// Adds one calendar month, clamping the day into the target month if it
 /// doesn't have that many days (e.g. Jan 31 + 1 month -> Feb 28/29).
 fn add_one_month(d: NaiveDate) -> NaiveDate {
@@ -2447,6 +3219,18 @@ fn add_one_month(d: NaiveDate) -> NaiveDate {
     (0u32..4)
         .find_map(|back| NaiveDate::from_ymd_opt(y, m, day - back))
         .expect("some valid day exists within 4 days of any day-of-month")
+}
+
+/// Adds `n` calendar months by repeated `add_one_month` — `n` is always
+/// small in practice (`debt_payoff_projection` caps its simulation at 600
+/// months), so the repeated-addition cost is negligible next to the
+/// clarity of reusing the same day-clamping logic as everywhere else.
+fn add_months(d: NaiveDate, n: u32) -> NaiveDate {
+    let mut result = d;
+    for _ in 0..n {
+        result = add_one_month(result);
+    }
+    result
 }
 
 /// Adds one year, clamping Feb 29 -> Feb 28 in a non-leap target year.
@@ -2572,6 +3356,37 @@ mod tests {
         drop(reopened); // release the file handle before cleanup — Windows can't delete an open file
 
         std::fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
+    fn backup_to_copies_every_row_to_a_new_file() {
+        let dir = std::env::temp_dir().join(format!("pennyworth-backup-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source_path = dir.join("source.db");
+        let dest_path = dir.join("dest.db");
+        for p in [&source_path, &dest_path] {
+            if p.exists() {
+                std::fs::remove_file(p).unwrap();
+            }
+        }
+
+        {
+            let store = Store::open(&source_path).unwrap();
+            let account = test_account(&store);
+            store
+                .save_transactions(account, &[tx("2026-08-20", "Union Realty", "-1850.00")])
+                .unwrap();
+            store.backup_to(&dest_path).unwrap();
+        } // source store dropped here
+
+        let restored = Store::open(&dest_path).unwrap();
+        let stored = restored.all_transactions().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].transaction.description, "Union Realty");
+        drop(restored);
+
+        std::fs::remove_file(&source_path).unwrap();
+        std::fs::remove_file(&dest_path).unwrap();
     }
 
     #[test]
@@ -3122,6 +3937,78 @@ mod tests {
     fn delete_account_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
         store.delete_account(999).unwrap();
+    }
+
+    #[test]
+    fn delete_account_removes_a_balance_reset_snapshot_taken_against_it() {
+        // Regression test: `roll_forward_monthly_balances` leaves a
+        // `balance_resets` row (`account_id NOT NULL REFERENCES
+        // accounts(id)`) behind for every account it touches. Deleting an
+        // account that has one used to trip a foreign key constraint
+        // instead of succeeding.
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Test", AccountType::Checking).unwrap();
+        store.roll_forward_monthly_balances("2026-08-01".parse().unwrap()).unwrap();
+
+        store.delete_account(checking).unwrap();
+
+        assert!(store.list_accounts(far_future()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_account_removes_its_investment_holdings() {
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Brokerage", AccountType::Investment).unwrap();
+        store
+            .create_holding(
+                brokerage,
+                "VTI",
+                "Vanguard Total Stock Market",
+                "10".parse().unwrap(),
+                "100.00".parse().unwrap(),
+                "900.00".parse().unwrap(),
+                None,
+            )
+            .unwrap();
+
+        store.delete_account(brokerage).unwrap();
+
+        assert!(store.list_holdings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_account_unlinks_rather_than_deletes_a_recurring_item_pointing_to_it() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store
+            .create_recurring("Netflix", None, "-15.00".parse().unwrap(), "monthly", "2026-08-01".parse().unwrap(), Some(checking))
+            .unwrap();
+
+        store.delete_account(checking).unwrap();
+
+        let recurring = store.list_recurring(far_future()).unwrap();
+        assert_eq!(recurring.len(), 1, "the recurring item itself survives");
+        assert_eq!(recurring[0].account_id, None);
+    }
+
+    #[test]
+    fn delete_account_holding_the_source_of_a_debt_payment_also_removes_the_generated_transaction() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = test_account(&store);
+        let loan = store.get_or_create_account("Car Loan", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "10000.00".parse().unwrap()).unwrap();
+        store
+            .save_transactions(checking, &[tx("2026-08-20", "Loan Payment", "-500.00")])
+            .unwrap();
+        let source_id = store.all_transactions().unwrap()[0].id;
+        store
+            .apply_debt_payment(source_id, loan, "500.00".parse().unwrap(), "2026-08-20".parse().unwrap())
+            .unwrap();
+        assert_eq!(store.all_transactions().unwrap().len(), 2);
+
+        store.delete_account(checking).unwrap();
+
+        assert!(store.all_transactions().unwrap().is_empty(), "the generated debt-account transaction must go too");
     }
 
     #[test]
@@ -4735,6 +5622,107 @@ mod tests {
         assert_eq!(result[1].description, "Fancy Steakhouse");
     }
 
+    // Dashboard insights.
+
+    #[test]
+    fn dashboard_insights_is_empty_for_a_quiet_month() {
+        let store = Store::open_in_memory().unwrap();
+        let insights = store.dashboard_insights("2026-08-20".parse().unwrap()).unwrap();
+        assert!(insights.is_empty());
+    }
+
+    #[test]
+    fn dashboard_insights_flags_a_category_on_pace_to_exceed_its_budget() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Dining Out", "2026-08", "200.00".parse().unwrap(), "flexible").unwrap();
+        // $100 spent in the first 10 days of a 31-day August projects to
+        // $310 — well past the $200 budget (>1.1x).
+        store
+            .save_transactions(account, &[tx("2026-08-05", "Cafe", "-100.00")])
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Dining Out", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-08-10".parse().unwrap()).unwrap();
+
+        assert!(
+            insights.iter().any(|i| i.kind == "pace" && i.message.contains("Dining Out")),
+            "expected a pace insight for Dining Out: {insights:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_insights_skips_pace_projection_before_day_5_of_the_month() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Dining Out", "2026-08", "200.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(account, &[tx("2026-08-02", "Cafe", "-100.00")])
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Dining Out", CategorySource::User, None).unwrap();
+        }
+
+        // Only 3 days into the month — too little signal to project from.
+        let insights = store.dashboard_insights("2026-08-03".parse().unwrap()).unwrap();
+
+        assert!(!insights.iter().any(|i| i.kind == "pace"), "expected no early-month pace insight: {insights:?}");
+    }
+
+    #[test]
+    fn dashboard_insights_flags_a_month_over_month_category_jump() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-07-05", "Grocer", "-100.00"),
+                    tx("2026-08-05", "Grocer", "-200.00"),
+                ],
+            )
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Groceries", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-08-05".parse().unwrap()).unwrap();
+
+        assert!(
+            insights.iter().any(|i| i.kind == "category_jump" && i.message.contains("Groceries")),
+            "expected a category-jump insight for Groceries: {insights:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_insights_surfaces_a_large_expense_in_the_current_month() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-05-01", "Cafe One", "-15.00"),
+                    tx("2026-06-01", "Cafe Two", "-20.00"),
+                    tx("2026-07-01", "Cafe Three", "-25.00"),
+                    tx("2026-08-05", "Fancy Steakhouse", "-200.00"),
+                ],
+            )
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Dining Out", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-08-20".parse().unwrap()).unwrap();
+
+        assert!(
+            insights.iter().any(|i| i.kind == "large_expense" && i.message.contains("Fancy Steakhouse")),
+            "expected a large-expense insight: {insights:?}"
+        );
+    }
+
     // Recurring.
 
     #[test]
@@ -4828,6 +5816,197 @@ mod tests {
     fn delete_recurring_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
         store.delete_recurring(999).unwrap();
+    }
+
+    #[test]
+    fn update_recurring_changes_every_field() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Checking", AccountType::Checking).unwrap();
+        let id = store
+            .create_recurring("Netflix", None, "-15.49".parse().unwrap(), "monthly", "2026-06-04".parse().unwrap(), None)
+            .unwrap();
+
+        store
+            .update_recurring(
+                id,
+                "Netflix (renamed)",
+                Some("Subscriptions"),
+                "-18.99".parse().unwrap(),
+                "annual",
+                "2026-07-01".parse().unwrap(),
+                Some(checking),
+            )
+            .unwrap();
+
+        let items = store.list_recurring("2026-08-20".parse().unwrap()).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].merchant, "Netflix (renamed)");
+        assert_eq!(items[0].category, Some("Subscriptions".to_string()));
+        assert_eq!(items[0].amount, "-18.99".parse().unwrap());
+        assert_eq!(items[0].cadence, "annual");
+        assert_eq!(items[0].anchor_date, "2026-07-01".parse().unwrap());
+        assert_eq!(items[0].account_name, Some("Checking".to_string()));
+    }
+
+    #[test]
+    fn update_recurring_on_an_unknown_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .update_recurring(999, "Ghost", None, "-1.00".parse().unwrap(), "monthly", "2026-08-20".parse().unwrap(), None)
+            .unwrap();
+    }
+
+    fn seed_txns(store: &Store, account: i64, merchant: &str, amount: &str, dates: &[&str]) {
+        for date in dates {
+            store.save_transactions(account, &[tx(date, merchant, amount)]).unwrap();
+        }
+    }
+
+    #[test]
+    fn detect_recurring_candidates_finds_a_monthly_pattern() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        seed_txns(
+            &store,
+            account,
+            "Netflix",
+            "-15.49",
+            &["2026-05-04", "2026-06-04", "2026-07-04", "2026-08-04"],
+        );
+
+        let candidates = store.detect_recurring_candidates("2026-08-20".parse().unwrap()).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].merchant, "Netflix");
+        assert_eq!(candidates[0].amount, "-15.49".parse().unwrap());
+        assert_eq!(candidates[0].cadence, "monthly");
+        assert_eq!(candidates[0].occurrence_count, 4);
+        assert_eq!(candidates[0].anchor_date, "2026-08-04".parse().unwrap());
+    }
+
+    #[test]
+    fn detect_recurring_candidates_classifies_a_biweekly_pattern() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        seed_txns(
+            &store,
+            account,
+            "Cleaning Service",
+            "-60.00",
+            &["2026-06-05", "2026-06-19", "2026-07-03"],
+        );
+
+        let candidates = store.detect_recurring_candidates("2026-07-10".parse().unwrap()).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].cadence, "biweekly");
+    }
+
+    #[test]
+    fn detect_recurring_candidates_skips_a_pattern_that_looks_stopped() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        seed_txns(
+            &store,
+            account,
+            "Old Gym",
+            "-40.00",
+            &["2026-01-04", "2026-02-04", "2026-03-04"],
+        );
+
+        // Monthly cadence, but the most recent charge was ~5.5 months before
+        // "today" — well past 2x the ~30-day cadence, so this reads as a
+        // cancelled subscription rather than an active one.
+        let candidates = store.detect_recurring_candidates("2026-08-20".parse().unwrap()).unwrap();
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn detect_recurring_candidates_ignores_irregular_gaps() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        seed_txns(
+            &store,
+            account,
+            "Random Store",
+            "-20.00",
+            &["2026-01-05", "2026-03-20", "2026-08-01"],
+        );
+
+        let candidates = store.detect_recurring_candidates("2026-08-20".parse().unwrap()).unwrap();
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn detect_recurring_candidates_requires_at_least_three_occurrences() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        seed_txns(&store, account, "Gym", "-40.00", &["2026-06-01", "2026-07-01"]);
+
+        let candidates = store.detect_recurring_candidates("2026-08-20".parse().unwrap()).unwrap();
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn detect_recurring_candidates_excludes_a_merchant_already_tracked_as_recurring() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        seed_txns(
+            &store,
+            account,
+            "Netflix",
+            "-15.49",
+            &["2026-05-04", "2026-06-04", "2026-07-04"],
+        );
+        store
+            .create_recurring("Netflix", None, "-15.49".parse().unwrap(), "monthly", "2026-07-04".parse().unwrap(), None)
+            .unwrap();
+
+        let candidates = store.detect_recurring_candidates("2026-08-20".parse().unwrap()).unwrap();
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn dismiss_recurring_candidate_excludes_it_from_future_detection() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        seed_txns(
+            &store,
+            account,
+            "Spotify",
+            "-9.99",
+            &["2026-05-04", "2026-06-04", "2026-07-04"],
+        );
+        assert_eq!(store.detect_recurring_candidates("2026-08-20".parse().unwrap()).unwrap().len(), 1);
+
+        store
+            .dismiss_recurring_candidate("Spotify", "-9.99".parse().unwrap(), "monthly")
+            .unwrap();
+
+        assert!(store.detect_recurring_candidates("2026-08-20".parse().unwrap()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn detect_recurring_candidates_infers_the_majority_category() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        for (date, category) in [
+            ("2026-05-04", "Subscriptions"),
+            ("2026-06-04", "Subscriptions"),
+            ("2026-07-04", "Entertainment"),
+        ] {
+            let mut t = tx(date, "Netflix", "-15.49");
+            t.category = Some(category.to_string());
+            store.save_transactions(account, &[t]).unwrap();
+        }
+
+        let candidates = store.detect_recurring_candidates("2026-08-20".parse().unwrap()).unwrap();
+
+        assert_eq!(candidates[0].category, Some("Subscriptions".to_string()));
     }
 
     // Investments.
@@ -4924,6 +6103,392 @@ mod tests {
     fn delete_holding_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
         store.delete_holding(999).unwrap();
+    }
+
+    // Manual assets ("Property & Valuables").
+
+    #[test]
+    fn create_asset_then_list_assets_reads_it_back() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store
+            .create_asset(
+                "Home",
+                "real_estate",
+                "350000.00".parse().unwrap(),
+                "2026-08-01".parse().unwrap(),
+                Some("Zillow estimate"),
+            )
+            .unwrap();
+
+        let assets = store.list_assets().unwrap();
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].id, id);
+        assert_eq!(assets[0].name, "Home");
+        assert_eq!(assets[0].asset_type, "real_estate");
+        assert_eq!(assets[0].value, "350000.00".parse().unwrap());
+        assert_eq!(assets[0].valued_on, "2026-08-01".parse().unwrap());
+        assert_eq!(assets[0].notes.as_deref(), Some("Zillow estimate"));
+    }
+
+    #[test]
+    fn update_asset_value_changes_value_and_valued_on() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store
+            .create_asset("Car", "vehicle", "20000.00".parse().unwrap(), "2026-01-01".parse().unwrap(), None)
+            .unwrap();
+
+        store.update_asset_value(id, "17000.00".parse().unwrap(), "2026-08-01".parse().unwrap()).unwrap();
+
+        let assets = store.list_assets().unwrap();
+        assert_eq!(assets[0].value, "17000.00".parse().unwrap());
+        assert_eq!(assets[0].valued_on, "2026-08-01".parse().unwrap());
+    }
+
+    #[test]
+    fn delete_asset_removes_it() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store
+            .create_asset("Boat", "other", "5000.00".parse().unwrap(), "2026-01-01".parse().unwrap(), None)
+            .unwrap();
+
+        store.delete_asset(id).unwrap();
+
+        assert_eq!(store.list_assets().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn delete_asset_on_an_unknown_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.delete_asset(999).unwrap();
+    }
+
+    #[test]
+    fn total_assets_value_sums_every_asset() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_asset("Home", "real_estate", "350000.00".parse().unwrap(), "2026-08-01".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_asset("Car", "vehicle", "17000.00".parse().unwrap(), "2026-08-01".parse().unwrap(), None)
+            .unwrap();
+
+        assert_eq!(store.total_assets_value().unwrap(), "367000.00".parse().unwrap());
+    }
+
+    #[test]
+    fn total_assets_value_is_zero_with_no_assets() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.total_assets_value().unwrap(), Decimal::ZERO);
+    }
+
+    #[test]
+    fn adding_an_asset_does_not_change_historical_net_worth() {
+        // Locks in the deliberate design decision: manual assets carry only
+        // a current value, so retroactively applying it to every past point
+        // on the net-worth trend would misrepresent history — they feed the
+        // *current* net-worth figure only (computed client-side from
+        // `total_assets_value`), never `net_worth_as_of`.
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        let before = store.net_worth_as_of("2026-08-20".parse().unwrap()).unwrap();
+
+        store
+            .create_asset("Home", "real_estate", "350000.00".parse().unwrap(), "2026-08-01".parse().unwrap(), None)
+            .unwrap();
+
+        let after = store.net_worth_as_of("2026-08-20".parse().unwrap()).unwrap();
+
+        assert_eq!(before, after);
+    }
+
+    // Debt payoff planner.
+
+    #[test]
+    fn debt_payoff_projection_with_no_debt_resolves_immediately() {
+        let store = Store::open_in_memory().unwrap();
+        store.get_or_create_account("Checking", AccountType::Checking).unwrap();
+
+        let plan = store
+            .debt_payoff_projection("snowball", Decimal::ZERO, &[], "2026-08-20".parse().unwrap())
+            .unwrap();
+
+        assert!(plan.per_account.is_empty());
+        assert_eq!(plan.total_months, Some(0));
+        assert_eq!(plan.total_interest_paid, Decimal::ZERO);
+    }
+
+    #[test]
+    fn debt_payoff_projection_excludes_an_account_marked_excluded_from_debt_payoff() {
+        // A credit card the user pays off in full every month shouldn't be
+        // dragged into a payoff plan just because it happens to carry a
+        // balance at the moment they check.
+        let store = Store::open_in_memory().unwrap();
+        let card = store.get_or_create_account("Paid Off Monthly Card", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(card, "500.00".parse().unwrap()).unwrap();
+        store.set_account_excluded_from_debt_payoff(card, true).unwrap();
+
+        let plan = store
+            .debt_payoff_projection("snowball", Decimal::ZERO, &[(card, "50.00".parse().unwrap())], "2026-08-20".parse().unwrap())
+            .unwrap();
+
+        assert!(plan.per_account.is_empty());
+        assert_eq!(plan.total_months, Some(0));
+    }
+
+    #[test]
+    fn set_account_excluded_from_debt_payoff_can_be_reversed() {
+        let store = Store::open_in_memory().unwrap();
+        let card = store.get_or_create_account("Card", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(card, "500.00".parse().unwrap()).unwrap();
+        store.set_account_excluded_from_debt_payoff(card, true).unwrap();
+        store.set_account_excluded_from_debt_payoff(card, false).unwrap();
+
+        let plan = store
+            .debt_payoff_projection("snowball", Decimal::ZERO, &[(card, "50.00".parse().unwrap())], "2026-08-20".parse().unwrap())
+            .unwrap();
+
+        assert_eq!(plan.per_account.len(), 1, "re-including the account should bring it back into the plan");
+    }
+
+    #[test]
+    fn debt_payoff_projection_pays_off_a_zero_interest_loan_using_only_the_minimum() {
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Car Loan", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "1200.00".parse().unwrap()).unwrap();
+
+        let plan = store
+            .debt_payoff_projection(
+                "snowball",
+                Decimal::ZERO,
+                &[(loan, "100.00".parse().unwrap())],
+                "2026-08-20".parse().unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(plan.per_account.len(), 1);
+        assert_eq!(plan.per_account[0].payoff_date, Some("2027-08-20".parse().unwrap()));
+        assert_eq!(plan.per_account[0].total_interest_paid, Decimal::ZERO);
+        assert_eq!(plan.total_months, Some(12));
+    }
+
+    #[test]
+    fn debt_payoff_projection_snowball_pays_off_the_smaller_balance_first_and_rolls_its_minimum_forward() {
+        let store = Store::open_in_memory().unwrap();
+        let small = store.get_or_create_account("Small Debt", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(small, "100.00".parse().unwrap()).unwrap();
+        let big = store.get_or_create_account("Big Debt", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(big, "1000.00".parse().unwrap()).unwrap();
+
+        let plan = store
+            .debt_payoff_projection(
+                "snowball",
+                Decimal::ZERO,
+                &[(small, "100.00".parse().unwrap()), (big, "10.00".parse().unwrap())],
+                "2026-08-20".parse().unwrap(),
+            )
+            .unwrap();
+
+        let small_line = plan.per_account.iter().find(|l| l.account_id == small).unwrap();
+        assert!(plan.per_account.iter().any(|l| l.account_id == big));
+
+        // Small Debt clears in month 1 (its $100 minimum covers the whole
+        // $100 balance in one shot).
+        assert_eq!(small_line.payoff_date, Some("2026-09-20".parse().unwrap()));
+        // Once freed, Small Debt's $100 minimum rolls into Big Debt on top
+        // of its own $10 — $110/month clears $1000 in well under the ~100
+        // months a flat $10/month alone would take.
+        let big_months = plan.total_months.unwrap();
+        assert!(big_months < 20, "expected the rolled-over minimum to accelerate payoff, got {big_months} months");
+    }
+
+    #[test]
+    fn debt_payoff_projection_avalanche_prioritizes_the_higher_rate_debt() {
+        let store = Store::open_in_memory().unwrap();
+        let high_rate = store.get_or_create_account("High Rate Card", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(high_rate, "1000.00".parse().unwrap()).unwrap();
+        store.set_account_interest_rate(high_rate, Some("25.00".parse().unwrap())).unwrap();
+        let low_rate = store.get_or_create_account("Low Rate Card", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(low_rate, "1000.00".parse().unwrap()).unwrap();
+        store.set_account_interest_rate(low_rate, Some("5.00".parse().unwrap())).unwrap();
+
+        let plan = store
+            .debt_payoff_projection(
+                "avalanche",
+                "200.00".parse().unwrap(),
+                &[(high_rate, "10.00".parse().unwrap()), (low_rate, "10.00".parse().unwrap())],
+                "2026-08-20".parse().unwrap(),
+            )
+            .unwrap();
+
+        let high_line = plan.per_account.iter().find(|l| l.account_id == high_rate).unwrap();
+        let low_line = plan.per_account.iter().find(|l| l.account_id == low_rate).unwrap();
+        assert!(
+            high_line.payoff_date.unwrap() < low_line.payoff_date.unwrap(),
+            "avalanche should clear the higher-rate card first: {high_line:?} vs {low_line:?}"
+        );
+    }
+
+    #[test]
+    fn debt_payoff_projection_extra_payment_shortens_the_timeline() {
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Loan", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "5000.00".parse().unwrap()).unwrap();
+
+        let without_extra = store
+            .debt_payoff_projection(
+                "snowball",
+                Decimal::ZERO,
+                &[(loan, "100.00".parse().unwrap())],
+                "2026-08-20".parse().unwrap(),
+            )
+            .unwrap()
+            .total_months
+            .unwrap();
+        let with_extra = store
+            .debt_payoff_projection(
+                "snowball",
+                "200.00".parse().unwrap(),
+                &[(loan, "100.00".parse().unwrap())],
+                "2026-08-20".parse().unwrap(),
+            )
+            .unwrap()
+            .total_months
+            .unwrap();
+
+        assert!(with_extra < without_extra);
+    }
+
+    #[test]
+    fn debt_payoff_projection_accrues_interest_on_an_apr_bearing_debt() {
+        let store = Store::open_in_memory().unwrap();
+        let card = store.get_or_create_account("Card", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(card, "1200.00".parse().unwrap()).unwrap();
+        store.set_account_interest_rate(card, Some("24.00".parse().unwrap())).unwrap();
+
+        let plan = store
+            .debt_payoff_projection(
+                "snowball",
+                Decimal::ZERO,
+                &[(card, "110.00".parse().unwrap())],
+                "2026-08-20".parse().unwrap(),
+            )
+            .unwrap();
+
+        assert!(plan.total_interest_paid > Decimal::ZERO);
+        assert!(plan.per_account[0].payoff_date.is_some());
+    }
+
+    #[test]
+    fn debt_payoff_projection_never_resolves_when_the_minimum_does_not_cover_interest() {
+        let store = Store::open_in_memory().unwrap();
+        let card = store.get_or_create_account("Card", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(card, "1000.00".parse().unwrap()).unwrap();
+        store.set_account_interest_rate(card, Some("36.00".parse().unwrap())).unwrap();
+
+        // 36% APR = 3%/month = $30/month in interest on $1000 — a $5
+        // minimum with no extra payment can never make a dent.
+        let plan = store
+            .debt_payoff_projection(
+                "snowball",
+                Decimal::ZERO,
+                &[(card, "5.00".parse().unwrap())],
+                "2026-08-20".parse().unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(plan.total_months, None);
+        assert_eq!(plan.per_account[0].payoff_date, None);
+    }
+
+    // Cash-flow forecast.
+
+    #[test]
+    fn cash_flow_forecast_stays_flat_with_no_transaction_history() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        let points = store.cash_flow_forecast("2026-08-20".parse().unwrap(), 30).unwrap();
+
+        assert_eq!(points.len(), 31);
+        assert!(points.iter().all(|p| p.balance == "1000.00".parse().unwrap()));
+        assert_eq!(points[0].date, "2026-08-20".parse().unwrap());
+        assert_eq!(points[30].date, "2026-09-19".parse().unwrap());
+    }
+
+    #[test]
+    fn cash_flow_forecast_projects_the_trailing_average_daily_net_forward() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "0.00".parse().unwrap()).unwrap();
+        // Earliest activity is 10 days before "today" (clamps the window to
+        // 10 days, not the full 90) — balance there is $1000. Two more
+        // transactions bring it to $1800 by today: a net gain of $800 over
+        // 10 days = $80/day.
+        store
+            .save_transactions(
+                checking,
+                &[
+                    tx("2026-08-10", "Opening balance", "1000.00"),
+                    tx("2026-08-15", "Paycheck", "500.00"),
+                    tx("2026-08-20", "Side income", "300.00"),
+                ],
+            )
+            .unwrap();
+
+        let points = store.cash_flow_forecast("2026-08-20".parse().unwrap(), 10).unwrap();
+
+        assert_eq!(points[0].balance, "1800.00".parse().unwrap());
+        assert_eq!(points[1].balance, "1880.00".parse().unwrap());
+        assert_eq!(points[10].balance, "2600.00".parse().unwrap());
+    }
+
+    #[test]
+    fn cash_flow_forecast_clamps_the_window_to_available_history_not_a_blind_90_days() {
+        // If the $80/day-net test above instead divided by a blind 90 days
+        // (rather than the 10 days of history that actually exist), the
+        // slope would come out roughly 9x too shallow — this pins the
+        // clamping behavior specifically.
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "0.00".parse().unwrap()).unwrap();
+        store
+            .save_transactions(checking, &[tx("2026-08-19", "Opening balance", "100.00"), tx("2026-08-20", "Deposit", "50.00")])
+            .unwrap();
+
+        let points = store.cash_flow_forecast("2026-08-20".parse().unwrap(), 1).unwrap();
+
+        // 1 day of history, $50 net over that day -> $50/day slope.
+        assert_eq!(points[0].balance, "150.00".parse().unwrap());
+        assert_eq!(points[1].balance, "200.00".parse().unwrap());
+    }
+
+    #[test]
+    fn cash_flow_forecast_with_zero_days_returns_just_todays_balance() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        let points = store.cash_flow_forecast("2026-08-20".parse().unwrap(), 0).unwrap();
+
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].balance, "1000.00".parse().unwrap());
+    }
+
+    #[test]
+    fn cash_flow_forecast_only_starts_from_cash_group_accounts() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        let brokerage = store.get_or_create_account("Brokerage", AccountType::Investment).unwrap();
+        store.set_account_starting_balance(brokerage, "5000.00".parse().unwrap()).unwrap();
+
+        let points = store.cash_flow_forecast("2026-08-20".parse().unwrap(), 5).unwrap();
+
+        assert_eq!(points[0].balance, "1000.00".parse().unwrap(), "investment balance must not count");
     }
 
     // Cash flow aggregates.

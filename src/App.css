@@ -730,6 +730,42 @@ button:disabled {
   font-size: 0.85em;
 }
 
+/* A labeled-field form is the same idea as .bucket-new-form (a flexible
+ * row of inputs) but each field carries its own visible label above it —
+ * a bare placeholder disappears the moment you type, so a calculator
+ * with several similarly-shaped numeric fields needs a label that stays. */
+.labeled-field-form {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.labeled-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 130px;
+}
+
+.labeled-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+}
+
+.labeled-field input,
+.labeled-field select {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: inherit;
+}
+
 .account-select {
   font-family: inherit;
   font-size: 13.5px;
@@ -1056,6 +1092,22 @@ button:disabled {
   color: inherit;
 }
 
+/* Same idea as .amount-edit-input (an inline-editing control inside a
+ * table cell) but for regular text/select/date fields — left-aligned, no
+ * fixed narrow width. Without an explicit class here, these fall back to
+ * unstyled browser-default form controls (a stark white select box in
+ * particular), clashing with the dark theme everywhere else. */
+.row-edit-input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: inherit;
+}
+
 .confidence-badge {
   display: inline-block;
   margin-left: 6px;
@@ -1228,6 +1280,34 @@ button:disabled {
 .budget-alert-over {
   background: var(--negative-soft);
   color: var(--negative);
+}
+
+.insights-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.insight-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.insight-badge-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+  text-transform: uppercase;
+}
+
+.insight-badge-info {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  text-transform: uppercase;
 }
 
 .budget-alert-banner {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import pennyWorthIcon from "./assets/penny-worth-icon-1024.png";
 import { toCsv } from "./csv";
 import { buildSetupTemplate } from "./setupTemplate";
@@ -16,6 +17,7 @@ import {
 import { BucketsView } from "./BucketsView";
 import { BudgetView } from "./BudgetView";
 import { ReportsView } from "./ReportsView";
+import { SettingsView } from "./SettingsView";
 import { RecurringView } from "./RecurringView";
 import { InvestmentsView } from "./InvestmentsView";
 import { CashFlowView } from "./CashFlowView";
@@ -26,15 +28,21 @@ import { formatAmount } from "./format";
 import type {
   Account,
   AnomalyFlag,
+  Asset,
+  Backup,
   Bucket,
   BudgetAlert,
   CashFlow,
   CategoryAmount,
   CategoryTransaction,
+  DebtPayoffPlan,
+  ForecastPoint,
   Holding,
+  Insight,
   MonthExpenseDetail,
   NetWorthPoint,
   Recurring,
+  RecurringCandidate,
   Report,
   ReportBudgetLine,
   RolledAccount,
@@ -103,6 +111,7 @@ type Tab =
   | "reports"
   | "recurring"
   | "investments"
+  | "settings"
   | "help";
 
 type Theme = "light" | "dark" | "system";
@@ -116,6 +125,7 @@ const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
   { id: "recurring", label: "Recurring", icon: "repeat" },
   { id: "investments", label: "Investments", icon: "barchart" },
   { id: "reports", label: "Reports", icon: "wallet" },
+  { id: "settings", label: "Settings", icon: "settings" },
   { id: "help", label: "Help", icon: "help" },
 ];
 
@@ -145,7 +155,19 @@ function loadNavOrder(): Tab[] {
   return known;
 }
 
-function App() {
+function App({
+  initialStatus,
+  onDataFileChanged,
+}: {
+  initialStatus: string;
+  /** Called after `relocate_data_file`/`restore_backup` succeeds — the Rust
+   * side has already hot-swapped its live connection to the new file (see
+   * commands.rs), so all this needs to do is force every piece of frontend
+   * state to re-fetch from scratch. The wrapper below does that by
+   * remounting this whole component under a fresh `key`, carrying `message`
+   * over as the freshly-mounted instance's starting status banner. */
+  onDataFileChanged: (message: string) => void;
+}) {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [theme, setThemeState] = useState<Theme>(() => {
     try {
@@ -169,12 +191,55 @@ function App() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [recurring, setRecurring] = useState<Recurring[]>([]);
+  const [recurringCandidates, setRecurringCandidates] = useState<RecurringCandidate[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [dataFileLocation, setDataFileLocation] = useState<string | null>(null);
+  const [backups, setBackups] = useState<Backup[]>([]);
+
+  const refreshBackups = useCallback(async () => {
+    setBackups(await invoke<Backup[]>("list_backups"));
+  }, []);
+
+  useEffect(() => {
+    invoke<string>("get_data_file_location").then(setDataFileLocation).catch((e) => setStatus(String(e)));
+    refreshBackups().catch((e) => setStatus(String(e)));
+  }, [refreshBackups]);
+
+  async function handleCreateBackupNow() {
+    try {
+      await invoke("create_backup_now");
+      await refreshBackups();
+      setStatus("Backup created.");
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleRestoreBackup(filename: string) {
+    try {
+      await invoke("restore_backup", { filename });
+      onDataFileChanged(`Restored ${filename} — your prior data was backed up first.`);
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleRelocateDataFile() {
+    const dir = await open({ directory: true, multiple: false });
+    if (!dir || Array.isArray(dir)) return;
+    try {
+      const newPath = await invoke<string>("relocate_data_file", { newDir: dir });
+      onDataFileChanged(`Data file moved to ${newPath} — your old file was left in place, untouched.`);
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
   const [usedCategories, setUsedCategories] = useState<string[]>([]);
   const [report, setReport] = useState<Report | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [status, setStatus] = useState<string>("");
+  const [status, setStatus] = useState<string>(initialStatus);
 
   // Auto-dismiss the status banner after 10s so it doesn't sit there
   // stale forever — resets the clock every time a new message replaces
@@ -378,6 +443,14 @@ function App() {
     setRecurring(await invoke<Recurring[]>("list_recurring"));
   }, []);
 
+  const refreshRecurringCandidates = useCallback(async () => {
+    setRecurringCandidates(await invoke<RecurringCandidate[]>("list_recurring_candidates"));
+  }, []);
+
+  const refreshAssets = useCallback(async () => {
+    setAssets(await invoke<Asset[]>("list_assets"));
+  }, []);
+
   const refreshHoldings = useCallback(async () => {
     setHoldings(await invoke<Holding[]>("list_holdings"));
   }, []);
@@ -449,28 +522,49 @@ function App() {
     setPreviousMonthCategorySpending(previous);
   }, []);
 
+  const [forecastDays, setForecastDays] = useState(30);
+  const [forecastData, setForecastData] = useState<ForecastPoint[] | null>(null);
+
+  const refreshForecast = useCallback(async (days: number) => {
+    setForecastData(await invoke<ForecastPoint[]>("cash_flow_forecast", { days }));
+  }, []);
+
   useEffect(() => {
     if (activeTab === "cashflow") {
       refreshCashFlow(cashFlowRange).catch((e) => setStatus(String(e)));
       if (compareLastYear) refreshYoy(cashFlowRange).catch((e) => setStatus(String(e)));
       refreshTopCategories(topCategoriesMonth.year, topCategoriesMonth.month).catch((e) => setStatus(String(e)));
+      refreshForecast(forecastDays).catch((e) => setStatus(String(e)));
     }
-  }, [activeTab, cashFlowRange, compareLastYear, topCategoriesMonth, refreshCashFlow, refreshYoy, refreshTopCategories]);
+  }, [
+    activeTab,
+    cashFlowRange,
+    compareLastYear,
+    topCategoriesMonth,
+    forecastDays,
+    refreshCashFlow,
+    refreshYoy,
+    refreshTopCategories,
+    refreshForecast,
+  ]);
 
   const [netWorthHistory, setNetWorthHistory] = useState<NetWorthPoint[]>([]);
   const [spendingThisMonth, setSpendingThisMonth] = useState<CategoryAmount[]>([]);
   const [dashboardBudgetAlerts, setDashboardBudgetAlerts] = useState<BudgetAlert[]>([]);
+  const [dashboardInsights, setDashboardInsights] = useState<Insight[]>([]);
 
   const refreshDashboard = useCallback(async () => {
     const today = new Date();
-    const [nw, spend, alerts] = await Promise.all([
+    const [nw, spend, alerts, insights] = await Promise.all([
       invoke<NetWorthPoint[]>("net_worth_history", { months: 6 }),
       invoke<CategoryAmount[]>("spending_this_month"),
       invoke<BudgetAlert[]>("budget_alerts_for_month", { year: today.getFullYear(), month: today.getMonth() + 1 }),
+      invoke<Insight[]>("dashboard_insights"),
     ]);
     setNetWorthHistory(nw);
     setSpendingThisMonth(spend);
     setDashboardBudgetAlerts(alerts);
+    setDashboardInsights(insights);
   }, []);
 
   useEffect(() => {
@@ -479,6 +573,55 @@ function App() {
       refreshReport().catch((e) => setStatus(String(e)));
     }
   }, [activeTab, refreshDashboard, refreshReport]);
+
+  // Launch-time bill-due check — not a background reminder (this only runs
+  // when the app is actually open), and deliberately no backend command:
+  // it filters `recurring` data the app already loaded. Deduped per
+  // install via localStorage (same pattern as theme/nav-order/welcome-seen)
+  // so a bill isn't re-notified every single launch on the same day.
+  useEffect(() => {
+    if (recurring.length === 0) return;
+    const NOTIFIED_KEY = "pennyworth-notified-bills";
+    const DUE_SOON_DAYS = 3;
+
+    (async () => {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const today = new Date(todayIso);
+      const dueSoon = recurring.filter((r) => {
+        if (parseFloat(r.amount) >= 0) return false; // bills only, not income
+        const daysUntil = (new Date(r.next_date).getTime() - today.getTime()) / (1000 * 60 * 60 * 24);
+        return daysUntil >= 0 && daysUntil <= DUE_SOON_DAYS;
+      });
+      if (dueSoon.length === 0) return;
+
+      let notified: Record<string, string> = {};
+      try {
+        notified = JSON.parse(localStorage.getItem(NOTIFIED_KEY) ?? "{}");
+      } catch {
+        notified = {};
+      }
+      const toNotify = dueSoon.filter((r) => notified[String(r.id)] !== todayIso);
+      if (toNotify.length === 0) return;
+
+      let granted = await isPermissionGranted();
+      if (!granted) {
+        granted = (await requestPermission()) === "granted";
+      }
+      if (!granted) return;
+
+      for (const r of toNotify) {
+        sendNotification({ title: "Upcoming bill", body: `${r.merchant} — ${formatAmount(r.amount)} due ${r.next_date}` });
+        notified[String(r.id)] = todayIso;
+      }
+      try {
+        localStorage.setItem(NOTIFIED_KEY, JSON.stringify(notified));
+      } catch {
+        // localStorage can throw (private window, blocked site data) — a
+        // missed dedup write just means this bill might notify again next
+        // launch, not a functional failure worth surfacing to the user.
+      }
+    })();
+  }, [recurring]);
 
   const now = new Date();
   const [budgetYear, setBudgetYear] = useState(now.getFullYear());
@@ -503,8 +646,18 @@ function App() {
       });
     refreshBuckets().catch((e) => setStatus(String(e)));
     refreshRecurring().catch((e) => setStatus(String(e)));
+    refreshRecurringCandidates().catch((e) => setStatus(String(e)));
     refreshHoldings().catch((e) => setStatus(String(e)));
-  }, [checkMonthlyRollover, refresh, refreshBuckets, refreshRecurring, refreshHoldings]);
+    refreshAssets().catch((e) => setStatus(String(e)));
+  }, [
+    checkMonthlyRollover,
+    refresh,
+    refreshBuckets,
+    refreshRecurring,
+    refreshRecurringCandidates,
+    refreshHoldings,
+    refreshAssets,
+  ]);
 
   useEffect(() => {
     // the report aggregates ledger/bucket/budget data, so refetch it fresh
@@ -676,6 +829,41 @@ function App() {
     }
   }
 
+  async function handleSetAccountInterestRate(accountId: number, rate: string | null) {
+    try {
+      await invoke("set_account_interest_rate", { id: accountId, rate });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSetAccountExcludedFromDebtPayoff(accountId: number, excluded: boolean) {
+    try {
+      await invoke("set_account_excluded_from_debt_payoff", { id: accountId, excluded });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleCalculateDebtPayoff(
+    strategy: string,
+    extraPayment: string,
+    minimums: { accountId: number; minimumPayment: string }[],
+  ): Promise<DebtPayoffPlan | null> {
+    try {
+      return await invoke<DebtPayoffPlan>("debt_payoff_projection", {
+        strategy,
+        extraPayment,
+        minimums: minimums.map((m) => ({ account_id: m.accountId, minimum_payment: m.minimumPayment })),
+      });
+    } catch (e) {
+      setStatus(String(e));
+      return null;
+    }
+  }
+
   async function handleCreateBucket(
     name: string,
     targetAmount: string | null,
@@ -724,10 +912,57 @@ function App() {
     }
   }
 
+  async function handleUpdateRecurring(
+    id: number,
+    merchant: string,
+    category: string | null,
+    amount: string,
+    cadence: string,
+    anchorDate: string,
+    accountId: number | null,
+  ) {
+    try {
+      await invoke("update_recurring", { id, merchant, category, amount, cadence, anchorDate, accountId });
+      await refreshRecurring();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
   async function handleDeleteRecurring(id: number) {
     try {
       await invoke("delete_recurring", { id });
       await refreshRecurring();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleAddRecurringCandidate(candidate: RecurringCandidate) {
+    try {
+      await invoke("create_recurring", {
+        merchant: candidate.merchant,
+        category: candidate.category,
+        amount: candidate.amount,
+        cadence: candidate.cadence,
+        anchorDate: candidate.anchor_date,
+        accountId: null,
+      });
+      await refreshRecurring();
+      await refreshRecurringCandidates();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleDismissRecurringCandidate(candidate: RecurringCandidate) {
+    try {
+      await invoke("dismiss_recurring_candidate", {
+        merchant: candidate.merchant,
+        amount: candidate.amount,
+        cadence: candidate.cadence,
+      });
+      await refreshRecurringCandidates();
     } catch (e) {
       setStatus(String(e));
     }
@@ -763,6 +998,33 @@ function App() {
     try {
       await invoke("delete_holding", { id });
       await refreshHoldings();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleCreateAsset(name: string, assetType: string, value: string, valuedOn: string, notes: string | null) {
+    try {
+      await invoke("create_asset", { name, assetType, value, valuedOn, notes });
+      await refreshAssets();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleUpdateAssetValue(id: number, value: string, valuedOn: string) {
+    try {
+      await invoke("update_asset_value", { id, value, valuedOn });
+      await refreshAssets();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleDeleteAsset(id: number) {
+    try {
+      await invoke("delete_asset", { id });
+      await refreshAssets();
     } catch (e) {
       setStatus(String(e));
     }
@@ -813,7 +1075,7 @@ function App() {
 
     const path = await open({
       multiple: false,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
+      filters: [{ name: "Transactions", extensions: ["csv", "ofx", "qfx", "qif"] }],
     });
     if (!path || Array.isArray(path)) return;
 
@@ -1409,7 +1671,7 @@ function App() {
                 <option value="__new__">+ New account…</option>
               </select>
               <button onClick={handleImport} disabled={busy || pendingImport !== null}>
-                {busy ? "Importing…" : "Import CSV…"}
+                {busy ? "Importing…" : "Import transactions…"}
               </button>
               <button
                 className="modal-secondary"
@@ -1446,6 +1708,8 @@ function App() {
           recurring={recurring}
           transactions={transactions}
           budgetAlerts={dashboardBudgetAlerts}
+          insights={dashboardInsights}
+          assetsTotal={assets.reduce((s, a) => s + parseFloat(a.value), 0)}
         />
       )}
 
@@ -2014,9 +2278,13 @@ function App() {
       {activeTab === "recurring" && (
         <RecurringView
           recurring={recurring}
+          candidates={recurringCandidates}
           accounts={accounts}
           onCreate={handleCreateRecurring}
+          onUpdate={handleUpdateRecurring}
           onDelete={handleDeleteRecurring}
+          onAddCandidate={handleAddRecurringCandidate}
+          onDismissCandidate={handleDismissRecurringCandidate}
         />
       )}
 
@@ -2045,6 +2313,13 @@ function App() {
           topCategoriesMonth={topCategoriesMonth}
           onSetTopCategoriesMonth={(year, month) => setTopCategoriesMonth({ year, month })}
           previousMonthCategorySpending={previousMonthCategorySpending}
+          forecastData={forecastData}
+          forecastDays={forecastDays}
+          onSetForecastDays={setForecastDays}
+          accounts={accounts}
+          onSetAccountInterestRate={handleSetAccountInterestRate}
+          onCalculateDebtPayoff={handleCalculateDebtPayoff}
+          onSetAccountExcludedFromDebtPayoff={handleSetAccountExcludedFromDebtPayoff}
         />
       )}
 
@@ -2227,6 +2502,7 @@ function App() {
           accounts={accounts}
           buckets={buckets}
           transactions={transactions}
+          assets={assets}
           onSetStartingBalance={handleSetStartingBalance}
           onUpdateAccountType={handleUpdateAccountType}
           onDeleteAccount={handleDeleteAccount}
@@ -2236,6 +2512,19 @@ function App() {
           onPrint={() => window.print()}
           onDownloadSetupTemplate={handleDownloadSetupTemplate}
           onImportSetupData={handleImportSetupData}
+          onCreateAsset={handleCreateAsset}
+          onUpdateAssetValue={handleUpdateAssetValue}
+          onDeleteAsset={handleDeleteAsset}
+        />
+      )}
+
+      {activeTab === "settings" && (
+        <SettingsView
+          dataFileLocation={dataFileLocation}
+          onRelocateDataFile={handleRelocateDataFile}
+          backups={backups}
+          onCreateBackupNow={handleCreateBackupNow}
+          onRestoreBackup={handleRestoreBackup}
         />
       )}
 
@@ -2290,4 +2579,28 @@ function App() {
   );
 }
 
-export default App;
+/** Forces a full re-fetch of every piece of app state after the data file
+ * underneath it changes (relocate/restore) — remounting under a fresh `key`
+ * re-runs every one of `App`'s mount-time effects from scratch, the same as
+ * a real app restart would, without ever closing or reopening the native
+ * window. A real restart (via `tauri-plugin-process`'s `relaunch()`) was
+ * tried first and dropped: on Windows it occasionally raced the outgoing
+ * WebView2 instance's teardown against the new one's startup, leaving the
+ * relaunched window stuck on a native "can't reach this page" error. */
+function PennyWorthApp() {
+  const [reloadKey, setReloadKey] = useState(0);
+  const [initialStatus, setInitialStatus] = useState("");
+
+  return (
+    <App
+      key={reloadKey}
+      initialStatus={initialStatus}
+      onDataFileChanged={(message) => {
+        setInitialStatus(message);
+        setReloadKey((k) => k + 1);
+      }}
+    />
+  );
+}
+
+export default PennyWorthApp;

@@ -1,12 +1,12 @@
 use budget_core::categorizer;
 use budget_core::classifier::Classifier;
-use budget_core::csv_loader;
+use budget_core::importer;
 use budget_core::learner;
 use budget_core::models::AccountType;
 use budget_core::rules::RuleSet;
 use budget_core::store::{CategorySource, Store};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Mutex;
 
@@ -21,6 +21,114 @@ use std::sync::Mutex;
 /// non-ASCII character (an em dash, a curly quote, an accented name) comes
 /// back as mojibake. `setup_import::load_setup_csv` strips a leading BOM
 /// back out when reading a file this produced, so the round trip is safe.
+/// Returns the currently-resolved data file path, for display on the
+/// Reports tab's Settings section.
+/// The data file path this session is actually using right now — may
+/// differ from what `resolve_db_path` computed at launch, since
+/// `relocate_data_file`/`restore_backup` update it in place rather than
+/// requiring a restart. A poisoned lock (only possible if an earlier panic
+/// happened mid-update) still yields a usable path rather than taking down
+/// every command that reads it.
+fn current_db_path(paths: &crate::config::AppPaths) -> std::path::PathBuf {
+    paths.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+#[tauri::command]
+pub fn get_data_file_location(paths: tauri::State<crate::config::AppPaths>) -> String {
+    current_db_path(&paths).to_string_lossy().to_string()
+}
+
+/// Copies the live database to `new_dir/pennyworth.db` (via `Store::backup_to`,
+/// safe against a live connection), points `config.json` at it, then swaps
+/// this session's live connection over to the new file in place. The old
+/// file is deliberately left behind, untouched.
+///
+/// This used to ask for (and, briefly, automatically trigger) a full app
+/// restart instead. Automatic restart via `tauri-plugin-process`'s
+/// `relaunch()` turned out to be unreliable on Windows in real testing — a
+/// second WebView2 instance racing the first one's teardown occasionally
+/// left the relaunched window stuck on a native "can't reach this page"
+/// error (a `Chrome_WidgetWin_0` window-class unregister failure). Hot-
+/// swapping the connection instead sidesteps that whole class of bug by
+/// never opening a second window at all.
+#[tauri::command]
+pub fn relocate_data_file(
+    new_dir: String,
+    paths: tauri::State<crate::config::AppPaths>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<String, String> {
+    let new_dir = std::path::PathBuf::from(new_dir);
+    std::fs::create_dir_all(&new_dir).map_err(|e| e.to_string())?;
+    let new_db_path = new_dir.join("pennyworth.db");
+    if new_db_path.exists() {
+        return Err(format!(
+            "{} already has a pennyworth.db — pick an empty folder.",
+            new_dir.display()
+        ));
+    }
+
+    let mut state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    state.store.backup_to(&new_db_path).map_err(|e| e.to_string())?;
+    crate::config::write_db_location_config(&paths.config_path, &new_db_path).map_err(|e| e.to_string())?;
+    *state = AppState::open(&new_db_path)?;
+    *paths.db_path.lock().map_err(|_| "db path poisoned".to_string())? = new_db_path.clone();
+
+    Ok(new_db_path.to_string_lossy().to_string())
+}
+
+#[derive(Serialize)]
+pub struct BackupDto {
+    pub filename: String,
+    pub created_at: String,
+    pub size_bytes: u64,
+}
+
+#[tauri::command]
+pub fn list_backups(paths: tauri::State<crate::config::AppPaths>) -> Result<Vec<BackupDto>, String> {
+    let backups_dir = crate::backups::backups_dir_for(&current_db_path(&paths));
+    Ok(crate::backups::list_backups(&backups_dir)?
+        .into_iter()
+        .map(|b| BackupDto {
+            filename: b.filename,
+            created_at: b.created_at,
+            size_bytes: b.size_bytes,
+        })
+        .collect())
+}
+
+/// Manual "Back up now" — always creates one, bypassing the 24h automatic
+/// throttle (`backups::create_backup_if_due`, called only at launch).
+#[tauri::command]
+pub fn create_backup_now(
+    paths: tauri::State<crate::config::AppPaths>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<String, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let backups_dir = crate::backups::backups_dir_for(&current_db_path(&paths));
+    crate::backups::create_backup(&state.store, &backups_dir, chrono::Local::now().naive_local())
+}
+
+/// Restores `filename` into a brand-new file (see `backups::restore_backup`
+/// for why it's never written into the already-open live path), points
+/// `config.json` at it, and swaps this session's live connection over to it
+/// — same in-place hot-swap as `relocate_data_file`, and for the same
+/// reason (see its doc comment).
+#[tauri::command]
+pub fn restore_backup(
+    filename: String,
+    paths: tauri::State<crate::config::AppPaths>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let live_db_path = current_db_path(&paths);
+    let backups_dir = crate::backups::backups_dir_for(&live_db_path);
+    let restored_path = crate::backups::restore_backup(&state.store, &backups_dir, &filename, &live_db_path)?;
+    crate::config::write_db_location_config(&paths.config_path, &restored_path).map_err(|e| e.to_string())?;
+    *state = AppState::open(&restored_path)?;
+    *paths.db_path.lock().map_err(|_| "db path poisoned".to_string())? = restored_path;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn write_text_file(path: String, content: String) -> Result<(), String> {
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
@@ -98,6 +206,8 @@ pub struct AccountDto {
     pub current_balance: String,
     pub institution: Option<String>,
     pub mask: Option<String>,
+    pub interest_rate: Option<String>,
+    pub excluded_from_debt_payoff: bool,
 }
 
 #[derive(Serialize)]
@@ -180,6 +290,16 @@ pub struct RecurringDto {
 }
 
 #[derive(Serialize)]
+pub struct RecurringCandidateDto {
+    pub merchant: String,
+    pub category: Option<String>,
+    pub amount: String,
+    pub cadence: String,
+    pub anchor_date: String,
+    pub occurrence_count: usize,
+}
+
+#[derive(Serialize)]
 pub struct Stats {
     pub total: usize,
     pub auto_categorized: usize,
@@ -247,7 +367,7 @@ pub fn preview_import(
 ) -> Result<ImportPreview, String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
 
-    let loaded = csv_loader::load_csv(&path, invert_amounts).map_err(|e| e.to_string())?;
+    let loaded = importer::load_transactions(&path, invert_amounts).map_err(|e| e.to_string())?;
     let row_errors = loaded.errors.len();
     let flags = state
         .store
@@ -288,7 +408,7 @@ pub fn commit_import(
 ) -> Result<ImportSummary, String> {
     let mut state = state.lock().map_err(|_| "app state poisoned".to_string())?;
 
-    let loaded = csv_loader::load_csv(&path, invert_amounts).map_err(|e| e.to_string())?;
+    let loaded = importer::load_transactions(&path, invert_amounts).map_err(|e| e.to_string())?;
     let row_errors = loaded.errors.len();
 
     let included: std::collections::HashSet<usize> = included_indices.into_iter().collect();
@@ -549,8 +669,31 @@ pub fn list_accounts(state: tauri::State<AppStateHandle>) -> Result<Vec<AccountD
             current_balance: a.current_balance.to_string(),
             institution: a.institution,
             mask: a.mask,
+            interest_rate: a.interest_rate.map(|r| r.to_string()),
+            excluded_from_debt_payoff: a.excluded_from_debt_payoff,
         })
         .collect())
+}
+
+#[tauri::command]
+pub fn set_account_interest_rate(
+    id: i64,
+    rate: Option<String>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let rate = rate.map(|r| parse_amount(&r)).transpose()?;
+    state.store.set_account_interest_rate(id, rate).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_account_excluded_from_debt_payoff(
+    id: i64,
+    excluded: bool,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    state.store.set_account_excluded_from_debt_payoff(id, excluded).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1093,6 +1236,85 @@ pub fn budget_alerts_for_month(
 }
 
 #[derive(Serialize)]
+pub struct InsightDto {
+    pub severity: String,
+    pub kind: String,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn dashboard_insights(state: tauri::State<AppStateHandle>) -> Result<Vec<InsightDto>, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let today = chrono::Local::now().date_naive();
+    let insights = state.store.dashboard_insights(today).map_err(|e| e.to_string())?;
+    Ok(insights
+        .into_iter()
+        .map(|i| InsightDto {
+            severity: i.severity,
+            kind: i.kind,
+            message: i.message,
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+pub struct MinimumPaymentInput {
+    pub account_id: i64,
+    pub minimum_payment: String,
+}
+
+#[derive(Serialize)]
+pub struct DebtPayoffLineDto {
+    pub account_id: i64,
+    pub account_name: String,
+    pub starting_balance: String,
+    pub payoff_date: Option<String>,
+    pub total_interest_paid: String,
+}
+
+#[derive(Serialize)]
+pub struct DebtPayoffPlanDto {
+    pub per_account: Vec<DebtPayoffLineDto>,
+    pub total_months: Option<u32>,
+    pub total_interest_paid: String,
+}
+
+#[tauri::command]
+pub fn debt_payoff_projection(
+    strategy: String,
+    extra_payment: String,
+    minimums: Vec<MinimumPaymentInput>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<DebtPayoffPlanDto, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let extra_payment = parse_amount(&extra_payment)?;
+    let mut minimum_payments = Vec::with_capacity(minimums.len());
+    for m in minimums {
+        minimum_payments.push((m.account_id, parse_amount(&m.minimum_payment)?));
+    }
+    let today = chrono::Local::now().date_naive();
+    let plan = state
+        .store
+        .debt_payoff_projection(&strategy, extra_payment, &minimum_payments, today)
+        .map_err(|e| e.to_string())?;
+    Ok(DebtPayoffPlanDto {
+        per_account: plan
+            .per_account
+            .into_iter()
+            .map(|l| DebtPayoffLineDto {
+                account_id: l.account_id,
+                account_name: l.account_name,
+                starting_balance: l.starting_balance.to_string(),
+                payoff_date: l.payoff_date.map(|d| d.to_string()),
+                total_interest_paid: l.total_interest_paid.to_string(),
+            })
+            .collect(),
+        total_months: plan.total_months,
+        total_interest_paid: plan.total_interest_paid.to_string(),
+    })
+}
+
+#[derive(Serialize)]
 pub struct AnomalyFlagDto {
     pub transaction_id: i64,
     pub kind: String,
@@ -1181,6 +1403,59 @@ pub fn delete_recurring(id: i64, state: tauri::State<AppStateHandle>) -> Result<
 }
 
 #[tauri::command]
+pub fn update_recurring(
+    id: i64,
+    merchant: String,
+    category: Option<String>,
+    amount: String,
+    cadence: String,
+    anchor_date: String,
+    account_id: Option<i64>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let amount = parse_amount(&amount)?;
+    let anchor_date = parse_date(&anchor_date)?;
+    state
+        .store
+        .update_recurring(id, &merchant, category.as_deref(), amount, &cadence, anchor_date, account_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_recurring_candidates(state: tauri::State<AppStateHandle>) -> Result<Vec<RecurringCandidateDto>, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let today = chrono::Local::now().date_naive();
+    let candidates = state.store.detect_recurring_candidates(today).map_err(|e| e.to_string())?;
+    Ok(candidates
+        .into_iter()
+        .map(|c| RecurringCandidateDto {
+            merchant: c.merchant,
+            category: c.category,
+            amount: c.amount.to_string(),
+            cadence: c.cadence,
+            anchor_date: c.anchor_date.to_string(),
+            occurrence_count: c.occurrence_count,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn dismiss_recurring_candidate(
+    merchant: String,
+    amount: String,
+    cadence: String,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let amount = parse_amount(&amount)?;
+    state
+        .store
+        .dismiss_recurring_candidate(&merchant, amount, &cadence)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn create_holding(
     account_id: i64,
     symbol: String,
@@ -1234,6 +1509,70 @@ pub fn update_holding_price(id: i64, price: String, state: tauri::State<AppState
 pub fn delete_holding(id: i64, state: tauri::State<AppStateHandle>) -> Result<(), String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
     state.store.delete_holding(id).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct AssetDto {
+    pub id: i64,
+    pub name: String,
+    pub asset_type: String,
+    pub value: String,
+    pub valued_on: String,
+    pub notes: Option<String>,
+}
+
+#[tauri::command]
+pub fn create_asset(
+    name: String,
+    asset_type: String,
+    value: String,
+    valued_on: String,
+    notes: Option<String>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<i64, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let value = parse_amount(&value)?;
+    let valued_on = parse_date(&valued_on)?;
+    state
+        .store
+        .create_asset(&name, &asset_type, value, valued_on, notes.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_assets(state: tauri::State<AppStateHandle>) -> Result<Vec<AssetDto>, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let assets = state.store.list_assets().map_err(|e| e.to_string())?;
+    Ok(assets
+        .into_iter()
+        .map(|a| AssetDto {
+            id: a.id,
+            name: a.name,
+            asset_type: a.asset_type,
+            value: a.value.to_string(),
+            valued_on: a.valued_on.to_string(),
+            notes: a.notes,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn update_asset_value(
+    id: i64,
+    value: String,
+    valued_on: String,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let value = parse_amount(&value)?;
+    let valued_on = parse_date(&valued_on)?;
+    state.store.update_asset_value(id, value, valued_on).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_asset(id: i64, state: tauri::State<AppStateHandle>) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    state.store.delete_asset(id).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -1551,6 +1890,26 @@ pub fn year_over_year_cash_flow(
     let prior_year =
         month_totals_for_range(&state.store, from_year - 1, from_month, to_year - 1, to_month, "%b")?;
     Ok(YoyCashFlowDto { current, prior_year })
+}
+
+#[derive(Serialize)]
+pub struct ForecastPointDto {
+    pub date: String,
+    pub balance: String,
+}
+
+#[tauri::command]
+pub fn cash_flow_forecast(days: i64, state: tauri::State<AppStateHandle>) -> Result<Vec<ForecastPointDto>, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let today = chrono::Local::now().date_naive();
+    let points = state.store.cash_flow_forecast(today, days).map_err(|e| e.to_string())?;
+    Ok(points
+        .into_iter()
+        .map(|p| ForecastPointDto {
+            date: p.date.to_string(),
+            balance: p.balance.to_string(),
+        })
+        .collect())
 }
 
 fn last_day_of_month(year: i32, month: u32) -> chrono::NaiveDate {
