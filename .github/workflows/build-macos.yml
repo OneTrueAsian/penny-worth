@@ -1,0 +1,60 @@
+name: Build macOS
+
+# Builds an unsigned, universal (Intel + Apple Silicon) macOS bundle and
+# attaches it to a GitHub Release — Tauri apps have to be built on macOS
+# itself (the WebView layer isn't cross-compilable from Windows), so this
+# runs on a GitHub-hosted macOS runner instead. Unsigned means Gatekeeper
+# will block a plain double-click; whoever installs it needs to right-click
+# the .app and choose "Open" the first time (or clear the quarantine flag
+# via `xattr -d com.apple.quarantine`), similar in spirit to the Windows
+# SmartScreen note already included with the Windows installers.
+#
+# Runs automatically on every `vX.Y.Z` tag push (matching how releases are
+# already tagged for Windows). Can also be run manually against an
+# already-published tag (e.g. to add a macOS build to an existing release)
+# via the "Run workflow" button, entering that tag in the `tag` input.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and attach the macOS bundle to (e.g. v1.1.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and attach macOS bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "Penny Worth ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseDraft: false
+          prerelease: false
+          args: --target universal-apple-darwin
