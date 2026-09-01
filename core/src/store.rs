@@ -4628,10 +4628,25 @@ mod tests {
 
     fn setup_data(text: &str) -> crate::setup_import::SetupImportResult {
         // The parser is private-by-file; round-tripping through a temp file
-        // exercises the same public load_setup_csv path the app uses.
+        // exercises the same public load_setup_csv path the app uses. Tests
+        // run in parallel within this one process, so the file path must be
+        // unique per *call*, not just per process — an earlier version
+        // derived it from the text's length plus byte sum, which gave two
+        // calls passing the identical `FULL_TEMPLATE` (used by more than
+        // one test below) the exact same path. That let their
+        // write/read/delete sequences race: one test's `setup_data` could
+        // observe another's in-flight write or have its file deleted out
+        // from under it, intermittently reading back the wrong (or
+        // momentarily missing) content — observed in practice as
+        // `apply_setup_import_creates_every_section_through_the_normal_paths`
+        // occasionally seeing zero accounts instead of two. A monotonic
+        // counter guarantees every call gets its own file regardless of
+        // content.
+        static CALL_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("pennyworth-setup-import-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("template-{:x}.csv", text.len() + text.as_bytes().iter().map(|b| *b as usize).sum::<usize>()));
+        let path = dir.join(format!("template-{n:x}.csv"));
         std::fs::write(&path, text).unwrap();
         let result = crate::setup_import::load_setup_csv(&path).unwrap();
         std::fs::remove_file(&path).ok();
