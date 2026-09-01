@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import type { Account, Recurring, RecurringCandidate } from "./types";
 import { formatAmount } from "./format";
 
-const CADENCE_OPTIONS = ["weekly", "biweekly", "monthly", "annual"];
+export const CADENCE_OPTIONS = ["weekly", "biweekly", "monthly", "annual"];
 
 function SuggestedRecurringSection({
   candidates,

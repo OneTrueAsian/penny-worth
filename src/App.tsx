@@ -18,11 +18,12 @@ import { BucketsView } from "./BucketsView";
 import { BudgetView } from "./BudgetView";
 import { ReportsView } from "./ReportsView";
 import { SettingsView } from "./SettingsView";
-import { RecurringView } from "./RecurringView";
+import { CADENCE_OPTIONS, RecurringView } from "./RecurringView";
 import { InvestmentsView } from "./InvestmentsView";
 import { CashFlowView } from "./CashFlowView";
 import { DashboardView } from "./DashboardView";
 import { HelpView } from "./HelpView";
+import { AccountFilterDropdown, type AccountFilterValue } from "./AccountFilterDropdown";
 import { NavIcon } from "./icons";
 import { formatAmount } from "./format";
 import type {
@@ -116,6 +117,25 @@ type Tab =
 
 type Theme = "light" | "dark" | "system";
 
+type LedgerSortColumn = "date" | "description" | "amount" | "account" | "category" | "source";
+
+function compareTransactionsBy(a: Transaction, b: Transaction, column: LedgerSortColumn): number {
+  switch (column) {
+    case "date":
+      return a.date.localeCompare(b.date);
+    case "description":
+      return a.description.localeCompare(b.description);
+    case "amount":
+      return parseFloat(a.amount) - parseFloat(b.amount);
+    case "account":
+      return a.account_name.localeCompare(b.account_name);
+    case "category":
+      return (a.category ?? "").localeCompare(b.category ?? "");
+    case "source":
+      return (a.category_source ?? "").localeCompare(b.category_source ?? "");
+  }
+}
+
 const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
   { id: "dashboard", label: "Dashboard", icon: "home" },
   { id: "ledger", label: "Ledger", icon: "swap" },
@@ -182,10 +202,12 @@ function App({
   const [anomalyFlags, setAnomalyFlags] = useState<AnomalyFlag[]>([]);
   const [searchText, setSearchText] = useState("");
   const [filterCategory, setFilterCategory] = useState("all");
-  const [filterAccountId, setFilterAccountId] = useState("all");
+  const [filterAccountIds, setFilterAccountIds] = useState<AccountFilterValue>("all");
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
   const [filterTag, setFilterTag] = useState("all");
+  const [sortColumn, setSortColumn] = useState<LedgerSortColumn>("date");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [allTags, setAllTags] = useState<string[]>([]);
   const [newTagText, setNewTagText] = useState<Record<number, string>>({});
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -332,15 +354,31 @@ function App({
       return false;
     }
     if (filterCategory !== "all" && t.category !== filterCategory) return false;
-    if (filterAccountId !== "all" && t.account_id !== Number(filterAccountId)) return false;
+    if (filterAccountIds !== "all" && !filterAccountIds.has(t.account_id)) return false;
     if (filterFrom && t.date < filterFrom) return false;
     if (filterTo && t.date > filterTo) return false;
     if (filterTag !== "all" && !t.tags.includes(filterTag)) return false;
     return true;
   });
 
-  const totalPages = Math.max(1, Math.ceil(filteredTransactions.length / pageSize));
-  const pagedTransactions = filteredTransactions.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  // The backend returns transactions in insertion order, not date order —
+  // sorting is client-side too, same reasoning as filtering above.
+  const sortedTransactions = [...filteredTransactions].sort((a, b) => {
+    const cmp = compareTransactionsBy(a, b, sortColumn);
+    return sortDirection === "asc" ? cmp : -cmp;
+  });
+
+  function toggleSort(column: LedgerSortColumn) {
+    if (sortColumn === column) {
+      setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortColumn(column);
+      setSortDirection("asc");
+    }
+  }
+
+  const totalPages = Math.max(1, Math.ceil(sortedTransactions.length / pageSize));
+  const pagedTransactions = sortedTransactions.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   // a filter/page-size change can leave `currentPage` pointing past the end
   // (or the ledger can shrink out from under it) — snap back rather than
@@ -351,7 +389,7 @@ function App({
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchText, filterCategory, filterAccountId, filterFrom, filterTo, filterTag, pageSize]);
+  }, [searchText, filterCategory, filterAccountIds, filterFrom, filterTo, filterTag, pageSize]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1379,7 +1417,7 @@ function App({
     if (!path) return;
     const csv = toCsv(
       ["Date", "Description", "Amount", "Account", "Category", "Tags"],
-      filteredTransactions.map((t) => [
+      sortedTransactions.map((t) => [
         t.date,
         t.description,
         t.amount,
@@ -1390,7 +1428,7 @@ function App({
     );
     try {
       await invoke("write_text_file", { path, content: csv });
-      setStatus(`Exported ${filteredTransactions.length} transaction(s) to ${path}.`);
+      setStatus(`Exported ${sortedTransactions.length} transaction(s) to ${path}.`);
     } catch (e) {
       setStatus(String(e));
     }
@@ -1580,6 +1618,18 @@ function App({
       await invoke("bulk_delete_transactions", { ids });
       setSelectedIds(new Set());
       await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleAddSelectedToRecurring(cadence: string) {
+    const ids = Array.from(selectedIds);
+    try {
+      const created = await invoke<number>("bulk_create_recurring_from_transactions", { ids, cadence });
+      setSelectedIds(new Set());
+      await refreshRecurring();
+      setStatus(`Added ${created} transaction(s) to Recurring — adjust the cadence per item there if needed.`);
     } catch (e) {
       setStatus(String(e));
     }
@@ -1879,14 +1929,7 @@ function App({
               </option>
             ))}
           </select>
-          <select value={filterAccountId} onChange={(e) => setFilterAccountId(e.target.value)}>
-            <option value="all">All accounts</option>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+          <AccountFilterDropdown accounts={accounts} value={filterAccountIds} onChange={setFilterAccountIds} />
           <input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} title="From date" />
           <input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} title="To date" />
           <select value={filterTag} onChange={(e) => setFilterTag(e.target.value)}>
@@ -1918,6 +1961,16 @@ function App({
               </option>
             ))}
             <option value="__new__">+ New category…</option>
+          </select>
+          <select value="" onChange={(e) => handleAddSelectedToRecurring(e.target.value)}>
+            <option value="" disabled>
+              Add to Recurring…
+            </option>
+            {CADENCE_OPTIONS.map((c) => (
+              <option key={c} value={c}>
+                {c[0].toUpperCase() + c.slice(1)}
+              </option>
+            ))}
           </select>
           {confirmingBulkDelete ? (
             <span className="row-delete-confirm">
@@ -1951,12 +2004,24 @@ function App({
                 aria-label="Select all on this page"
               />
             </th>
-            <th>Date</th>
-            <th>Description</th>
-            <th className="amount-col">Amount</th>
-            <th>Account</th>
-            <th>Category</th>
-            <th>Source</th>
+            <th className="sortable-col" onClick={() => toggleSort("date")}>
+              Date{sortColumn === "date" && (sortDirection === "asc" ? " ▲" : " ▼")}
+            </th>
+            <th className="sortable-col" onClick={() => toggleSort("description")}>
+              Description{sortColumn === "description" && (sortDirection === "asc" ? " ▲" : " ▼")}
+            </th>
+            <th className="amount-col sortable-col" onClick={() => toggleSort("amount")}>
+              Amount{sortColumn === "amount" && (sortDirection === "asc" ? " ▲" : " ▼")}
+            </th>
+            <th className="sortable-col" onClick={() => toggleSort("account")}>
+              Account{sortColumn === "account" && (sortDirection === "asc" ? " ▲" : " ▼")}
+            </th>
+            <th className="sortable-col" onClick={() => toggleSort("category")}>
+              Category{sortColumn === "category" && (sortDirection === "asc" ? " ▲" : " ▼")}
+            </th>
+            <th className="sortable-col" onClick={() => toggleSort("source")}>
+              Source{sortColumn === "source" && (sortDirection === "asc" ? " ▲" : " ▼")}
+            </th>
             <th>Debt</th>
             <th className="actions-col"></th>
           </tr>

@@ -901,6 +901,46 @@ pub fn bulk_delete_transactions(ids: Vec<i64>, state: tauri::State<AppStateHandl
     Ok(())
 }
 
+/// Seeds a recurring item from each selected transaction — merchant,
+/// category, amount, and account carried over as-is from the transaction
+/// itself, `cadence` applied to every one (the Ledger's bulk-actions bar
+/// offers a single cadence picker for the whole selection, same as its
+/// "Set category to…" applies one category to every selected row). The
+/// transaction's own date becomes the recurring item's anchor date —
+/// `next_occurrence` walks forward from it to compute the actual next-due
+/// date regardless of how far in the past it is. An id that no longer
+/// matches any transaction is skipped rather than failing the whole batch.
+/// Returns how many were created, for the confirmation message.
+#[tauri::command]
+pub fn bulk_create_recurring_from_transactions(
+    ids: Vec<i64>,
+    cadence: String,
+    state: tauri::State<AppStateHandle>,
+) -> Result<usize, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let transactions = state.store.all_transactions().map_err(|e| e.to_string())?;
+
+    let mut created = 0;
+    for id in ids {
+        let Some(t) = transactions.iter().find(|t| t.id == id) else {
+            continue;
+        };
+        state
+            .store
+            .create_recurring(
+                &t.transaction.description,
+                t.transaction.category.as_deref(),
+                t.transaction.amount,
+                &cadence,
+                t.transaction.date,
+                Some(t.account_id),
+            )
+            .map_err(|e| e.to_string())?;
+        created += 1;
+    }
+    Ok(created)
+}
+
 /// Re-reads persisted rules into `state.rules` — needed after any command
 /// that edits the `rules` table directly in the store (rename/delete
 /// category), so the in-memory rule set categorization actually uses stays

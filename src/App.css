@@ -915,6 +915,90 @@ button:disabled {
   min-width: 160px;
 }
 
+.account-filter {
+  position: relative;
+}
+
+.account-filter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: inherit;
+}
+
+.account-filter-caret {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.account-filter-panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 220px;
+  max-height: 340px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+  padding: 10px;
+}
+
+.account-filter-panel-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.account-filter-panel-actions button {
+  padding: 0.3em 0.7em;
+  font-size: 0.8em;
+}
+
+.account-filter-group {
+  margin-bottom: 6px;
+}
+
+.account-filter-group-label {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 4px 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.account-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 2px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.account-filter-option:hover {
+  background: var(--surface-2);
+}
+
 .ledger-pagination {
   display: flex;
   align-items: center;
@@ -980,6 +1064,17 @@ button:disabled {
 
 .select-col {
   width: 1%;
+}
+
+.sortable-col {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.sortable-col:hover {
+  color: inherit;
+  background: var(--surface-2);
 }
 
 .ledger-row-selected td {

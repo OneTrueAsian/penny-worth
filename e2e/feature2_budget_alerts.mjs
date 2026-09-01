@@ -1,7 +1,13 @@
 // E2E smoke test for budget threshold alerts: seeds a category budgeted at
 // $400 with $450 already spent this month (over budget), launches the app,
 // and confirms both the Budget page's "Over" badge and the Dashboard's
-// alert banner render.
+// alert banner render — plus, opening the banner's breakdown, that the
+// over-budget category shows a *negative* remaining amount styled as
+// over-budget (same "budgeted minus actual" sign convention as the Budget
+// tab's own Remaining column). A prior version of the breakdown computed
+// "actual minus budgeted" instead — backwards, so a genuinely over-budget
+// category rendered as a normal-looking positive number while merely-
+// approaching categories rendered negative/alarming instead.
 //
 // Run with: node e2e/feature2_budget_alerts.mjs
 
@@ -31,6 +37,21 @@ try {
   const bannerText = await banner.getText();
   console.log("dashboard banner:", bannerText);
   if (!bannerText.includes("over budget")) throw new Error(`expected banner to mention "over budget", got "${bannerText}"`);
+
+  await banner.click();
+  const groceriesRow = await app.browser.$(
+    "//div[contains(@class,'stat-detail-panel')]//span[text()='Groceries']/following-sibling::span",
+  );
+  await groceriesRow.waitForExist({ timeout: 5000 });
+  const groceriesAmountText = await groceriesRow.getText();
+  console.log("Groceries remaining in the breakdown:", groceriesAmountText);
+  if (!groceriesAmountText.includes("-$50.00")) {
+    throw new Error(`expected Groceries to show -$50.00 remaining ($400 budgeted - $450 spent), got "${groceriesAmountText}"`);
+  }
+  const groceriesClass = await groceriesRow.getAttribute("class");
+  if (!groceriesClass.includes("report-over-budget")) {
+    throw new Error(`expected the over-budget category to carry the over-budget styling class, got "${groceriesClass}"`);
+  }
 
   const budgetNav = await app.browser.$("button*=Budget");
   await budgetNav.click();

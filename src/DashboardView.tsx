@@ -177,7 +177,7 @@ export function DashboardView({
       {showBudgetAlerts && (
         <StatDetailPanel
           title="this month's budget alerts"
-          rows={budgetAlerts.map((a) => ({ name: a.category, amount: parseFloat(a.actual) - parseFloat(a.budgeted) }))}
+          rows={budgetAlerts.map((a) => ({ name: a.category, amount: parseFloat(a.budgeted) - parseFloat(a.actual) }))}
           emptyMessage="Nothing to flag."
           onClose={() => setShowBudgetAlerts(false)}
         />

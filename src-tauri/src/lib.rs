@@ -73,6 +73,7 @@ pub fn run() {
             commands::correct_category,
             commands::bulk_correct_category,
             commands::bulk_delete_transactions,
+            commands::bulk_create_recurring_from_transactions,
             commands::get_stats,
             commands::create_account,
             commands::list_accounts,
