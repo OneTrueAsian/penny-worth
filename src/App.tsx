@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import pennyWorthIcon from "./assets/penny-worth-icon-1024.png";
 import { toCsv } from "./csv";
 import { buildSetupTemplate } from "./setupTemplate";
+import { CHANGELOG } from "./changelog";
 import {
   CategoryTransactionsDialog,
   ConfirmInvertDialog,
@@ -13,6 +15,7 @@ import {
   NewAccountDialog,
   NewCategoryDialog,
   WelcomeDialog,
+  WhatsNewDialog,
 } from "./Modal";
 import { BucketsView } from "./BucketsView";
 import { BudgetView } from "./BudgetView";
@@ -299,6 +302,42 @@ function App({
   function handleExploreHelpFromWelcome() {
     dismissWelcome();
     setActiveTab("help");
+  }
+
+  // Shown once per version — both on a true first install and after every
+  // update, since `lastSeenVersion` starts out unset either way. Compared
+  // against the actual installed version (`getVersion()`, from
+  // tauri.conf.json), not the frontend bundle's own notion of its version,
+  // so it reflects what's really running. Nothing shows if this version
+  // has no CHANGELOG entry yet.
+  const LAST_SEEN_VERSION_KEY = "pennyworth-last-seen-version";
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [whatsNewVersion, setWhatsNewVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const current = await getVersion();
+      setAppVersion(current);
+      if (!CHANGELOG[current]) return;
+      let lastSeen: string | null = null;
+      try {
+        lastSeen = localStorage.getItem(LAST_SEEN_VERSION_KEY);
+      } catch {
+        // storage unavailable — show it every launch, harmless
+      }
+      if (lastSeen !== current) setWhatsNewVersion(current);
+    })();
+  }, []);
+
+  function dismissWhatsNew() {
+    if (whatsNewVersion) {
+      try {
+        localStorage.setItem(LAST_SEEN_VERSION_KEY, whatsNewVersion);
+      } catch {
+        // per-viewer preference only — fine to skip if storage is unavailable
+      }
+    }
+    setWhatsNewVersion(null);
   }
 
   const [busy, setBusy] = useState(false);
@@ -1641,6 +1680,9 @@ function App({
       {showWelcome && (
         <WelcomeDialog onExploreHelp={handleExploreHelpFromWelcome} onGetStarted={dismissWelcome} />
       )}
+      {!showWelcome && whatsNewVersion && (
+        <WhatsNewDialog version={whatsNewVersion} notes={CHANGELOG[whatsNewVersion]} onClose={dismissWhatsNew} />
+      )}
       <aside className="sidebar">
         <div className="brand">
           <img className="brand-mark" src={pennyWorthIcon} alt="" />
@@ -1685,6 +1727,7 @@ function App({
         </nav>
         <div className="sidebar-spacer"></div>
         <div className="sidebar-foot">
+          {appVersion && <p className="sidebar-version">v{appVersion}</p>}
           <div className="theme-toggle" role="group" aria-label="Theme">
             {(["light", "dark", "system"] as Theme[]).map((t) => (
               <button

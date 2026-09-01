@@ -99,6 +99,20 @@ export async function launchApp({ dbDir } = {}) {
     if (await getStarted.isExisting()) {
       await getStarted.click();
     }
+    // Immediately after Welcome, a fresh launch also always hits the
+    // "What's new" dialog — a fresh profile means no version has ever been
+    // "seen" yet, exactly like a true first install. Same blocking-overlay
+    // problem, same fix. Its version check is an async Tauri call (and
+    // only renders once Welcome is gone), so give it a moment rather than
+    // checking once immediately.
+    try {
+      const gotIt = await browser.$("button=Got it");
+      await gotIt.waitForExist({ timeout: 3000 });
+      await gotIt.click();
+    } catch {
+      // didn't show this run (e.g. no CHANGELOG entry for this version) —
+      // nothing to dismiss
+    }
   } catch (e) {
     driverProcess.kill();
     throw new Error(`Failed to start session (tauri-driver log below):\n${driverLog}\n\n${e.stack || e}`);

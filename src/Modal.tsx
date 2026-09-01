@@ -55,6 +55,31 @@ export function WelcomeDialog({
   );
 }
 
+export function WhatsNewDialog({
+  version,
+  notes,
+  onClose,
+}: {
+  version: string;
+  notes: string[];
+  onClose: () => void;
+}) {
+  return (
+    <ModalShell title={`What's new in ${version}`} onCancel={onClose}>
+      <ul className="modal-changelog-list">
+        {notes.map((note, i) => (
+          <li key={i}>{note}</li>
+        ))}
+      </ul>
+      <div className="modal-actions">
+        <button type="button" onClick={onClose}>
+          Got it
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 const ACCOUNT_TYPE_OPTIONS = ["checking", "savings", "credit", "loan", "investment", "other"];
 
 export function NewAccountDialog({
