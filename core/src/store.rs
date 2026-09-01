@@ -1615,6 +1615,17 @@ impl Store {
         Ok(SaveReport { inserted: txns.len() })
     }
 
+    /// One manually-entered transaction (the Ledger's "Add transaction…"
+    /// form, as opposed to a file import) — reuses `save_transactions`'
+    /// own insert path outright, so fingerprinting and the account's
+    /// default-member assignment stay identical to an imported row, and
+    /// returns the new row's id, matching every other single-entity
+    /// creation method in this app (`create_holding`, `create_bucket`, ...).
+    pub fn create_transaction(&self, account_id: i64, tx: &Transaction) -> rusqlite::Result<i64> {
+        self.save_transactions(account_id, std::slice::from_ref(tx))?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
     pub fn all_transactions(&self) -> rusqlite::Result<Vec<StoredTransaction>> {
         let mut stmt = self.conn.prepare(
             "SELECT t.id, t.date, t.description, t.amount, t.category, t.category_source,
@@ -4598,6 +4609,31 @@ mod tests {
         store.save_transactions(checking, &[tx("2026-08-01", "Groceries", "-50.00")]).unwrap();
 
         assert_eq!(store.all_transactions().unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn create_transaction_returns_the_new_rows_id() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = test_account(&store);
+
+        let id = store.create_transaction(checking, &tx("2026-08-01", "Cash tip", "-20.00")).unwrap();
+
+        let all = store.all_transactions().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, id);
+        assert_eq!(all[0].transaction.description, "Cash tip");
+    }
+
+    #[test]
+    fn create_transaction_defaults_the_member_from_the_account_like_import_does() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+        store.set_account_member(checking, Some(member)).unwrap();
+
+        store.create_transaction(checking, &tx("2026-08-01", "Cash tip", "-20.00")).unwrap();
+
+        assert_eq!(store.all_transactions().unwrap()[0].member_id, Some(member));
     }
 
     #[test]

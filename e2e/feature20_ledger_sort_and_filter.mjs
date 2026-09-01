@@ -30,6 +30,8 @@ cur.execute(
     "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
     (credit_id, "2026-08-15", "Coffee Shop", "-5.00", None, f"{credit_id}|2026-08-15|coffee shop|-5.00"),
 )
+zebra_id = cur.lastrowid - 2  # the first-inserted row above (Zebra Store)
+cur.execute("INSERT INTO transaction_tags (transaction_id, tag) VALUES (?, ?)", (zebra_id, "urgent"))
 `);
 
 const app = await launchApp({ dbDir });
@@ -105,6 +107,37 @@ try {
   if (!toggleLabelText.includes("Checking")) {
     throw new Error(`expected the toggle to show the single remaining account's name, got:\n${toggleLabelText}`);
   }
+
+  // "More filters" popover: the date-range/tag filters that used to sit
+  // directly in the toolbar now collapse behind this toggle. Confirm it
+  // still narrows the Ledger the same way, just relocated.
+  const moreFiltersToggle = await app.browser.$("button*=More filters");
+  await moreFiltersToggle.waitForExist({ timeout: 5000 });
+  await moreFiltersToggle.click();
+
+  const tagSelect = await app.browser.$("//label[.//span[text()='Tag']]/select");
+  await tagSelect.waitForExist({ timeout: 5000 });
+  await tagSelect.selectByVisibleText("urgent");
+  await app.browser.waitUntil(async () => (await tagSelect.getValue()) === "urgent", {
+    timeout: 5000,
+    timeoutMsg: "expected the Tag select in More filters to hold 'urgent' after selecting it",
+  });
+
+  await app.browser.waitUntil(
+    async () => !(await ledgerPage.getText()).includes("Apple Store"),
+    { timeout: 10000, timeoutMsg: "expected Apple Store (untagged) to disappear once filtering by the 'urgent' tag" },
+  );
+  const tagFilteredText = await ledgerPage.getText();
+  console.log("ledger after filtering by 'urgent' tag via More filters:", tagFilteredText);
+  if (!tagFilteredText.includes("Zebra Store")) {
+    throw new Error(`expected Zebra Store (tagged 'urgent') to remain visible, got:\n${tagFilteredText}`);
+  }
+
+  const toggleLabelAfterTag = await moreFiltersToggle.getText();
+  if (!toggleLabelAfterTag.includes("1 filter active")) {
+    throw new Error(`expected the More filters toggle to reflect one active filter, got "${toggleLabelAfterTag}"`);
+  }
+  console.log("More filters popover correctly narrowed the Ledger by tag");
 
   console.log("FEATURE 20 E2E TEST PASSED");
 } finally {

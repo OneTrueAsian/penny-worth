@@ -51,6 +51,9 @@ export function DashboardView({
   budgetAlerts,
   insights,
   assetsTotal,
+  onOpenLedger,
+  onOpenRecurring,
+  onOpenBudget,
 }: {
   accounts: Account[];
   netWorthHistory: NetWorthPoint[];
@@ -66,6 +69,13 @@ export function DashboardView({
    * carries only a current value, no history — see `total_assets_value` in
    * the core crate for the full reasoning). */
   assetsTotal: number;
+  /** "Recent transactions"/"Upcoming bills" rows drill into the Ledger/
+   * Recurring tab — no filter passed along, matching every other tab
+   * switch in this app (simplest useful version, not trying to pre-filter
+   * the destination tab down to just that one row). */
+  onOpenLedger: () => void;
+  onOpenRecurring: () => void;
+  onOpenBudget: () => void;
 }) {
   const [expandedStat, setExpandedStat] = useState<StatKey | null>(null);
   const [showBudgetAlerts, setShowBudgetAlerts] = useState(false);
@@ -256,7 +266,13 @@ export function DashboardView({
             const pct = budgeted ? Math.min(100, (actual / budgeted) * 100) : 0;
             const over = group === "income" ? actual < budgeted : actual > budgeted;
             return (
-              <div key={group} style={{ marginBottom: 14 }}>
+              <div
+                key={group}
+                className="clickable-row"
+                style={{ marginBottom: 14, padding: 4, borderRadius: 6 }}
+                onClick={onOpenBudget}
+                title="Go to the Budget tab"
+              >
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: 6 }}>
                   <span style={{ fontWeight: 600 }}>{GROUP_LABELS[group]}</span>
                   <span className="account-col">
@@ -280,7 +296,13 @@ export function DashboardView({
           </div>
           {upcoming.length > 0 ? (
             upcoming.map((r) => (
-              <div className="account-name-detail" key={r.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", cursor: "default" }}>
+              <div
+                className="account-name-detail clickable-row"
+                key={r.id}
+                style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", cursor: "pointer" }}
+                onClick={onOpenRecurring}
+                title="Go to the Recurring tab"
+              >
                 <div>
                   <div className="account-name-cell">{r.merchant}</div>
                   <span className="account-col">{r.next_date}</span>
@@ -309,7 +331,7 @@ export function DashboardView({
           </thead>
           <tbody>
             {recent.map((t) => (
-              <tr key={t.id}>
+              <tr key={t.id} className="clickable-row" onClick={onOpenLedger} title="Go to the Ledger tab">
                 <td>{t.date}</td>
                 <td>{t.description}</td>
                 <td className="amount-col">{formatAmount(t.amount)}</td>

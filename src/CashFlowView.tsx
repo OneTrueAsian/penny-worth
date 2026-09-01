@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Account, CashFlow, CategoryAmount, DebtPayoffPlan, ForecastPoint, YoyCashFlow } from "./types";
 import { BarChart, DonutChart, LineChart, fmtMoneyShort } from "./charts";
 import { formatAmount } from "./format";
@@ -60,6 +61,14 @@ export function CashFlowView({
   ) => Promise<DebtPayoffPlan | null>;
   onSetAccountExcludedFromDebtPayoff: (accountId: number, excluded: boolean) => void;
 }) {
+  // Local to this view (like `expandedStat`/`showBudgetAlerts` on the
+  // Dashboard) rather than lifted to App.tsx — a per-view UI concern, not
+  // app-wide state. Splits what used to be 5 sections stacked vertically
+  // (the densest single tab in the app) into 3 sub-tabs using the exact
+  // same tab-btn/tab-btn-active pattern already on this page for the
+  // 3/6-month toggle below.
+  const [subTab, setSubTab] = useState<"overview" | "forecast" | "debt">("overview");
+
   if (!cashFlow) {
     return <p className="empty-state">Loading…</p>;
   }
@@ -139,193 +148,219 @@ export function CashFlowView({
   return (
     <div className="reports-view">
       <div className="tabs">
-        {[3, 6].map((m) => (
+        {(
+          [
+            ["overview", "Overview"],
+            ["forecast", "Forecast"],
+            ["debt", "Debt Payoff"],
+          ] as const
+        ).map(([key, label]) => (
           <button
-            key={m}
-            className={range === m ? "tab-btn tab-btn-active" : "tab-btn"}
-            onClick={() => onSetRange(m)}
+            key={key}
+            className={subTab === key ? "tab-btn tab-btn-active" : "tab-btn"}
+            onClick={() => setSubTab(key)}
           >
-            {m} months
+            {label}
           </button>
         ))}
-        <label className="compare-last-year-toggle">
-          <input type="checkbox" checked={compareLastYear} onChange={onToggleCompareLastYear} />
-          Compare to last year
-        </label>
       </div>
 
-      <div className="card">
-        <div className="card-head">
-          <span className="reports-section-title">
-            {compareLastYear ? "Net cash flow — this year vs. last year" : "Income vs. expenses"}
-          </span>
-        </div>
-        <BarChart
-          data={barData}
-          height={240}
-          onBarClick={(i) => {
-            const m = barMonths[i];
-            if (m) onMonthClick(m.year, m.month);
-          }}
-        />
-        <p className="chart-hint">Click a bar to see where that month's expenses went.</p>
-        {compareLastYear && yoyCashFlow ? (
-          <div className="chart-legend">
-            <div className="chart-legend-item">
-              <span className="chart-legend-swatch" style={{ background: "var(--positive)" }}></span>
-              This year
-            </div>
-            <div className="chart-legend-item">
-              <span className="chart-legend-swatch" style={{ background: "var(--accent)" }}></span>
-              Last year
-            </div>
-          </div>
-        ) : (
-          <div className="chart-legend">
-            <div className="chart-legend-item">
-              <span className="chart-legend-swatch" style={{ background: "var(--positive)" }}></span>
-              Income · {formatAmount(cashFlow.total_income)}
-            </div>
-            <div className="chart-legend-item">
-              <span className="chart-legend-swatch" style={{ background: "var(--negative)" }}></span>
-              Expenses · {formatAmount(cashFlow.total_expense)}
-            </div>
-            <div className="chart-legend-item" style={{ marginLeft: "auto", fontWeight: 700 }}>
-              Net {formatAmount(net.toFixed(2))} ({savingsRate.toFixed(0)}% savings rate)
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="card-head">
-          <span className="reports-section-title">Forecast</span>
-          <div className="tabs" style={{ marginBottom: 0 }}>
-            {FORECAST_DAY_OPTIONS.map((d) => (
+      {subTab === "overview" && (
+        <>
+          <div className="tabs">
+            {[3, 6].map((m) => (
               <button
-                key={d}
-                className={forecastDays === d ? "tab-btn tab-btn-active" : "tab-btn"}
-                onClick={() => onSetForecastDays(d)}
+                key={m}
+                className={range === m ? "tab-btn tab-btn-active" : "tab-btn"}
+                onClick={() => onSetRange(m)}
               >
-                {d} days
+                {m} months
               </button>
             ))}
+            <label className="compare-last-year-toggle">
+              <input type="checkbox" checked={compareLastYear} onChange={onToggleCompareLastYear} />
+              Compare to last year
+            </label>
           </div>
-        </div>
-        {forecastData ? (
-          <LineChart
-            // LineChart renders one axis label per point with no built-in
-            // thinning — fine for the ~6-month net-worth trend elsewhere,
-            // but 30-90 daily points would overlap into an unreadable mess.
-            // Only label roughly every 8th point; every point still
-            // contributes to the line/tooltip itself.
-            points={forecastData.map((p, i) => ({
-              label: i % Math.max(1, Math.ceil(forecastData.length / 8)) === 0 ? p.date.slice(5) : "",
-              value: parseFloat(p.balance),
-            }))}
-            height={200}
-          />
-        ) : (
-          <p className="empty-state">Loading…</p>
-        )}
-        <p className="chart-hint">
-          Projects your cash balance (checking/savings) forward as a smooth trend, based on your actual net cash flow
-          (income minus spending) over roughly the last 90 days — not specific upcoming bills.
-        </p>
-      </div>
 
-      <DebtPayoffPlannerSection
-        accounts={accounts}
-        onSetAccountInterestRate={onSetAccountInterestRate}
-        onCalculateDebtPayoff={onCalculateDebtPayoff}
-        onSetAccountExcludedFromDebtPayoff={onSetAccountExcludedFromDebtPayoff}
-      />
-
-      <div className="grid-2">
-        <div className="card cashflow-category-card">
-          <div className="card-head">
-            <span className="reports-section-title">Top categories</span>
-            <span className="account-col" title="Follows the month picked in Top merchants">
-              {selectedMonthLabel}
-            </span>
-          </div>
-          <div className="cashflow-category-body">
-            {!topCategoriesData ? (
-              <p className="empty-state">Loading…</p>
-            ) : donutData.length > 0 ? (
-              <div className="donut-with-legend">
-                <DonutChart data={donutData} size={132} />
-                <div>
-                  {donutData.map((d) => (
-                    <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
-                      <span className="chart-legend-swatch" style={{ background: d.color }}></span>
-                      {d.label}
-                      <span className="account-col" style={{ marginLeft: "auto" }}>
-                        {fmtMoneyShort(d.value)}
-                      </span>
-                      {d.trend && (
-                        <span
-                          className={
-                            d.trend.isNew
-                              ? "category-trend category-trend-new"
-                              : d.trend.pct > 0
-                                ? "category-trend category-trend-up"
-                                : d.trend.pct < 0
-                                  ? "category-trend category-trend-down"
-                                  : "category-trend"
-                          }
-                          title="Vs. the prior month"
-                        >
-                          {d.trend.isNew ? "New" : `${d.trend.pct > 0 ? "▲" : d.trend.pct < 0 ? "▼" : "–"} ${Math.abs(d.trend.pct).toFixed(0)}%`}
-                        </span>
-                      )}
-                    </div>
-                  ))}
+          <div className="card">
+            <div className="card-head">
+              <span className="reports-section-title">
+                {compareLastYear ? "Net cash flow — this year vs. last year" : "Income vs. expenses"}
+              </span>
+            </div>
+            <BarChart
+              data={barData}
+              height={240}
+              onBarClick={(i) => {
+                const m = barMonths[i];
+                if (m) onMonthClick(m.year, m.month);
+              }}
+            />
+            <p className="chart-hint">Click a bar to see where that month's expenses went.</p>
+            {compareLastYear && yoyCashFlow ? (
+              <div className="chart-legend">
+                <div className="chart-legend-item">
+                  <span className="chart-legend-swatch" style={{ background: "var(--positive)" }}></span>
+                  This year
+                </div>
+                <div className="chart-legend-item">
+                  <span className="chart-legend-swatch" style={{ background: "var(--accent)" }}></span>
+                  Last year
                 </div>
               </div>
             ) : (
-              <p className="empty-state">No spending yet.</p>
-            )}
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-head">
-            <span className="reports-section-title">Top merchants</span>
-            <select
-              className="month-select"
-              value={topCategoriesMonth.month}
-              onChange={(e) => onSetTopCategoriesMonth(topCategoriesMonth.year, Number(e.target.value))}
-              title="Also changes the Top categories chart"
-            >
-              {monthOptions.map((opt) => (
-                <option key={opt.month} value={opt.month}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          {!topCategoriesData ? (
-            <p className="empty-state">Loading…</p>
-          ) : topMerchants.length > 0 ? (
-            topMerchants.map((m) => (
-              <div key={m.description} style={{ marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: 5 }}>
-                  <span style={{ fontWeight: 600 }}>{m.description}</span>
-                  <span className="amount-col">{formatAmount(m.amount)}</span>
+              <div className="chart-legend">
+                <div className="chart-legend-item">
+                  <span className="chart-legend-swatch" style={{ background: "var(--positive)" }}></span>
+                  Income · {formatAmount(cashFlow.total_income)}
                 </div>
-                <div className="bucket-progress-track">
-                  <div
-                    className="bucket-progress-fill"
-                    style={{ width: `${(parseFloat(m.amount) / maxMerchant) * 100}%` }}
-                  />
+                <div className="chart-legend-item">
+                  <span className="chart-legend-swatch" style={{ background: "var(--negative)" }}></span>
+                  Expenses · {formatAmount(cashFlow.total_expense)}
+                </div>
+                <div className="chart-legend-item" style={{ marginLeft: "auto", fontWeight: 700 }}>
+                  Net {formatAmount(net.toFixed(2))} ({savingsRate.toFixed(0)}% savings rate)
                 </div>
               </div>
-            ))
+            )}
+          </div>
+
+          <div className="grid-2">
+            <div className="card cashflow-category-card">
+              <div className="card-head">
+                <span className="reports-section-title">Top categories</span>
+                <span className="account-col" title="Follows the month picked in Top merchants">
+                  {selectedMonthLabel}
+                </span>
+              </div>
+              <div className="cashflow-category-body">
+                {!topCategoriesData ? (
+                  <p className="empty-state">Loading…</p>
+                ) : donutData.length > 0 ? (
+                  <div className="donut-with-legend">
+                    <DonutChart data={donutData} size={132} />
+                    <div>
+                      {donutData.map((d) => (
+                        <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
+                          <span className="chart-legend-swatch" style={{ background: d.color }}></span>
+                          {d.label}
+                          <span className="account-col" style={{ marginLeft: "auto" }}>
+                            {fmtMoneyShort(d.value)}
+                          </span>
+                          {d.trend && (
+                            <span
+                              className={
+                                d.trend.isNew
+                                  ? "category-trend category-trend-new"
+                                  : d.trend.pct > 0
+                                    ? "category-trend category-trend-up"
+                                    : d.trend.pct < 0
+                                      ? "category-trend category-trend-down"
+                                      : "category-trend"
+                              }
+                              title="Vs. the prior month"
+                            >
+                              {d.trend.isNew ? "New" : `${d.trend.pct > 0 ? "▲" : d.trend.pct < 0 ? "▼" : "–"} ${Math.abs(d.trend.pct).toFixed(0)}%`}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="empty-state">No spending yet.</p>
+                )}
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-head">
+                <span className="reports-section-title">Top merchants</span>
+                <select
+                  className="month-select"
+                  value={topCategoriesMonth.month}
+                  onChange={(e) => onSetTopCategoriesMonth(topCategoriesMonth.year, Number(e.target.value))}
+                  title="Also changes the Top categories chart"
+                >
+                  {monthOptions.map((opt) => (
+                    <option key={opt.month} value={opt.month}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {!topCategoriesData ? (
+                <p className="empty-state">Loading…</p>
+              ) : topMerchants.length > 0 ? (
+                topMerchants.map((m) => (
+                  <div key={m.description} style={{ marginBottom: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: 5 }}>
+                      <span style={{ fontWeight: 600 }}>{m.description}</span>
+                      <span className="amount-col">{formatAmount(m.amount)}</span>
+                    </div>
+                    <div className="bucket-progress-track">
+                      <div
+                        className="bucket-progress-fill"
+                        style={{ width: `${(parseFloat(m.amount) / maxMerchant) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-state">No spending yet.</p>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {subTab === "forecast" && (
+        <div className="card">
+          <div className="card-head">
+            <span className="reports-section-title">Forecast</span>
+            <div className="tabs" style={{ marginBottom: 0 }}>
+              {FORECAST_DAY_OPTIONS.map((d) => (
+                <button
+                  key={d}
+                  className={forecastDays === d ? "tab-btn tab-btn-active" : "tab-btn"}
+                  onClick={() => onSetForecastDays(d)}
+                >
+                  {d} days
+                </button>
+              ))}
+            </div>
+          </div>
+          {forecastData ? (
+            <LineChart
+              // LineChart renders one axis label per point with no built-in
+              // thinning — fine for the ~6-month net-worth trend elsewhere,
+              // but 30-90 daily points would overlap into an unreadable mess.
+              // Only label roughly every 8th point; every point still
+              // contributes to the line/tooltip itself.
+              points={forecastData.map((p, i) => ({
+                label: i % Math.max(1, Math.ceil(forecastData.length / 8)) === 0 ? p.date.slice(5) : "",
+                value: parseFloat(p.balance),
+              }))}
+              height={200}
+            />
           ) : (
-            <p className="empty-state">No spending yet.</p>
+            <p className="empty-state">Loading…</p>
           )}
+          <p className="chart-hint">
+            Projects your cash balance (checking/savings) forward as a smooth trend, based on your actual net cash
+            flow (income minus spending) over roughly the last 90 days — not specific upcoming bills.
+          </p>
         </div>
-      </div>
+      )}
+
+      {subTab === "debt" && (
+        <DebtPayoffPlannerSection
+          accounts={accounts}
+          onSetAccountInterestRate={onSetAccountInterestRate}
+          onCalculateDebtPayoff={onCalculateDebtPayoff}
+          onSetAccountExcludedFromDebtPayoff={onSetAccountExcludedFromDebtPayoff}
+        />
+      )}
     </div>
   );
 }

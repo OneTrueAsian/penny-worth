@@ -22,4 +22,12 @@ export const CHANGELOG: Record<string, string[]> = {
     "Optional live stock prices for Investments — add a free Alpha Vantage API key in Settings to auto-fill a new holding's price by symbol and keep existing ones current automatically, with a usage tracker that warns you before you hit Alpha Vantage's daily request limit.",
     "The Help page now has a search box that filters the whole page at once as it keeps growing.",
   ],
+  "1.1.5": [
+    "\"Update now\" downloads the right installer for your system and opens it directly, instead of just linking to GitHub.",
+    "Add a transaction to the Ledger by hand — no file import required.",
+    "The Ledger's filters are decluttered — Search/Category/Account/Member stay visible, date range and tags now collapse into a \"More filters\" button.",
+    "The Dashboard's recent transactions, upcoming bills, and budget summary now click through to the relevant tab.",
+    "Cash Flow is now split into Overview / Forecast / Debt Payoff tabs instead of one long scrolling page.",
+    "Smaller polish: a \"Due soon\" badge on upcoming recurring bills, labeled fields on the Investments \"Add holding\" form, and a clearer note distinguishing family members from profiles.",
+  ],
 };

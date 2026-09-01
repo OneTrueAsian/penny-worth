@@ -156,40 +156,65 @@ function NewHoldingForm({
   }
 
   return (
-    <form className="bucket-new-form" onSubmit={handleSubmit}>
-      <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-        {investmentAccounts.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.name}
-          </option>
-        ))}
-      </select>
-      <input
-        value={symbol}
-        onChange={(e) => setSymbol(e.target.value)}
-        onBlur={handleSymbolBlur}
-        placeholder="Symbol (e.g. AAPL)"
-      />
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (optional)" />
-      <input value={shares} onChange={(e) => setShares(e.target.value)} placeholder="Shares" />
-      <input
-        value={price}
-        onChange={(e) => {
-          setPriceTouched(true);
-          setPrice(e.target.value);
-        }}
-        placeholder={fetchingPrice ? "Fetching live price…" : "Price"}
-      />
-      <input value={costBasis} onChange={(e) => setCostBasis(e.target.value)} placeholder="Cost basis ($)" />
-      <input
-        value={assetClass}
-        onChange={(e) => setAssetClass(e.target.value)}
-        placeholder='Asset class (e.g. "US Stocks")'
-      />
-      <button type="submit" disabled={!accountId || !symbol.trim() || !shares.trim() || !price.trim() || !costBasis.trim()}>
+    <form className="labeled-field-form" onSubmit={handleSubmit}>
+      <label className="labeled-field">
+        <span className="labeled-field-label">Account</span>
+        <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+          {investmentAccounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="labeled-field">
+        <span className="labeled-field-label">Symbol</span>
+        <input
+          value={symbol}
+          onChange={(e) => setSymbol(e.target.value)}
+          onBlur={handleSymbolBlur}
+          placeholder="e.g. AAPL"
+        />
+      </label>
+      <label className="labeled-field">
+        <span className="labeled-field-label">Name (optional)</span>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Apple Inc." />
+      </label>
+      <label className="labeled-field">
+        <span className="labeled-field-label">Shares</span>
+        <input value={shares} onChange={(e) => setShares(e.target.value)} placeholder="0" />
+      </label>
+      <label className="labeled-field">
+        <span className="labeled-field-label">Price</span>
+        <input
+          value={price}
+          onChange={(e) => {
+            setPriceTouched(true);
+            setPrice(e.target.value);
+          }}
+          placeholder={fetchingPrice ? "Fetching live price…" : "0.00"}
+        />
+      </label>
+      <label className="labeled-field">
+        <span className="labeled-field-label">Cost basis ($)</span>
+        <input value={costBasis} onChange={(e) => setCostBasis(e.target.value)} placeholder="0.00" />
+      </label>
+      <label className="labeled-field">
+        <span className="labeled-field-label">Asset class (optional)</span>
+        <input
+          value={assetClass}
+          onChange={(e) => setAssetClass(e.target.value)}
+          placeholder="e.g. US Stocks"
+        />
+      </label>
+      <button
+        type="submit"
+        style={{ alignSelf: "flex-end" }}
+        disabled={!accountId || !symbol.trim() || !shares.trim() || !price.trim() || !costBasis.trim()}
+      >
         Save
       </button>
-      <button type="button" className="modal-secondary" onClick={() => setOpen(false)}>
+      <button type="button" className="modal-secondary" style={{ alignSelf: "flex-end" }} onClick={() => setOpen(false)}>
         Cancel
       </button>
     </form>

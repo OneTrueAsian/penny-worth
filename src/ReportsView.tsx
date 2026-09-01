@@ -739,6 +739,7 @@ export function ReportsView({
   onUpdateAssetValue,
   onSetAssetMember,
   onDeleteAsset,
+  onOpenBudget,
 }: {
   report: Report | null;
   accounts: Account[];
@@ -767,6 +768,7 @@ export function ReportsView({
   onUpdateAssetValue: (id: number, value: string, valuedOn: string) => void;
   onSetAssetMember: (id: number, memberId: number | null) => void;
   onDeleteAsset: (id: number) => void;
+  onOpenBudget: () => void;
 }) {
   const [expandedStat, setExpandedStat] = useState<ReportStatKey | null>(null);
 
@@ -962,42 +964,9 @@ export function ReportsView({
         </div>
       )}
 
-      <h2 className="reports-section-title">{report.month_label}'s budget</h2>
-      <table className="ledger">
-        <thead>
-          <tr>
-            <th>Category</th>
-            <th className="amount-col">Budgeted</th>
-            <th className="amount-col">Actual</th>
-            <th className="amount-col">Remaining</th>
-          </tr>
-        </thead>
-        <tbody>
-          {report.budget_actuals.map((line) => {
-            const remaining =
-              line.budget_group === "income"
-                ? parseFloat(line.actual) - parseFloat(line.budgeted)
-                : parseFloat(line.budgeted) - parseFloat(line.actual);
-            return (
-              <tr key={line.category}>
-                <td>{line.category}</td>
-                <td className="amount-col">{formatAmount(line.budgeted)}</td>
-                <td className="amount-col">{formatAmount(line.actual)}</td>
-                <td className={remaining < 0 ? "amount-col report-over-budget" : "amount-col"}>
-                  {formatAmount(remaining.toFixed(2))}
-                </td>
-              </tr>
-            );
-          })}
-          {report.budget_actuals.length === 0 && (
-            <tr>
-              <td colSpan={4} className="empty-state">
-                No budget lines yet — add one in the Budget tab.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      <div className="card clickable-row" onClick={onOpenBudget} title="Go to the Budget tab">
+        <span className="category-link">This month's budget →</span>
+      </div>
     </div>
   );
 }

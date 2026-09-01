@@ -30,7 +30,13 @@ try {
   await pill.waitForExist({ timeout: 10000 });
   console.log("tag pill text:", await pill.getText());
 
-  // The ledger filter dropdown should now list "vacation".
+  // The tag filter now lives behind the "More filters" popover (see
+  // MoreFiltersPopover.tsx) rather than always being visible in the
+  // toolbar — open it before its <option> exists in the DOM.
+  const moreFiltersToggle = await app.browser.$("button*=More filters");
+  await moreFiltersToggle.waitForExist({ timeout: 5000 });
+  await moreFiltersToggle.click();
+
   const filterOption = await app.browser.$("option=vacation");
   await filterOption.waitForExist({ timeout: 5000 });
   console.log("filter option found");

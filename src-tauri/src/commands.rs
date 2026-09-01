@@ -578,6 +578,40 @@ pub fn commit_import(
     Ok(ImportSummary { inserted, row_errors })
 }
 
+/// Adds one transaction directly, without a file import — the Ledger's
+/// "Add transaction…" form. Uses `Store::create_transaction` (which reuses
+/// `save_transactions`' own insert path), so fingerprinting and the
+/// account's default-member assignment stay identical to an imported row.
+/// Leaving `category` empty runs it through the same
+/// `categorize_uncategorized` pass `commit_import` already uses above, so
+/// an un-categorized manual entry gets auto-categorized the same way an
+/// imported row would; passing one skips that guesswork entirely.
+#[tauri::command]
+pub fn create_manual_transaction(
+    account_id: i64,
+    date: String,
+    description: String,
+    amount: String,
+    category: Option<String>,
+    member_id: Option<i64>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<i64, String> {
+    let mut state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let date = parse_date(&date)?;
+    let amount = parse_amount(&amount)?;
+    let category = category.filter(|c| !c.trim().is_empty());
+    let has_category = category.is_some();
+    let tx = budget_core::models::Transaction { date, description: description.trim().to_string(), amount, category };
+    let id = state.store.create_transaction(account_id, &tx).map_err(|e| e.to_string())?;
+    if !has_category {
+        categorize_uncategorized(&mut state)?;
+    }
+    if let Some(member_id) = member_id {
+        state.store.set_transaction_member(id, Some(member_id)).map_err(|e| e.to_string())?;
+    }
+    Ok(id)
+}
+
 #[derive(Serialize)]
 pub struct SetupAccountRowDto {
     pub index: usize,

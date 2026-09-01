@@ -1237,6 +1237,19 @@ button:disabled {
   background: var(--surface-2);
 }
 
+/* Dashboard's "Recent transactions"/"Upcoming bills" rows drilling into
+   the Ledger/Recurring tab — the table row's own hover background already
+   comes from `.ledger tr:hover td` above since that table keeps its
+   "ledger" class too; this covers the plain-div "Upcoming bills" list,
+   which isn't a table, plus the cursor for both. */
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-row:hover {
+  background: var(--surface-2);
+}
+
 .ledger tr:last-child td {
   border-bottom: none;
 }

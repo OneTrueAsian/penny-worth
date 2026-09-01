@@ -78,6 +78,7 @@ pub fn run() {
             commands::commit_setup_import,
             commands::preview_import,
             commands::commit_import,
+            commands::create_manual_transaction,
             commands::list_transactions,
             commands::correct_category,
             commands::bulk_correct_category,

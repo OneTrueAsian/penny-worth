@@ -309,6 +309,21 @@ export function RecurringView({
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
 
+  // `recurring` already arrives sorted by next-due date — see
+  // `Store::list_recurring`'s own doc comment — so no client-side sort is
+  // needed here, just the urgency indicator below.
+
+  // Same 3-day "due soon" window the native bill notification already
+  // uses (App.tsx) — reused rather than inventing a second threshold.
+  // `next_date` is always today-or-later (see `next_occurrence`'s doc
+  // comment — a cadence auto-rolls a lapsed anchor forward), so there's no
+  // "overdue" state to detect here, only "coming up soon."
+  const todayIso = new Date().toISOString().slice(0, 10);
+  function isDueSoon(nextDate: string): boolean {
+    const daysUntil = (new Date(nextDate).getTime() - new Date(todayIso).getTime()) / (1000 * 60 * 60 * 24);
+    return daysUntil <= 3;
+  }
+
   const monthlyExpense = recurring
     .filter((r) => parseFloat(r.amount) < 0 && r.cadence === "monthly")
     .reduce((s, r) => s + Math.abs(parseFloat(r.amount)), 0);
@@ -372,7 +387,10 @@ export function RecurringView({
                 <td>
                   <span className="confidence-badge">{r.cadence}</span>
                 </td>
-                <td>{r.next_date}</td>
+                <td>
+                  {r.next_date}
+                  {isDueSoon(r.next_date) && <span className="budget-alert-badge budget-alert-warning">Due soon</span>}
+                </td>
                 <td className="amount-col">{formatAmount(r.amount)}</td>
                 <td className="actions-col">
                   {confirmingDeleteId === r.id ? (

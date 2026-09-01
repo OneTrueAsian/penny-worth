@@ -15,6 +15,7 @@ import {
   MonthExpenseDetailDialog,
   NewAccountDialog,
   NewCategoryDialog,
+  NewTransactionDialog,
   WelcomeDialog,
   WhatsNewDialog,
 } from "./Modal";
@@ -30,6 +31,7 @@ import { DashboardView } from "./DashboardView";
 import { HelpView } from "./HelpView";
 import { AccountFilterDropdown, type AccountFilterValue } from "./AccountFilterDropdown";
 import { MemberFilterDropdown, type MemberFilterValue } from "./MemberFilterDropdown";
+import { MoreFiltersPopover } from "./MoreFiltersPopover";
 import { UpdateBanner } from "./UpdateBanner";
 import { NavIcon } from "./icons";
 import { formatAmount } from "./format";
@@ -459,6 +461,7 @@ function App({
   const [accountOverrides, setAccountOverrides] = useState<Map<number, number>>(new Map());
   const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
   const [manageFamilyMembersOpen, setManageFamilyMembersOpen] = useState(false);
+  const [newTransactionOpen, setNewTransactionOpen] = useState(false);
   const [editingAmount, setEditingAmount] = useState<{ id: number; value: string } | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   const [applyingDebtId, setApplyingDebtId] = useState<number | null>(null);
@@ -1425,6 +1428,24 @@ function App({
     setManageFamilyMembersOpen(true);
   }
 
+  async function handleCreateManualTransaction(
+    accountId: number,
+    date: string,
+    description: string,
+    amount: string,
+    category: string | null,
+    memberId: number | null,
+  ) {
+    try {
+      await invoke("create_manual_transaction", { accountId, date, description, amount, category, memberId });
+      await refresh();
+      setNewTransactionOpen(false);
+      setStatus(`Added "${description}".`);
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
   async function handleCreateFamilyMember(name: string) {
     try {
       await invoke("create_family_member", { name });
@@ -1974,6 +1995,13 @@ function App({
               </button>
               <button
                 className="modal-secondary"
+                onClick={() => setNewTransactionOpen(true)}
+                disabled={busy || pendingImport !== null}
+              >
+                Add transaction…
+              </button>
+              <button
+                className="modal-secondary"
                 onClick={openManageCategories}
                 disabled={busy || pendingImport !== null}
               >
@@ -2017,6 +2045,9 @@ function App({
           budgetAlerts={dashboardBudgetAlerts}
           insights={dashboardInsights}
           assetsTotal={assets.reduce((s, a) => s + parseFloat(a.value), 0)}
+          onOpenLedger={() => setActiveTab("ledger")}
+          onOpenRecurring={() => setActiveTab("recurring")}
+          onOpenBudget={() => setActiveTab("budget")}
         />
       )}
 
@@ -2188,16 +2219,15 @@ function App({
           </select>
           <AccountFilterDropdown accounts={accounts} value={filterAccountIds} onChange={setFilterAccountIds} />
           <MemberFilterDropdown members={familyMembers} value={filterMemberIds} onChange={setFilterMemberIds} />
-          <input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} title="From date" />
-          <input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} title="To date" />
-          <select value={filterTag} onChange={(e) => setFilterTag(e.target.value)}>
-            <option value="all">All tags</option>
-            {allTags.map((tag) => (
-              <option key={tag} value={tag}>
-                {tag}
-              </option>
-            ))}
-          </select>
+          <MoreFiltersPopover
+            filterFrom={filterFrom}
+            onSetFrom={setFilterFrom}
+            filterTo={filterTo}
+            onSetTo={setFilterTo}
+            filterTag={filterTag}
+            allTags={allTags}
+            onSetTag={setFilterTag}
+          />
           <datalist id="known-tags">
             {allTags.map((tag) => (
               <option key={tag} value={tag} />
@@ -2872,6 +2902,7 @@ function App({
           onUpdateAssetValue={handleUpdateAssetValue}
           onSetAssetMember={handleSetAssetMember}
           onDeleteAsset={handleDeleteAsset}
+          onOpenBudget={() => setActiveTab("budget")}
         />
       )}
 
@@ -2946,6 +2977,16 @@ function App({
           onCreate={handleCreateFamilyMember}
           onRename={handleRenameFamilyMember}
           onDelete={handleDeleteFamilyMember}
+        />
+      )}
+      {newTransactionOpen && (
+        <NewTransactionDialog
+          accounts={accounts}
+          categories={categoryOptions}
+          familyMembers={familyMembers}
+          defaultAccountId={selectedAccountId}
+          onCancel={() => setNewTransactionOpen(false)}
+          onSubmit={handleCreateManualTransaction}
         />
       )}
         </div>

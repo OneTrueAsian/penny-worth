@@ -19,6 +19,12 @@ try {
   const cashFlowNav = await app.browser.$("button*=Cash Flow");
   await cashFlowNav.click();
 
+  // Forecast now lives behind its own sub-tab (Overview/Forecast/Debt
+  // Payoff), rather than always being visible on one long scroll.
+  const forecastSubTab = await app.browser.$("button=Forecast");
+  await forecastSubTab.waitForExist({ timeout: 10000 });
+  await forecastSubTab.click();
+
   const forecastCard = await app.browser.$(
     "//div[contains(@class,'card')][.//span[text()='Forecast']]",
   );
@@ -53,6 +59,30 @@ try {
     },
     { timeout: 10000, timeoutMsg: "expected the forecast chart to gain points after switching to 60 days" },
   );
+
+  // Sub-tabs actually gate content, not just decorate it: Overview
+  // shouldn't show the Forecast card, and Debt Payoff should show its own
+  // section instead.
+  const overviewSubTab = await app.browser.$("button=Overview");
+  await overviewSubTab.click();
+  await app.browser.waitUntil(async () => !(await forecastCard.isExisting()), {
+    timeout: 5000,
+    timeoutMsg: "expected the Forecast card to disappear when switching to the Overview sub-tab",
+  });
+  const barChartTitle = await app.browser.$("//span[contains(@class,'reports-section-title')][text()='Income vs. expenses']");
+  await barChartTitle.waitForExist({ timeout: 5000 });
+
+  // This fixture has no loan/credit accounts, so DebtPayoffPlannerSection
+  // correctly renders nothing at all on that sub-tab (pre-existing,
+  // unrelated behavior — see its own `if (debtAccounts.length === 0)
+  // return null`) — just confirm the Forecast card stays hidden here too,
+  // proving each sub-tab only shows its own content.
+  const debtSubTab = await app.browser.$("button=Debt Payoff");
+  await debtSubTab.click();
+  if (await forecastCard.isExisting()) {
+    throw new Error("expected the Forecast card to stay hidden on the Debt Payoff sub-tab");
+  }
+  console.log("sub-tabs correctly gate Overview/Forecast/Debt Payoff content");
 
   console.log("FEATURE 13 E2E TEST PASSED");
 } finally {

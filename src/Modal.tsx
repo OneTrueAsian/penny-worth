@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 import { formatAmount } from "./format";
-import type { CategoryTransaction, FamilyMember, MonthExpenseDetail } from "./types";
+import type { Account, CategoryTransaction, FamilyMember, MonthExpenseDetail } from "./types";
 
 /** Shared shell: a dimmed overlay behind a centered panel. Clicking the
  * overlay (not the panel) cancels, matching how a native dialog behaves. */
@@ -225,6 +225,123 @@ export function NewCategoryDialog({
   );
 }
 
+/** The Ledger's "Add transaction…" — the one way to get a single
+ * transaction in without a file import (see `App.tsx`'s
+ * `handleCreateManualTransaction`). Leaving Category on "Auto-categorize"
+ * runs it through the same categorization pass an import row gets; picking
+ * one explicitly skips that. There's no inline "+ New category…" here
+ * (unlike the Ledger's own row-level category dropdown) — every other
+ * `askX()` dialog in this app is top-level, never nested inside another
+ * modal, and leaving Category blank plus correcting it afterward via that
+ * existing per-row dropdown already covers "I want a brand-new category"
+ * without introducing a new stacked-modal pattern just for this form. */
+export function NewTransactionDialog({
+  accounts,
+  categories,
+  familyMembers,
+  defaultAccountId,
+  onCancel,
+  onSubmit,
+}: {
+  accounts: Account[];
+  categories: string[];
+  familyMembers: FamilyMember[];
+  defaultAccountId: number | null;
+  onCancel: () => void;
+  onSubmit: (
+    accountId: number,
+    date: string,
+    description: string,
+    amount: string,
+    category: string | null,
+    memberId: number | null,
+  ) => void;
+}) {
+  const [accountId, setAccountId] = useState(
+    defaultAccountId !== null ? String(defaultAccountId) : accounts[0] ? String(accounts[0].id) : "",
+  );
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const [category, setCategory] = useState("");
+  const [memberId, setMemberId] = useState("");
+
+  const valid = accountId !== "" && description.trim() !== "" && amount.trim() !== "" && date !== "";
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!valid) return;
+    onSubmit(Number(accountId), date, description.trim(), amount.trim(), category || null, memberId ? Number(memberId) : null);
+  }
+
+  return (
+    <ModalShell title="Add transaction" onCancel={onCancel}>
+      <form onSubmit={handleSubmit}>
+        <label className="modal-field">
+          <span>Account</span>
+          <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+            {accounts.length === 0 && <option value="">No accounts yet</option>}
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="modal-field">
+          <span>Date</span>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </label>
+        <label className="modal-field">
+          <span>Description</span>
+          <input
+            autoFocus
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder='e.g. "Coffee shop"'
+          />
+        </label>
+        <label className="modal-field">
+          <span>Amount</span>
+          <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Negative = money out" />
+        </label>
+        <label className="modal-field">
+          <span>Category</span>
+          <select value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="">Auto-categorize</option>
+            {categories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        {familyMembers.length > 0 && (
+          <label className="modal-field">
+            <span>Family member (optional)</span>
+            <select value={memberId} onChange={(e) => setMemberId(e.target.value)}>
+              <option value="">Unassigned</option>
+              {familyMembers.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div className="modal-actions">
+          <button type="button" className="modal-secondary" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" disabled={!valid || accounts.length === 0}>
+            Add transaction
+          </button>
+        </div>
+      </form>
+    </ModalShell>
+  );
+}
+
 export function ManageCategoriesDialog({
   categories,
   onCancel,
@@ -389,6 +506,10 @@ export function ManageFamilyMembersDialog({
 
   return (
     <ModalShell title="Manage family members" onCancel={onCancel} wide>
+      <p className="modal-message modal-message-secondary">
+        Just a label within this one file — everyone still shares the same data. For a completely separate person's
+        own data, use Profiles in Settings instead.
+      </p>
       <form className="category-create-form" onSubmit={handleCreateSubmit}>
         <input
           value={newMemberName}
