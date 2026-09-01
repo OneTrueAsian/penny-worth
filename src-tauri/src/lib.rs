@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod live_prices;
 mod profiles;
+mod updater;
 
 use commands::{AppState, AppStateHandle};
 use std::sync::Mutex;
@@ -62,6 +63,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::write_text_file,
+            commands::download_update_asset,
             commands::get_data_file_location,
             commands::relocate_data_file,
             commands::list_backups,

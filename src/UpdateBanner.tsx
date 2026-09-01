@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 
 const DISMISSED_VERSION_KEY = "pennyworth-dismissed-update-version";
 const REPO = "OneTrueAsian/penny-worth";
+
+type ReleaseAsset = { name: string; browser_download_url: string };
 
 function parseVersion(v: string): number[] {
   return v
@@ -23,16 +26,53 @@ function isNewer(latest: string, current: string): boolean {
   return false;
 }
 
+/** This app only ships Windows and macOS builds, so a simple user-agent
+ * sniff is enough here — not reaching for a whole extra plugin (e.g.
+ * `@tauri-apps/plugin-os`) just to learn this one fact inside a WebView
+ * whose UA is already reliable (unlike an arbitrary public browser). */
+function detectPlatform(): "windows" | "macos" | null {
+  const ua = navigator.userAgent;
+  if (ua.includes("Windows")) return "windows";
+  if (ua.includes("Macintosh") || ua.includes("Mac OS")) return "macos";
+  return null;
+}
+
+/** Picks the one release asset "Update now" should download for this OS —
+ * the NSIS installer on Windows (falling back to the .msi if that's ever
+ * missing), the universal .dmg on macOS. Returns null if the release
+ * doesn't have a matching asset (an unexpected release shape), in which
+ * case the banner just falls back to "View release" only. */
+function pickAsset(assets: ReleaseAsset[], platform: "windows" | "macos" | null): ReleaseAsset | null {
+  if (platform === "windows") {
+    return (
+      assets.find((a) => a.name.endsWith("-setup.exe")) ?? assets.find((a) => a.name.endsWith(".msi")) ?? null
+    );
+  }
+  if (platform === "macos") {
+    return assets.find((a) => a.name.endsWith(".dmg")) ?? null;
+  }
+  return null;
+}
+
 /** A small, dismissible banner that checks GitHub's latest release once on
- * launch and nudges the user if the installed app is behind — pure
- * notification, never downloads or installs anything itself (this app has
- * no auto-updater). Failures — offline, GitHub unreachable, rate-limited —
- * are silent; checking for an update is a nice-to-have and should never
- * interrupt using the app. Dismissing remembers that specific version (per
- * viewer, in localStorage) so it won't nag again until a *newer* one ships. */
+ * launch and nudges the user if the installed app is behind. "Update now"
+ * downloads the right installer for this OS and hands it to `openPath`,
+ * which launches the OS's normal installer UI — this app has no silent
+ * auto-updater (that needs a signing keypair and CI changes this project
+ * deliberately hasn't taken on); it just saves the trip to GitHub to find
+ * and download the file by hand. Failures — offline, GitHub unreachable,
+ * rate-limited, download failed — are handled gracefully: checking/
+ * updating is a nice-to-have and should never strand the user, so a failed
+ * "Update now" falls back to just opening the release page. Dismissing
+ * remembers that specific version (per viewer, in localStorage) so it
+ * won't nag again until a *newer* one ships. */
 export function UpdateBanner() {
-  const [latest, setLatest] = useState<{ tag: string; version: string; url: string } | null>(null);
+  const [latest, setLatest] = useState<{ tag: string; version: string; url: string; asset: ReleaseAsset | null } | null>(
+    null,
+  );
   const [dismissed, setDismissed] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -54,7 +94,8 @@ export function UpdateBanner() {
         }
         if (dismissedVersion === tag) return;
 
-        setLatest({ tag, version: tag.replace(/^v/, ""), url: data.html_url ?? `https://github.com/${REPO}/releases` });
+        const asset = pickAsset(data.assets ?? [], detectPlatform());
+        setLatest({ tag, version: tag.replace(/^v/, ""), url: data.html_url ?? `https://github.com/${REPO}/releases`, asset });
       } catch {
         // offline, rate-limited, or GitHub unreachable — silently skip
       }
@@ -72,12 +113,40 @@ export function UpdateBanner() {
     setDismissed(true);
   }
 
+  async function handleUpdateNow() {
+    if (!latest?.asset) return;
+    setError(null);
+    setDownloading(true);
+    try {
+      const localPath = await invoke<string>("download_update_asset", {
+        url: latest.asset.browser_download_url,
+        filename: latest.asset.name,
+      });
+      await openPath(localPath);
+    } catch (e) {
+      // A failed download shouldn't leave the user stuck — fall back to
+      // the same manual path this banner always offered.
+      setError(`Couldn't download the update automatically (${String(e)}) — opening the release page instead.`);
+      await openUrl(latest.url);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   if (!latest || dismissed) return null;
 
   return (
     <div className="update-banner">
-      <span>A new version of Penny Worth ({latest.version}) is available.</span>
+      <span>
+        A new version of Penny Worth ({latest.version}) is available.
+        {error && <span className="update-banner-error"> {error}</span>}
+      </span>
       <span className="update-banner-actions">
+        {latest.asset && (
+          <button type="button" onClick={handleUpdateNow} disabled={downloading}>
+            {downloading ? "Downloading…" : "Update now"}
+          </button>
+        )}
         <button type="button" className="modal-secondary" onClick={() => openUrl(latest.url)}>
           View release
         </button>

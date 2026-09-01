@@ -255,6 +255,18 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, bytes).map_err(|e| e.to_string())
 }
 
+/// Downloads a GitHub release asset (`UpdateBanner.tsx`'s "Update now") to
+/// the OS temp directory and returns its local path — the frontend then
+/// hands that path to `openPath` (tauri-plugin-opener) to launch the OS's
+/// normal installer, so the user still gets the usual installer prompts
+/// rather than anything silently self-installing.
+#[tauri::command]
+pub async fn download_update_asset(url: String, filename: String) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let path = crate::updater::download_asset(&client, &url, &filename).await?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn parse_amount(amount: &str) -> Result<Decimal, String> {
     amount.parse().map_err(|_| format!("invalid amount: {amount}"))
 }

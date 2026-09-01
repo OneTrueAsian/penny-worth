@@ -1594,6 +1594,11 @@ button:disabled {
   font-weight: 400;
 }
 
+.update-banner-error {
+  color: var(--negative);
+  font-weight: 400;
+}
+
 .debt-applied-badge {
   display: inline-flex;
   align-items: center;
