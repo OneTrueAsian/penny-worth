@@ -11,4 +11,9 @@ export const CHANGELOG: Record<string, string[]> = {
     "\"Add to Recurring\" — select transactions in the Ledger and turn them directly into recurring items.",
     "Fixed the Dashboard's budget-alerts breakdown showing the wrong categories as over budget.",
   ],
+  "1.1.3": [
+    "A banner now lets you know when a newer version is available to download, checked once each time you open the app.",
+    "The current version now shows in the sidebar, above the theme toggle.",
+    "A \"What's new\" summary now appears once per version, whether you just installed for the first time or just updated.",
+  ],
 };
