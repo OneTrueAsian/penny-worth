@@ -1420,6 +1420,32 @@ button:disabled {
   cursor: pointer;
 }
 
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--info-soft);
+  background: var(--info-soft);
+  color: var(--info);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.update-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.update-banner-actions button {
+  font-weight: 400;
+}
+
 .debt-applied-badge {
   display: inline-flex;
   align-items: center;

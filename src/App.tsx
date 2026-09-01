@@ -24,6 +24,7 @@ import { CashFlowView } from "./CashFlowView";
 import { DashboardView } from "./DashboardView";
 import { HelpView } from "./HelpView";
 import { AccountFilterDropdown, type AccountFilterValue } from "./AccountFilterDropdown";
+import { UpdateBanner } from "./UpdateBanner";
 import { NavIcon } from "./icons";
 import { formatAmount } from "./format";
 import type {
@@ -1747,6 +1748,7 @@ function App({
 
         <div className="page">
 
+      <UpdateBanner />
       {status && <p className="status">{status}</p>}
 
       {activeTab === "dashboard" && (
