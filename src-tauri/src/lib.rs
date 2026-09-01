@@ -1,6 +1,8 @@
 mod backups;
 mod commands;
 mod config;
+mod live_prices;
+mod profiles;
 
 use commands::{AppState, AppStateHandle};
 use std::sync::Mutex;
@@ -65,6 +67,11 @@ pub fn run() {
             commands::list_backups,
             commands::create_backup_now,
             commands::restore_backup,
+            commands::list_profiles,
+            commands::create_profile,
+            commands::switch_profile,
+            commands::rename_profile,
+            commands::delete_profile,
             commands::preview_setup_import,
             commands::commit_setup_import,
             commands::preview_import,
@@ -83,6 +90,11 @@ pub fn run() {
             commands::update_account_type,
             commands::delete_account,
             commands::set_account_details,
+            commands::set_account_member,
+            commands::create_family_member,
+            commands::list_family_members,
+            commands::rename_family_member,
+            commands::delete_family_member,
             commands::recategorize_uncategorized,
             commands::list_categories,
             commands::create_category,
@@ -98,9 +110,12 @@ pub fn run() {
             commands::add_tag,
             commands::remove_tag,
             commands::list_all_tags,
+            commands::set_transaction_member,
+            commands::bulk_set_transaction_member,
             commands::create_bucket,
             commands::list_buckets,
             commands::update_bucket_details,
+            commands::set_bucket_member,
             commands::add_bucket_contribution,
             commands::delete_bucket,
             commands::set_budget,
@@ -114,6 +129,7 @@ pub fn run() {
             commands::list_anomaly_flags,
             commands::create_recurring,
             commands::update_recurring,
+            commands::set_recurring_member,
             commands::list_recurring,
             commands::delete_recurring,
             commands::list_recurring_candidates,
@@ -122,9 +138,14 @@ pub fn run() {
             commands::list_holdings,
             commands::update_holding_price,
             commands::delete_holding,
+            commands::get_live_price_settings,
+            commands::set_live_price_api_key,
+            commands::fetch_live_quote,
+            commands::refresh_live_prices,
             commands::create_asset,
             commands::list_assets,
             commands::update_asset_value,
+            commands::set_asset_member,
             commands::delete_asset,
             commands::get_cash_flow,
             commands::cash_flow_for_range,

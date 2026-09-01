@@ -11,6 +11,7 @@ import {
   CategoryTransactionsDialog,
   ConfirmInvertDialog,
   ManageCategoriesDialog,
+  ManageFamilyMembersDialog,
   MonthExpenseDetailDialog,
   NewAccountDialog,
   NewCategoryDialog,
@@ -18,6 +19,7 @@ import {
   WhatsNewDialog,
 } from "./Modal";
 import { BucketsView } from "./BucketsView";
+import { ProfileSwitcher } from "./ProfileSwitcher";
 import { BudgetView } from "./BudgetView";
 import { ReportsView } from "./ReportsView";
 import { SettingsView } from "./SettingsView";
@@ -27,6 +29,7 @@ import { CashFlowView } from "./CashFlowView";
 import { DashboardView } from "./DashboardView";
 import { HelpView } from "./HelpView";
 import { AccountFilterDropdown, type AccountFilterValue } from "./AccountFilterDropdown";
+import { MemberFilterDropdown, type MemberFilterValue } from "./MemberFilterDropdown";
 import { UpdateBanner } from "./UpdateBanner";
 import { NavIcon } from "./icons";
 import { formatAmount } from "./format";
@@ -41,11 +44,15 @@ import type {
   CategoryAmount,
   CategoryTransaction,
   DebtPayoffPlan,
+  FamilyMember,
   ForecastPoint,
   Holding,
   Insight,
+  LivePriceRefreshSummary,
+  LivePriceSettings,
   MonthExpenseDetail,
   NetWorthPoint,
+  Profile,
   Recurring,
   RecurringCandidate,
   Report,
@@ -97,6 +104,7 @@ type NewAccountResult = {
   startingBalance: string | null;
   institution: string | null;
   mask: string | null;
+  memberId: number | null;
 };
 
 type PendingDialog =
@@ -207,6 +215,7 @@ function App({
   const [searchText, setSearchText] = useState("");
   const [filterCategory, setFilterCategory] = useState("all");
   const [filterAccountIds, setFilterAccountIds] = useState<AccountFilterValue>("all");
+  const [filterMemberIds, setFilterMemberIds] = useState<MemberFilterValue>("all");
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
   const [filterTag, setFilterTag] = useState("all");
@@ -215,6 +224,7 @@ function App({
   const [allTags, setAllTags] = useState<string[]>([]);
   const [newTagText, setNewTagText] = useState<Record<number, string>>({});
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [recurring, setRecurring] = useState<Recurring[]>([]);
   const [recurringCandidates, setRecurringCandidates] = useState<RecurringCandidate[]>([]);
@@ -222,15 +232,42 @@ function App({
   const [assets, setAssets] = useState<Asset[]>([]);
   const [dataFileLocation, setDataFileLocation] = useState<string | null>(null);
   const [backups, setBackups] = useState<Backup[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [livePriceSettings, setLivePriceSettings] = useState<LivePriceSettings | null>(null);
 
   const refreshBackups = useCallback(async () => {
     setBackups(await invoke<Backup[]>("list_backups"));
   }, []);
 
+  const refreshProfiles = useCallback(async () => {
+    setProfiles(await invoke<Profile[]>("list_profiles"));
+  }, []);
+
+  const refreshLivePriceSettings = useCallback(async () => {
+    setLivePriceSettings(await invoke<LivePriceSettings>("get_live_price_settings"));
+  }, []);
+
   useEffect(() => {
     invoke<string>("get_data_file_location").then(setDataFileLocation).catch((e) => setStatus(String(e)));
     refreshBackups().catch((e) => setStatus(String(e)));
-  }, [refreshBackups]);
+    refreshProfiles().catch((e) => setStatus(String(e)));
+    refreshLivePriceSettings().catch((e) => setStatus(String(e)));
+  }, [refreshBackups, refreshProfiles, refreshLivePriceSettings]);
+
+  // Once live prices are enabled for the active profile, refresh right away
+  // and then every 2 hours for as long as the app stays open. Keyed on
+  // `enabled` (not an empty-deps mount effect) so flipping the Settings
+  // toggle starts/stops this immediately, and re-runs cleanly on every
+  // profile-switch remount — a different profile's own enabled state and
+  // 2-hour clock take over automatically.
+  const REFRESH_INTERVAL_MS = 2 * 60 * 60 * 1000;
+  useEffect(() => {
+    if (!livePriceSettings?.enabled) return;
+    handleRefreshLivePrices();
+    const timer = setInterval(handleRefreshLivePrices, REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [livePriceSettings?.enabled]);
 
   async function handleCreateBackupNow() {
     try {
@@ -259,6 +296,73 @@ function App({
       onDataFileChanged(`Data file moved to ${newPath} — your old file was left in place, untouched.`);
     } catch (e) {
       setStatus(String(e));
+    }
+  }
+
+  async function handleCreateProfile(name: string) {
+    try {
+      const created = await invoke<string>("create_profile", { name });
+      onDataFileChanged(`Switched to the new "${created}" profile — it starts completely empty.`);
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSwitchProfile(id: string) {
+    try {
+      const switched = await invoke<string>("switch_profile", { id });
+      onDataFileChanged(`Switched to "${switched}".`);
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleRenameProfile(id: string, newName: string) {
+    try {
+      await invoke("rename_profile", { id, newName });
+      await refreshProfiles();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleDeleteProfile(id: string) {
+    try {
+      await invoke("delete_profile", { id });
+      await refreshProfiles();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSetLivePriceApiKey(apiKey: string | null) {
+    try {
+      await invoke("set_live_price_api_key", { apiKey });
+      await refreshLivePriceSettings();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleRefreshLivePrices() {
+    try {
+      const summary = await invoke<LivePriceRefreshSummary>("refresh_live_prices");
+      await Promise.all([refreshHoldings(), refreshLivePriceSettings()]);
+      let message = `Live prices: updated ${summary.updated.length} symbol(s)`;
+      if (summary.failed.length > 0) {
+        message += ` — ${summary.failed.map((f) => `${f.symbol}: ${f.error}`).join("; ")}`;
+      }
+      setStatus(message);
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleFetchLiveQuote(symbol: string): Promise<string | null> {
+    try {
+      return await invoke<string | null>("fetch_live_quote", { symbol });
+    } catch {
+      return null; // convenience autofill only — swallow errors rather than interrupting the form
     }
   }
   const [usedCategories, setUsedCategories] = useState<string[]>([]);
@@ -354,6 +458,7 @@ function App({
   const [includedIndices, setIncludedIndices] = useState<Set<number>>(new Set());
   const [accountOverrides, setAccountOverrides] = useState<Map<number, number>>(new Map());
   const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
+  const [manageFamilyMembersOpen, setManageFamilyMembersOpen] = useState(false);
   const [editingAmount, setEditingAmount] = useState<{ id: number; value: string } | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   const [applyingDebtId, setApplyingDebtId] = useState<number | null>(null);
@@ -395,6 +500,7 @@ function App({
     }
     if (filterCategory !== "all" && t.category !== filterCategory) return false;
     if (filterAccountIds !== "all" && !filterAccountIds.has(t.account_id)) return false;
+    if (filterMemberIds !== "all" && (t.member_id === null || !filterMemberIds.has(t.member_id))) return false;
     if (filterFrom && t.date < filterFrom) return false;
     if (filterTo && t.date > filterTo) return false;
     if (filterTag !== "all" && !t.tags.includes(filterTag)) return false;
@@ -429,7 +535,7 @@ function App({
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchText, filterCategory, filterAccountIds, filterFrom, filterTo, filterTag, pageSize]);
+  }, [searchText, filterCategory, filterAccountIds, filterMemberIds, filterFrom, filterTo, filterTag, pageSize]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -480,13 +586,14 @@ function App({
   }
 
   const refresh = useCallback(async () => {
-    const [txns, s, accts, cats, flags, tags] = await Promise.all([
+    const [txns, s, accts, cats, flags, tags, members] = await Promise.all([
       invoke<Transaction[]>("list_transactions"),
       invoke<Stats>("get_stats"),
       invoke<Account[]>("list_accounts"),
       invoke<string[]>("list_categories"),
       invoke<AnomalyFlag[]>("list_anomaly_flags"),
       invoke<string[]>("list_all_tags"),
+      invoke<FamilyMember[]>("list_family_members"),
     ]);
     setTransactions(txns);
     setStats(s);
@@ -494,6 +601,7 @@ function App({
     setUsedCategories(cats);
     setAnomalyFlags(flags);
     setAllTags(tags);
+    setFamilyMembers(members);
   }, []);
 
   // The first time the app opens in a new calendar month, every account's
@@ -947,9 +1055,13 @@ function App({
     targetAmount: string | null,
     targetDate: string | null,
     accountId: number | null,
+    memberId: number | null,
   ) {
     try {
-      await invoke("create_bucket", { name, targetAmount, targetDate, accountId });
+      const id = await invoke<number>("create_bucket", { name, targetAmount, targetDate, accountId });
+      if (memberId !== null) {
+        await invoke("set_bucket_member", { id, memberId });
+      }
       await refreshBuckets();
     } catch (e) {
       setStatus(String(e));
@@ -981,9 +1093,13 @@ function App({
     cadence: string,
     anchorDate: string,
     accountId: number | null,
+    memberId: number | null,
   ) {
     try {
-      await invoke("create_recurring", { merchant, category, amount, cadence, anchorDate, accountId });
+      const id = await invoke<number>("create_recurring", { merchant, category, amount, cadence, anchorDate, accountId });
+      if (memberId !== null) {
+        await invoke("set_recurring_member", { id, memberId });
+      }
       await refreshRecurring();
     } catch (e) {
       setStatus(String(e));
@@ -998,9 +1114,11 @@ function App({
     cadence: string,
     anchorDate: string,
     accountId: number | null,
+    memberId: number | null,
   ) {
     try {
       await invoke("update_recurring", { id, merchant, category, amount, cadence, anchorDate, accountId });
+      await invoke("set_recurring_member", { id, memberId });
       await refreshRecurring();
     } catch (e) {
       setStatus(String(e));
@@ -1081,9 +1199,19 @@ function App({
     }
   }
 
-  async function handleCreateAsset(name: string, assetType: string, value: string, valuedOn: string, notes: string | null) {
+  async function handleCreateAsset(
+    name: string,
+    assetType: string,
+    value: string,
+    valuedOn: string,
+    notes: string | null,
+    memberId: number | null,
+  ) {
     try {
-      await invoke("create_asset", { name, assetType, value, valuedOn, notes });
+      const id = await invoke<number>("create_asset", { name, assetType, value, valuedOn, notes });
+      if (memberId !== null) {
+        await invoke("set_asset_member", { id, memberId });
+      }
       await refreshAssets();
     } catch (e) {
       setStatus(String(e));
@@ -1094,6 +1222,24 @@ function App({
     try {
       await invoke("update_asset_value", { id, value, valuedOn });
       await refreshAssets();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSetAssetMember(id: number, memberId: number | null) {
+    try {
+      await invoke("set_asset_member", { id, memberId });
+      await refreshAssets();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSetAccountMember(accountId: number, memberId: number | null) {
+    try {
+      await invoke("set_account_member", { id: accountId, memberId });
+      await refresh();
     } catch (e) {
       setStatus(String(e));
     }
@@ -1127,6 +1273,9 @@ function App({
         institution: result.institution,
         mask: result.mask,
       });
+      if (result.memberId !== null) {
+        await invoke("set_account_member", { id, memberId: result.memberId });
+      }
       await refresh();
       setSelectedAccountId(id);
       return id;
@@ -1272,6 +1421,37 @@ function App({
     setManageCategoriesOpen(true);
   }
 
+  function openManageFamilyMembers() {
+    setManageFamilyMembersOpen(true);
+  }
+
+  async function handleCreateFamilyMember(name: string) {
+    try {
+      await invoke("create_family_member", { name });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleRenameFamilyMember(id: number, newName: string) {
+    try {
+      await invoke("rename_family_member", { id, newName });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleDeleteFamilyMember(id: number) {
+    try {
+      await invoke("delete_family_member", { id });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
   async function handleCreateCategory(name: string) {
     try {
       await invoke("create_category", { name });
@@ -1332,6 +1512,26 @@ function App({
   async function handleAccountChangeForTransaction(id: number, accountId: string) {
     try {
       await invoke("update_transaction_account", { id, accountId: Number(accountId) });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleMemberChangeForTransaction(id: number, memberId: string) {
+    try {
+      await invoke("set_transaction_member", { id, memberId: memberId === "" ? null : Number(memberId) });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleBulkMemberChange(value: string) {
+    const ids = Array.from(selectedIds);
+    try {
+      await invoke("bulk_set_transaction_member", { ids, memberId: value === "__none__" ? null : Number(value) });
+      setSelectedIds(new Set());
       await refresh();
     } catch (e) {
       setStatus(String(e));
@@ -1688,6 +1888,11 @@ function App({
           <img className="brand-mark" src={pennyWorthIcon} alt="" />
           <span className="brand-word">Penny Worth</span>
         </div>
+        <ProfileSwitcher
+          profiles={profiles}
+          onSwitchProfile={handleSwitchProfile}
+          onManageProfiles={() => setActiveTab("settings")}
+        />
         <nav className="nav-list">
           {orderedNavItems.map((item) => (
             <button
@@ -1773,6 +1978,13 @@ function App({
                 disabled={busy || pendingImport !== null}
               >
                 Manage categories…
+              </button>
+              <button
+                className="modal-secondary"
+                onClick={openManageFamilyMembers}
+                disabled={busy || pendingImport !== null}
+              >
+                Manage family members…
               </button>
               <button
                 className="modal-secondary"
@@ -1975,6 +2187,7 @@ function App({
             ))}
           </select>
           <AccountFilterDropdown accounts={accounts} value={filterAccountIds} onChange={setFilterAccountIds} />
+          <MemberFilterDropdown members={familyMembers} value={filterMemberIds} onChange={setFilterMemberIds} />
           <input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} title="From date" />
           <input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} title="To date" />
           <select value={filterTag} onChange={(e) => setFilterTag(e.target.value)}>
@@ -2017,6 +2230,19 @@ function App({
               </option>
             ))}
           </select>
+          {familyMembers.length > 0 && (
+            <select value="" onChange={(e) => handleBulkMemberChange(e.target.value)}>
+              <option value="" disabled>
+                Set member to…
+              </option>
+              <option value="__none__">Unassigned</option>
+              {familyMembers.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          )}
           {confirmingBulkDelete ? (
             <span className="row-delete-confirm">
               <button type="button" className="modal-secondary" onClick={() => setConfirmingBulkDelete(false)}>
@@ -2061,6 +2287,7 @@ function App({
             <th className="sortable-col" onClick={() => toggleSort("account")}>
               Account{sortColumn === "account" && (sortDirection === "asc" ? " ▲" : " ▼")}
             </th>
+            <th>Member</th>
             <th className="sortable-col" onClick={() => toggleSort("category")}>
               Category{sortColumn === "category" && (sortDirection === "asc" ? " ▲" : " ▼")}
             </th>
@@ -2146,6 +2373,19 @@ function App({
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td className="member-col">
+                <select
+                  value={t.member_id ?? ""}
+                  onChange={(e) => handleMemberChangeForTransaction(t.id, e.target.value)}
+                >
+                  <option value="">Unassigned</option>
+                  {familyMembers.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
                     </option>
                   ))}
                 </select>
@@ -2247,7 +2487,7 @@ function App({
             (t) =>
               expandedSplitId === t.id && (
                 <tr key={`split-${t.id}`} className="split-editor-row">
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <div className="split-editor">
                       {splitLines.map((line, i) => (
                         <div className="split-editor-line" key={i}>
@@ -2300,7 +2540,7 @@ function App({
           )}
           {filteredTransactions.length === 0 && (
             <tr>
-              <td colSpan={9} className="empty-state">
+              <td colSpan={10} className="empty-state">
                 {transactions.length === 0
                   ? "No transactions yet — import a CSV to get started."
                   : "No transactions match your filters."}
@@ -2353,6 +2593,7 @@ function App({
         <BucketsView
           buckets={buckets}
           accounts={accounts}
+          familyMembers={familyMembers}
           onCreateBucket={handleCreateBucket}
           onAddContribution={handleAddContribution}
           onDeleteBucket={handleDeleteBucket}
@@ -2390,6 +2631,7 @@ function App({
           recurring={recurring}
           candidates={recurringCandidates}
           accounts={accounts}
+          familyMembers={familyMembers}
           onCreate={handleCreateRecurring}
           onUpdate={handleUpdateRecurring}
           onDelete={handleDeleteRecurring}
@@ -2405,6 +2647,8 @@ function App({
           onCreate={handleCreateHolding}
           onUpdatePrice={handleUpdateHoldingPrice}
           onDelete={handleDeleteHolding}
+          livePricesEnabled={livePriceSettings?.enabled ?? false}
+          onFetchQuote={handleFetchLiveQuote}
         />
       )}
 
@@ -2613,10 +2857,12 @@ function App({
           buckets={buckets}
           transactions={transactions}
           assets={assets}
+          familyMembers={familyMembers}
           onSetStartingBalance={handleSetStartingBalance}
           onUpdateAccountType={handleUpdateAccountType}
           onDeleteAccount={handleDeleteAccount}
           onSetAccountDetails={handleSetAccountDetails}
+          onSetAccountMember={handleSetAccountMember}
           onAddAccount={handleNewAccount}
           onExportCsv={handleExportReportsCsv}
           onPrint={() => window.print()}
@@ -2624,6 +2870,7 @@ function App({
           onImportSetupData={handleImportSetupData}
           onCreateAsset={handleCreateAsset}
           onUpdateAssetValue={handleUpdateAssetValue}
+          onSetAssetMember={handleSetAssetMember}
           onDeleteAsset={handleDeleteAsset}
         />
       )}
@@ -2635,17 +2882,26 @@ function App({
           backups={backups}
           onCreateBackupNow={handleCreateBackupNow}
           onRestoreBackup={handleRestoreBackup}
+          profiles={profiles}
+          onCreateProfile={handleCreateProfile}
+          onSwitchProfile={handleSwitchProfile}
+          onRenameProfile={handleRenameProfile}
+          onDeleteProfile={handleDeleteProfile}
+          livePriceSettings={livePriceSettings}
+          onSetLivePriceApiKey={handleSetLivePriceApiKey}
+          onRefreshLivePrices={handleRefreshLivePrices}
         />
       )}
 
       {dialog?.kind === "newAccount" && (
         <NewAccountDialog
+          familyMembers={familyMembers}
           onCancel={() => {
             dialog.resolve(null);
             setDialog(null);
           }}
-          onSubmit={(name, accountType, startingBalance, institution, mask) => {
-            dialog.resolve({ name, accountType, startingBalance, institution, mask });
+          onSubmit={(name, accountType, startingBalance, institution, mask, memberId) => {
+            dialog.resolve({ name, accountType, startingBalance, institution, mask, memberId });
             setDialog(null);
           }}
         />
@@ -2681,6 +2937,15 @@ function App({
           onCreate={handleCreateCategory}
           onRename={handleRenameCategory}
           onDelete={handleDeleteCategory}
+        />
+      )}
+      {manageFamilyMembersOpen && (
+        <ManageFamilyMembersDialog
+          members={familyMembers}
+          onCancel={() => setManageFamilyMembersOpen(false)}
+          onCreate={handleCreateFamilyMember}
+          onRename={handleRenameFamilyMember}
+          onDelete={handleDeleteFamilyMember}
         />
       )}
         </div>

@@ -79,6 +79,8 @@ function GoalProjectionCalculator({ currentTotal }: { currentTotal: number }) {
 function NewHoldingForm({
   accounts,
   onCreate,
+  livePricesEnabled,
+  onFetchQuote,
 }: {
   accounts: Account[];
   onCreate: (
@@ -90,6 +92,8 @@ function NewHoldingForm({
     costBasis: string,
     assetClass: string | null,
   ) => void;
+  livePricesEnabled: boolean;
+  onFetchQuote: (symbol: string) => Promise<string | null>;
 }) {
   const investmentAccounts = accounts.filter((a) => a.account_type === "investment");
   const [accountId, setAccountId] = useState<number | string>(investmentAccounts[0]?.id ?? "");
@@ -97,9 +101,25 @@ function NewHoldingForm({
   const [name, setName] = useState("");
   const [shares, setShares] = useState("");
   const [price, setPrice] = useState("");
+  const [priceTouched, setPriceTouched] = useState(false);
+  const [fetchingPrice, setFetchingPrice] = useState(false);
   const [costBasis, setCostBasis] = useState("");
   const [assetClass, setAssetClass] = useState("");
   const [open, setOpen] = useState(false);
+
+  async function handleSymbolBlur() {
+    const trimmed = symbol.trim();
+    if (!livePricesEnabled || !trimmed || priceTouched) return;
+    setFetchingPrice(true);
+    try {
+      const quote = await onFetchQuote(trimmed.toUpperCase());
+      // The user may have started typing their own price while the lookup
+      // was in flight — don't clobber it.
+      if (quote && !priceTouched) setPrice(quote);
+    } finally {
+      setFetchingPrice(false);
+    }
+  }
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -117,6 +137,7 @@ function NewHoldingForm({
     setName("");
     setShares("");
     setPrice("");
+    setPriceTouched(false);
     setCostBasis("");
     setAssetClass("");
     setOpen(false);
@@ -143,10 +164,22 @@ function NewHoldingForm({
           </option>
         ))}
       </select>
-      <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="Symbol (e.g. AAPL)" />
+      <input
+        value={symbol}
+        onChange={(e) => setSymbol(e.target.value)}
+        onBlur={handleSymbolBlur}
+        placeholder="Symbol (e.g. AAPL)"
+      />
       <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (optional)" />
       <input value={shares} onChange={(e) => setShares(e.target.value)} placeholder="Shares" />
-      <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price" />
+      <input
+        value={price}
+        onChange={(e) => {
+          setPriceTouched(true);
+          setPrice(e.target.value);
+        }}
+        placeholder={fetchingPrice ? "Fetching live price…" : "Price"}
+      />
       <input value={costBasis} onChange={(e) => setCostBasis(e.target.value)} placeholder="Cost basis ($)" />
       <input
         value={assetClass}
@@ -169,6 +202,8 @@ export function InvestmentsView({
   onCreate,
   onUpdatePrice,
   onDelete,
+  livePricesEnabled,
+  onFetchQuote,
 }: {
   holdings: Holding[];
   accounts: Account[];
@@ -183,6 +218,8 @@ export function InvestmentsView({
   ) => void;
   onUpdatePrice: (id: number, price: string) => void;
   onDelete: (id: number) => void;
+  livePricesEnabled: boolean;
+  onFetchQuote: (symbol: string) => Promise<string | null>;
 }) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   const [editingPrice, setEditingPrice] = useState<{ id: number; value: string } | null>(null);
@@ -334,7 +371,12 @@ export function InvestmentsView({
       ))}
       {holdings.length === 0 && <p className="empty-state">No holdings yet.</p>}
 
-      <NewHoldingForm accounts={accounts} onCreate={onCreate} />
+      <NewHoldingForm
+        accounts={accounts}
+        onCreate={onCreate}
+        livePricesEnabled={livePricesEnabled}
+        onFetchQuote={onFetchQuote}
+      />
     </div>
   );
 }

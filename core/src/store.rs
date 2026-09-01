@@ -1,6 +1,6 @@
 use crate::models::{Account, AccountType, Transaction};
 use crate::rules::{Rule, RuleSet};
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection};
 use rust_decimal::Decimal;
 use std::path::Path;
@@ -63,6 +63,8 @@ pub struct StoredTransaction {
     pub applied_to_debt: Option<AppliedDebtPayment>,
     pub split_count: i64,
     pub tags: Vec<String>,
+    pub member_id: Option<i64>,
+    pub member_name: Option<String>,
 }
 
 /// Which debt account this transaction's amount was applied toward paying
@@ -118,6 +120,8 @@ pub struct StoredAccount {
     /// deleting it — e.g. a credit card the user pays off in full every
     /// month shouldn't be treated as debt to pay down.
     pub excluded_from_debt_payoff: bool,
+    pub member_id: Option<i64>,
+    pub member_name: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +141,8 @@ pub struct StoredBucket {
     pub target_date: Option<NaiveDate>,
     pub account_id: Option<i64>,
     pub account_name: Option<String>,
+    pub member_id: Option<i64>,
+    pub member_name: Option<String>,
 }
 
 /// A budgeted category's monthly target and which group it's organized
@@ -254,6 +260,8 @@ pub struct StoredRecurring {
     pub next_date: NaiveDate,
     pub account_id: Option<i64>,
     pub account_name: Option<String>,
+    pub member_id: Option<i64>,
+    pub member_name: Option<String>,
 }
 
 /// A pattern detected in the ledger that looks recurring but isn't yet
@@ -286,6 +294,15 @@ pub struct StoredHolding {
     pub gain_loss: Decimal,
 }
 
+/// Opt-in live-price configuration (see `Store::get_live_price_settings`).
+/// `api_key` being `None` means the feature is off — holding prices stay
+/// fully manual, exactly like before this existed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredLivePriceSettings {
+    pub api_key: Option<String>,
+    pub last_refreshed_at: Option<NaiveDateTime>,
+}
+
 /// A manually-tracked asset outside the accounts model — real estate, a
 /// vehicle, or anything else with a value worth counting toward net worth
 /// but no transaction history of its own. See `Store::total_assets_value`
@@ -298,6 +315,8 @@ pub struct StoredAsset {
     pub value: Decimal,
     pub valued_on: NaiveDate,
     pub notes: Option<String>,
+    pub member_id: Option<i64>,
+    pub member_name: Option<String>,
 }
 
 /// One debt's projected payoff (see `Store::debt_payoff_projection`) —
@@ -329,6 +348,15 @@ pub struct DebtPayoffPlan {
 pub struct ForecastPoint {
     pub date: NaiveDate,
     pub balance: Decimal,
+}
+
+/// A household member a piece of data can be attributed to (see
+/// `Store::create_family_member`) — deliberately just a name, no color or
+/// login of its own; this is an attribution label, not an account.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FamilyMember {
+    pub id: i64,
+    pub name: String,
 }
 
 pub struct Store {
@@ -467,6 +495,17 @@ impl Store {
                 transaction_id INTEGER NOT NULL REFERENCES transactions(id),
                 tag TEXT NOT NULL COLLATE NOCASE,
                 PRIMARY KEY (transaction_id, tag)
+            );
+            CREATE TABLE IF NOT EXISTS family_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE
+            );
+            CREATE TABLE IF NOT EXISTS live_price_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                api_key TEXT,
+                last_refreshed_at TEXT,
+                requests_used_today INTEGER NOT NULL DEFAULT 0,
+                requests_count_date TEXT
             );",
         )?;
         self.migrate_add_account_id_if_missing()?;
@@ -479,7 +518,42 @@ impl Store {
         self.migrate_budgets_to_period_scoped_if_missing()?;
         self.backfill_budget_periods_if_missing()?;
         self.migrate_add_bucket_extras_if_missing()?;
+        self.migrate_add_member_id_to_accounts_if_missing()?;
+        self.migrate_add_member_id_to_transactions_if_missing()?;
+        self.migrate_add_member_id_to_recurring_if_missing()?;
+        self.migrate_add_member_id_to_buckets_if_missing()?;
+        self.migrate_add_member_id_to_assets_if_missing()?;
+        self.migrate_add_live_price_request_tracking_if_missing()?;
         self.seed_categories_if_missing()
+    }
+
+    /// `live_price_settings` originally shipped with just `api_key`/
+    /// `last_refreshed_at` — these two columns (the daily request counter
+    /// used by `record_live_price_request`/`live_price_requests_used_today`)
+    /// were added right after. Same missing-column pattern as every other
+    /// migration here.
+    fn migrate_add_live_price_request_tracking_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(live_price_settings)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_requests_used_today = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "requests_used_today" {
+                has_requests_used_today = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_requests_used_today {
+            return Ok(());
+        }
+
+        self.conn
+            .execute("ALTER TABLE live_price_settings ADD COLUMN requests_used_today INTEGER NOT NULL DEFAULT 0", [])?;
+        self.conn.execute("ALTER TABLE live_price_settings ADD COLUMN requests_count_date TEXT", [])?;
+        Ok(())
     }
 
     /// Same pattern once more: `target_date`/`account_id` are both
@@ -798,6 +872,128 @@ impl Store {
         Ok(())
     }
 
+    /// Same pattern once more, repeated per table: `member_id` (which
+    /// `family_members` row this row is attributed to) is nullable and
+    /// optional — a missing-column database just needs the column added,
+    /// `NULL` already meaning "unassigned."
+    fn migrate_add_member_id_to_accounts_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(accounts)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "member_id" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE accounts ADD COLUMN member_id INTEGER", [])?;
+        Ok(())
+    }
+
+    /// Same pattern once more: `transactions.member_id` — see
+    /// `migrate_add_member_id_to_accounts_if_missing`.
+    fn migrate_add_member_id_to_transactions_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(transactions)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "member_id" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE transactions ADD COLUMN member_id INTEGER", [])?;
+        Ok(())
+    }
+
+    /// Same pattern once more: `recurring.member_id` — see
+    /// `migrate_add_member_id_to_accounts_if_missing`.
+    fn migrate_add_member_id_to_recurring_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(recurring)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "member_id" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE recurring ADD COLUMN member_id INTEGER", [])?;
+        Ok(())
+    }
+
+    /// Same pattern once more: `buckets.member_id` — see
+    /// `migrate_add_member_id_to_accounts_if_missing`.
+    fn migrate_add_member_id_to_buckets_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(buckets)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "member_id" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE buckets ADD COLUMN member_id INTEGER", [])?;
+        Ok(())
+    }
+
+    /// Same pattern once more: `assets.member_id` — see
+    /// `migrate_add_member_id_to_accounts_if_missing`.
+    fn migrate_add_member_id_to_assets_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(assets)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "member_id" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE assets ADD COLUMN member_id INTEGER", [])?;
+        Ok(())
+    }
+
     /// Finds an account by name, or creates it — so the UI can let a user
     /// re-type an existing account's name at import time without erroring.
     pub fn get_or_create_account(&self, name: &str, account_type: AccountType) -> rusqlite::Result<i64> {
@@ -878,7 +1074,11 @@ impl Store {
     /// monthly reset.
     pub fn list_accounts(&self, today: NaiveDate) -> rusqlite::Result<Vec<StoredAccount>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, account_type, starting_balance, institution, mask, interest_rate, excluded_from_debt_payoff FROM accounts ORDER BY name",
+            "SELECT a.id, a.name, a.account_type, a.starting_balance, a.institution, a.mask, a.interest_rate,
+                    a.excluded_from_debt_payoff, a.member_id, fm.name
+             FROM accounts a
+             LEFT JOIN family_members fm ON fm.id = a.member_id
+             ORDER BY a.name",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -890,12 +1090,14 @@ impl Store {
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, bool>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })?;
 
         let mut accounts = Vec::new();
         for row in rows {
-            let (id, name, account_type, starting_balance_str, institution, mask, interest_rate_str, excluded_from_debt_payoff) = row?;
+            let (id, name, account_type, starting_balance_str, institution, mask, interest_rate_str, excluded_from_debt_payoff, member_id, member_name) = row?;
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
             let current_balance = self.account_balance_as_of(id, starting_balance, today)?;
@@ -914,6 +1116,8 @@ impl Store {
                 mask,
                 interest_rate,
                 excluded_from_debt_payoff,
+                member_id,
+                member_name,
             });
         }
         Ok(accounts)
@@ -1105,6 +1309,16 @@ impl Store {
         Ok(())
     }
 
+    /// Sets (or clears, with `None`) which family member owns an account —
+    /// purely an attribution label (see `FamilyMember`), doesn't affect any
+    /// balance calculation. `save_transactions`/`apply_debt_payment` use
+    /// this as the default a new transaction on this account inherits.
+    pub fn set_account_member(&self, id: i64, member_id: Option<i64>) -> rusqlite::Result<()> {
+        self.conn
+            .execute("UPDATE accounts SET member_id = ?1 WHERE id = ?2", params![member_id, id])?;
+        Ok(())
+    }
+
     /// Corrects an account's type after the fact (created as the wrong
     /// kind by mistake). An unknown id is a harmless no-op, same
     /// convention as everything else here.
@@ -1148,6 +1362,61 @@ impl Store {
         self.conn.execute("DELETE FROM balance_resets WHERE account_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
         Ok(tx_ids.len())
+    }
+
+    /// Creates a new family member — a household member other data
+    /// (accounts, transactions, recurring items, buckets, assets) can be
+    /// attributed to. Errors (a `UNIQUE` constraint violation) if a member
+    /// with that name already exists, same "a duplicate name is a mistake
+    /// to surface" convention as `create_bucket`.
+    pub fn create_family_member(&self, name: &str) -> rusqlite::Result<i64> {
+        self.conn
+            .execute("INSERT INTO family_members (name) VALUES (?1)", params![name])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Every family member, alphabetical by name.
+    pub fn list_family_members(&self) -> rusqlite::Result<Vec<FamilyMember>> {
+        let mut stmt = self.conn.prepare("SELECT id, name FROM family_members ORDER BY name")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(FamilyMember {
+                id: row.get(0)?,
+                name: row.get(1)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    /// Renames a family member. An unknown id is a harmless no-op, same
+    /// convention as `update_account_type` and friends.
+    pub fn rename_family_member(&self, id: i64, new_name: &str) -> rusqlite::Result<()> {
+        self.conn
+            .execute("UPDATE family_members SET name = ?1 WHERE id = ?2", params![new_name, id])?;
+        Ok(())
+    }
+
+    /// Removes a family member. A member is an attribution label, not a
+    /// data container — unlike `delete_account`, this never touches the
+    /// financial rows it was attached to, only clears the label on every
+    /// table that can carry one, so nothing is left pointing at a
+    /// now-deleted member. An unknown id is a harmless no-op.
+    pub fn delete_family_member(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn
+            .execute("UPDATE accounts SET member_id = NULL WHERE member_id = ?1", params![id])?;
+        self.conn
+            .execute("UPDATE transactions SET member_id = NULL WHERE member_id = ?1", params![id])?;
+        self.conn
+            .execute("UPDATE recurring SET member_id = NULL WHERE member_id = ?1", params![id])?;
+        self.conn
+            .execute("UPDATE buckets SET member_id = NULL WHERE member_id = ?1", params![id])?;
+        self.conn
+            .execute("UPDATE assets SET member_id = NULL WHERE member_id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM family_members WHERE id = ?1", params![id])?;
+        Ok(())
     }
 
     /// Persists a learned rule (see `learner::learn_from_correction`) so it
@@ -1331,8 +1600,8 @@ impl Store {
     pub fn save_transactions(&self, account_id: i64, txns: &[Transaction]) -> rusqlite::Result<SaveReport> {
         for tx in txns {
             self.conn.execute(
-                "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint, member_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT member_id FROM accounts WHERE id = ?1))",
                 params![
                     account_id,
                     tx.date.to_string(),
@@ -1352,12 +1621,14 @@ impl Store {
                     t.confidence, t.account_id, a.name,
                     dp.debt_account_id, da.name, dp.amount,
                     (SELECT COUNT(*) FROM transaction_splits ts WHERE ts.transaction_id = t.id),
-                    GROUP_CONCAT(tt.tag, char(31))
+                    GROUP_CONCAT(tt.tag, char(31)),
+                    t.member_id, fm.name
              FROM transactions t
              JOIN accounts a ON a.id = t.account_id
              LEFT JOIN debt_payments dp ON dp.source_transaction_id = t.id
              LEFT JOIN accounts da ON da.id = dp.debt_account_id
              LEFT JOIN transaction_tags tt ON tt.transaction_id = t.id
+             LEFT JOIN family_members fm ON fm.id = t.member_id
              GROUP BY t.id
              ORDER BY t.id",
         )?;
@@ -1377,6 +1648,8 @@ impl Store {
                 row.get::<_, Option<String>>(11)?,
                 row.get::<_, i64>(12)?,
                 row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<i64>>(14)?,
+                row.get::<_, Option<String>>(15)?,
             ))
         })?;
 
@@ -1397,6 +1670,8 @@ impl Store {
                 applied_amount_str,
                 split_count,
                 tags_str,
+                member_id,
+                member_name,
             ) = row?;
             let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
                 .expect("date stored by this crate must be valid");
@@ -1431,6 +1706,8 @@ impl Store {
                 applied_to_debt,
                 split_count,
                 tags,
+                member_id,
+                member_name,
             });
         }
         Ok(result)
@@ -1569,6 +1846,25 @@ impl Store {
         Ok(result)
     }
 
+    /// Sets (or clears, with `None`) which family member a transaction is
+    /// attributed to — overrides whatever it inherited from its account
+    /// (see `save_transactions`). An unknown id is a harmless no-op.
+    pub fn set_transaction_member(&self, id: i64, member_id: Option<i64>) -> rusqlite::Result<()> {
+        self.conn
+            .execute("UPDATE transactions SET member_id = ?1 WHERE id = ?2", params![member_id, id])?;
+        Ok(())
+    }
+
+    /// `set_transaction_member` applied to every id in `ids` — a plain loop,
+    /// not a rule-learning bulk edit like `bulk_correct_category`, since
+    /// member assignment has no analogous side effect to replay.
+    pub fn bulk_set_transaction_member(&self, ids: &[i64], member_id: Option<i64>) -> rusqlite::Result<()> {
+        for id in ids {
+            self.set_transaction_member(*id, member_id)?;
+        }
+        Ok(())
+    }
+
     /// Replaces every split line for `transaction_id` with `splits` (an
     /// empty slice clears them, un-splitting the transaction back to its
     /// own single category). No sum-matches-the-parent-amount validation
@@ -1673,8 +1969,8 @@ impl Store {
             category: source_category,
         };
         self.conn.execute(
-            "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint, member_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT member_id FROM accounts WHERE id = ?1))",
             params![
                 debt_account_id,
                 date.to_string(),
@@ -1768,6 +2064,14 @@ impl Store {
         Ok(())
     }
 
+    /// Sets (or clears, with `None`) which family member a bucket is
+    /// attributed to. An unknown id is a harmless no-op.
+    pub fn set_bucket_member(&self, id: i64, member_id: Option<i64>) -> rusqlite::Result<()> {
+        self.conn
+            .execute("UPDATE buckets SET member_id = ?1 WHERE id = ?2", params![member_id, id])?;
+        Ok(())
+    }
+
     /// Every bucket, each with its saved amount computed fresh from its
     /// contributions (0 for a bucket with none yet) rather than trusted
     /// from a stored running total. The sum is done in Rust with `Decimal`,
@@ -1777,10 +2081,11 @@ impl Store {
     pub fn list_buckets(&self) -> rusqlite::Result<Vec<StoredBucket>> {
         let mut stmt = self.conn.prepare(
             "SELECT b.id, b.name, b.target_amount, b.target_date, b.account_id, a.name,
-                    GROUP_CONCAT(c.amount, '|')
+                    GROUP_CONCAT(c.amount, '|'), b.member_id, fm.name
              FROM buckets b
              LEFT JOIN accounts a ON a.id = b.account_id
              LEFT JOIN bucket_contributions c ON c.bucket_id = b.id
+             LEFT JOIN family_members fm ON fm.id = b.member_id
              GROUP BY b.id
              ORDER BY b.name",
         )?;
@@ -1793,12 +2098,14 @@ impl Store {
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (id, name, target_amount, target_date, account_id, account_name, contributions) = row?;
+            let (id, name, target_amount, target_date, account_id, account_name, contributions, member_id, member_name) = row?;
             let saved_amount = contributions
                 .map(|joined| {
                     joined
@@ -1818,6 +2125,8 @@ impl Store {
                 }),
                 account_id,
                 account_name,
+                member_id,
+                member_name,
             });
         }
         Ok(result)
@@ -2415,14 +2724,24 @@ impl Store {
         Ok(())
     }
 
+    /// Sets (or clears, with `None`) which family member a recurring item is
+    /// attributed to. An unknown id is a harmless no-op.
+    pub fn set_recurring_member(&self, id: i64, member_id: Option<i64>) -> rusqlite::Result<()> {
+        self.conn
+            .execute("UPDATE recurring SET member_id = ?1 WHERE id = ?2", params![member_id, id])?;
+        Ok(())
+    }
+
     /// Every recurring item, each with its next-due date computed fresh
     /// relative to `today` (see `next_occurrence`) rather than trusted
     /// from a stored value, sorted by that next-due date.
     pub fn list_recurring(&self, today: NaiveDate) -> rusqlite::Result<Vec<StoredRecurring>> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.id, r.merchant, r.category, r.amount, r.cadence, r.anchor_date, r.account_id, a.name
+            "SELECT r.id, r.merchant, r.category, r.amount, r.cadence, r.anchor_date, r.account_id, a.name,
+                    r.member_id, fm.name
              FROM recurring r
-             LEFT JOIN accounts a ON a.id = r.account_id",
+             LEFT JOIN accounts a ON a.id = r.account_id
+             LEFT JOIN family_members fm ON fm.id = r.member_id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -2434,12 +2753,14 @@ impl Store {
                 row.get::<_, String>(5)?,
                 row.get::<_, Option<i64>>(6)?,
                 row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (id, merchant, category, amount, cadence, anchor_date_str, account_id, account_name) = row?;
+            let (id, merchant, category, amount, cadence, anchor_date_str, account_id, account_name, member_id, member_name) = row?;
             let anchor_date = NaiveDate::parse_from_str(&anchor_date_str, "%Y-%m-%d")
                 .expect("date stored by this crate must be valid");
             result.push(StoredRecurring {
@@ -2452,6 +2773,8 @@ impl Store {
                 anchor_date,
                 account_id,
                 account_name,
+                member_id,
+                member_name,
             });
         }
         result.sort_by_key(|r| r.next_date);
@@ -2573,10 +2896,12 @@ impl Store {
         Ok(())
     }
 
-    /// Adds an investment holding. Prices are entered and updated
-    /// manually (see `update_holding_price`) — no external market-data
-    /// source, keeping this a ledger feature rather than a market-data
-    /// integration.
+    /// Adds an investment holding. `price` is whatever the caller passes in
+    /// at creation time — manually typed, or auto-filled from a live quote
+    /// when the optional Alpha Vantage integration is enabled (see
+    /// `get_live_price_settings`). Either way it's just a starting value;
+    /// `update_holding_price`/`update_holding_prices_for_symbol` are how it
+    /// changes afterward.
     pub fn create_holding(
         &self,
         account_id: i64,
@@ -2665,6 +2990,110 @@ impl Store {
         Ok(())
     }
 
+    /// Every distinct symbol currently held, across every account — the
+    /// list a live-price refresh fetches one quote per, regardless of how
+    /// many holdings (or accounts) share that symbol.
+    pub fn list_distinct_holding_symbols(&self) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT DISTINCT symbol FROM holdings ORDER BY symbol")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    /// Applies one fetched quote to every holding of that symbol at once
+    /// (a symbol can appear in more than one account) — the counterpart to
+    /// `update_holding_price`, which targets a single holding by id. Returns
+    /// how many rows were touched; an unknown symbol is a harmless no-op.
+    pub fn update_holding_prices_for_symbol(&self, symbol: &str, price: Decimal) -> rusqlite::Result<usize> {
+        self.conn
+            .execute("UPDATE holdings SET price = ?1 WHERE symbol = ?2", params![price.to_string(), symbol])
+    }
+
+    /// The opt-in live-price feature's current state. No row exists in
+    /// `live_price_settings` until the user actually saves an API key —
+    /// this returns the "off" state rather than synthesizing one, so a
+    /// profile that never touches this feature has nothing written to its
+    /// database for it (same lazy-write principle as the rest of this
+    /// app's optional features).
+    pub fn get_live_price_settings(&self) -> rusqlite::Result<StoredLivePriceSettings> {
+        let row = match self.conn.query_row(
+            "SELECT api_key, last_refreshed_at FROM live_price_settings WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+        ) {
+            Ok(v) => Some(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e),
+        };
+        let (api_key, last_refreshed_at) = row.unwrap_or((None, None));
+        let last_refreshed_at = last_refreshed_at.map(|s| {
+            NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S").expect("timestamp stored by this crate must be valid")
+        });
+        Ok(StoredLivePriceSettings { api_key, last_refreshed_at })
+    }
+
+    /// Sets (or, with `None`, clears/disables) the Alpha Vantage API key.
+    /// Clearing it does not touch `last_refreshed_at` or any holding price
+    /// already on record — it only stops future refreshes from happening.
+    pub fn set_live_price_api_key(&self, api_key: Option<&str>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO live_price_settings (id, api_key) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET api_key = ?1",
+            params![api_key],
+        )?;
+        Ok(())
+    }
+
+    /// Records when a live-price refresh last ran (regardless of whether
+    /// every symbol in it succeeded) — shown in Settings so the user can
+    /// see the feature is actually working.
+    pub fn set_live_prices_last_refreshed(&self, at: NaiveDateTime) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO live_price_settings (id, last_refreshed_at) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET last_refreshed_at = ?1",
+            params![at.format("%Y-%m-%d %H:%M:%S").to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// How many live-price requests have been sent today (`today`'s local
+    /// calendar day). A pure read — rolls back over to 0 whenever the
+    /// stored count is from an earlier day, but doesn't write anything;
+    /// `record_live_price_request` is the only thing that actually persists
+    /// the rollover. No row at all also just means 0, same as every other
+    /// lazily-created live-price setting.
+    pub fn live_price_requests_used_today(&self, today: NaiveDate) -> rusqlite::Result<i64> {
+        let row = match self.conn.query_row(
+            "SELECT requests_used_today, requests_count_date FROM live_price_settings WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        ) {
+            Ok(v) => Some(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e),
+        };
+        let Some((count, count_date)) = row else {
+            return Ok(0);
+        };
+        let is_today = count_date.as_deref() == Some(today.format("%Y-%m-%d").to_string().as_str());
+        Ok(if is_today { count } else { 0 })
+    }
+
+    /// Records one live-price request actually sent to Alpha Vantage today
+    /// — rolling the counter over to 1 (not incrementing) if the stored
+    /// count is from an earlier day — and returns the new total. Called
+    /// once per request regardless of whether it succeeded, returned no
+    /// data, or hit Alpha Vantage's own rate limit; it still spent one of
+    /// today's free-tier requests either way.
+    pub fn record_live_price_request(&self, today: NaiveDate) -> rusqlite::Result<i64> {
+        let next = self.live_price_requests_used_today(today)? + 1;
+        self.conn.execute(
+            "INSERT INTO live_price_settings (id, requests_used_today, requests_count_date) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET requests_used_today = ?1, requests_count_date = ?2",
+            params![next, today.format("%Y-%m-%d").to_string()],
+        )?;
+        Ok(next)
+    }
+
     /// Adds a manually-tracked asset (see `StoredAsset`). `asset_type` is a
     /// free string, same convention as `budget_group` — the UI suggests
     /// "real_estate"/"vehicle"/"other" but nothing here enforces it.
@@ -2685,9 +3114,12 @@ impl Store {
 
     /// Every manually-tracked asset, alphabetical by name.
     pub fn list_assets(&self) -> rusqlite::Result<Vec<StoredAsset>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, asset_type, value, valued_on, notes FROM assets ORDER BY name")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT a.id, a.name, a.asset_type, a.value, a.valued_on, a.notes, a.member_id, fm.name
+             FROM assets a
+             LEFT JOIN family_members fm ON fm.id = a.member_id
+             ORDER BY a.name",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -2696,12 +3128,14 @@ impl Store {
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (id, name, asset_type, value, valued_on, notes) = row?;
+            let (id, name, asset_type, value, valued_on, notes, member_id, member_name) = row?;
             result.push(StoredAsset {
                 id,
                 name,
@@ -2710,6 +3144,8 @@ impl Store {
                 valued_on: NaiveDate::parse_from_str(&valued_on, "%Y-%m-%d")
                     .expect("date stored by this crate must be valid"),
                 notes,
+                member_id,
+                member_name,
             });
         }
         Ok(result)
@@ -2723,6 +3159,14 @@ impl Store {
             "UPDATE assets SET value = ?1, valued_on = ?2 WHERE id = ?3",
             params![value.to_string(), valued_on.to_string(), id],
         )?;
+        Ok(())
+    }
+
+    /// Sets (or clears, with `None`) which family member an asset is
+    /// attributed to. An unknown id is a harmless no-op.
+    pub fn set_asset_member(&self, id: i64, member_id: Option<i64>) -> rusqlite::Result<()> {
+        self.conn
+            .execute("UPDATE assets SET member_id = ?1 WHERE id = ?2", params![member_id, id])?;
         Ok(())
     }
 
@@ -4009,6 +4453,445 @@ mod tests {
         store.delete_account(checking).unwrap();
 
         assert!(store.all_transactions().unwrap().is_empty(), "the generated debt-account transaction must go too");
+    }
+
+    #[test]
+    fn create_family_member_then_list_family_members_returns_it() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.create_family_member("Alex").unwrap();
+
+        let members = store.list_family_members().unwrap();
+
+        assert_eq!(members, vec![FamilyMember { id, name: "Alex".to_string() }]);
+    }
+
+    #[test]
+    fn create_family_member_rejects_a_duplicate_name_case_insensitively() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_family_member("Alex").unwrap();
+
+        let result = store.create_family_member("ALEX");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rename_family_member_updates_its_name() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.create_family_member("Alex").unwrap();
+
+        store.rename_family_member(id, "Alexandra").unwrap();
+
+        let members = store.list_family_members().unwrap();
+        assert_eq!(members[0].name, "Alexandra");
+    }
+
+    #[test]
+    fn rename_family_member_on_an_unknown_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.rename_family_member(999, "Nobody").unwrap();
+    }
+
+    #[test]
+    fn delete_family_member_on_an_unknown_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.delete_family_member(999).unwrap();
+    }
+
+    #[test]
+    fn delete_family_member_nulls_member_id_on_the_accounts_it_owns() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+        store.set_account_member(checking, Some(member)).unwrap();
+
+        store.delete_family_member(member).unwrap();
+
+        let accounts = store.list_accounts(far_future()).unwrap();
+        assert_eq!(accounts[0].member_id, None);
+    }
+
+    #[test]
+    fn delete_family_member_nulls_member_id_on_the_transactions_it_owns() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+        store.save_transactions(checking, &[tx("2026-08-01", "Groceries", "-50.00")]).unwrap();
+        let transaction_id = store.all_transactions().unwrap()[0].id;
+        store.set_transaction_member(transaction_id, Some(member)).unwrap();
+
+        store.delete_family_member(member).unwrap();
+
+        assert_eq!(store.all_transactions().unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn delete_family_member_nulls_member_id_on_the_recurring_items_it_owns() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let recurring_id = store
+            .create_recurring("Netflix", None, "-15.00".parse().unwrap(), "monthly", "2026-08-01".parse().unwrap(), None)
+            .unwrap();
+        store.set_recurring_member(recurring_id, Some(member)).unwrap();
+
+        store.delete_family_member(member).unwrap();
+
+        assert_eq!(store.list_recurring(far_future()).unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn delete_family_member_nulls_member_id_on_the_buckets_it_owns() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let bucket_id = store.create_bucket("Emergency Fund", None, None, None).unwrap();
+        store.set_bucket_member(bucket_id, Some(member)).unwrap();
+
+        store.delete_family_member(member).unwrap();
+
+        assert_eq!(store.list_buckets().unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn delete_family_member_nulls_member_id_on_the_assets_it_owns() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let asset_id = store
+            .create_asset("House", "Real Estate", "300000.00".parse().unwrap(), "2026-08-01".parse().unwrap(), None)
+            .unwrap();
+        store.set_asset_member(asset_id, Some(member)).unwrap();
+
+        store.delete_family_member(member).unwrap();
+
+        assert_eq!(store.list_assets().unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn delete_family_member_leaves_a_different_members_rows_untouched() {
+        let store = Store::open_in_memory().unwrap();
+        let alex = store.create_family_member("Alex").unwrap();
+        let sam = store.create_family_member("Sam").unwrap();
+        let checking = test_account(&store);
+        store.set_account_member(checking, Some(sam)).unwrap();
+
+        store.delete_family_member(alex).unwrap();
+
+        assert_eq!(store.list_accounts(far_future()).unwrap()[0].member_id, Some(sam));
+    }
+
+    #[test]
+    fn save_transactions_gives_a_new_transaction_its_accounts_member_by_default() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+        store.set_account_member(checking, Some(member)).unwrap();
+
+        store.save_transactions(checking, &[tx("2026-08-01", "Groceries", "-50.00")]).unwrap();
+
+        assert_eq!(store.all_transactions().unwrap()[0].member_id, Some(member));
+    }
+
+    #[test]
+    fn save_transactions_leaves_member_null_when_the_account_has_none() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = test_account(&store);
+
+        store.save_transactions(checking, &[tx("2026-08-01", "Groceries", "-50.00")]).unwrap();
+
+        assert_eq!(store.all_transactions().unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn apply_debt_payment_gives_the_generated_transaction_the_debt_accounts_member() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+        let loan = store.get_or_create_account("Car Loan", AccountType::Loan).unwrap();
+        store.set_account_member(loan, Some(member)).unwrap();
+        store.set_account_starting_balance(loan, "10000.00".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2026-08-20", "Loan Payment", "-500.00")]).unwrap();
+        let source_id = store.all_transactions().unwrap()[0].id;
+
+        store
+            .apply_debt_payment(source_id, loan, "500.00".parse().unwrap(), "2026-08-20".parse().unwrap())
+            .unwrap();
+
+        let generated = store.all_transactions().unwrap().into_iter().find(|t| t.account_id == loan).unwrap();
+        assert_eq!(generated.member_id, Some(member));
+    }
+
+    #[test]
+    fn set_account_member_assigns_and_clears_a_member() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+
+        store.set_account_member(checking, Some(member)).unwrap();
+        assert_eq!(store.list_accounts(far_future()).unwrap()[0].member_id, Some(member));
+
+        store.set_account_member(checking, None).unwrap();
+        assert_eq!(store.list_accounts(far_future()).unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn set_bucket_member_assigns_and_clears_a_member() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let bucket_id = store.create_bucket("Emergency Fund", None, None, None).unwrap();
+
+        store.set_bucket_member(bucket_id, Some(member)).unwrap();
+        assert_eq!(store.list_buckets().unwrap()[0].member_id, Some(member));
+
+        store.set_bucket_member(bucket_id, None).unwrap();
+        assert_eq!(store.list_buckets().unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn set_recurring_member_assigns_and_clears_a_member() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let recurring_id = store
+            .create_recurring("Netflix", None, "-15.00".parse().unwrap(), "monthly", "2026-08-01".parse().unwrap(), None)
+            .unwrap();
+
+        store.set_recurring_member(recurring_id, Some(member)).unwrap();
+        assert_eq!(store.list_recurring(far_future()).unwrap()[0].member_id, Some(member));
+
+        store.set_recurring_member(recurring_id, None).unwrap();
+        assert_eq!(store.list_recurring(far_future()).unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn set_asset_member_assigns_and_clears_a_member() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let asset_id = store
+            .create_asset("House", "Real Estate", "300000.00".parse().unwrap(), "2026-08-01".parse().unwrap(), None)
+            .unwrap();
+
+        store.set_asset_member(asset_id, Some(member)).unwrap();
+        assert_eq!(store.list_assets().unwrap()[0].member_id, Some(member));
+
+        store.set_asset_member(asset_id, None).unwrap();
+        assert_eq!(store.list_assets().unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn set_transaction_member_assigns_and_clears_a_member() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+        store.save_transactions(checking, &[tx("2026-08-01", "Groceries", "-50.00")]).unwrap();
+        let transaction_id = store.all_transactions().unwrap()[0].id;
+
+        store.set_transaction_member(transaction_id, Some(member)).unwrap();
+        assert_eq!(store.all_transactions().unwrap()[0].member_id, Some(member));
+
+        store.set_transaction_member(transaction_id, None).unwrap();
+        assert_eq!(store.all_transactions().unwrap()[0].member_id, None);
+    }
+
+    #[test]
+    fn bulk_set_transaction_member_applies_to_every_id_given() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+        store
+            .save_transactions(
+                checking,
+                &[tx("2026-08-01", "Groceries", "-50.00"), tx("2026-08-02", "Gas", "-40.00")],
+            )
+            .unwrap();
+        let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
+
+        store.bulk_set_transaction_member(&ids, Some(member)).unwrap();
+
+        let all = store.all_transactions().unwrap();
+        assert!(all.iter().all(|t| t.member_id == Some(member)));
+    }
+
+    #[test]
+    fn list_accounts_includes_its_members_name() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+        store.set_account_member(checking, Some(member)).unwrap();
+
+        let accounts = store.list_accounts(far_future()).unwrap();
+
+        assert_eq!(accounts[0].member_name, Some("Alex".to_string()));
+    }
+
+    #[test]
+    fn list_buckets_includes_its_members_name() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let bucket_id = store.create_bucket("Emergency Fund", None, None, None).unwrap();
+        store.set_bucket_member(bucket_id, Some(member)).unwrap();
+
+        let buckets = store.list_buckets().unwrap();
+
+        assert_eq!(buckets[0].member_name, Some("Alex".to_string()));
+    }
+
+    #[test]
+    fn list_recurring_includes_its_members_name() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let recurring_id = store
+            .create_recurring("Netflix", None, "-15.00".parse().unwrap(), "monthly", "2026-08-01".parse().unwrap(), None)
+            .unwrap();
+        store.set_recurring_member(recurring_id, Some(member)).unwrap();
+
+        let recurring = store.list_recurring(far_future()).unwrap();
+
+        assert_eq!(recurring[0].member_name, Some("Alex".to_string()));
+    }
+
+    #[test]
+    fn list_assets_includes_its_members_name() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let asset_id = store
+            .create_asset("House", "Real Estate", "300000.00".parse().unwrap(), "2026-08-01".parse().unwrap(), None)
+            .unwrap();
+        store.set_asset_member(asset_id, Some(member)).unwrap();
+
+        let assets = store.list_assets().unwrap();
+
+        assert_eq!(assets[0].member_name, Some("Alex".to_string()));
+    }
+
+    #[test]
+    fn all_transactions_includes_its_members_name() {
+        let store = Store::open_in_memory().unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+        let checking = test_account(&store);
+        store.save_transactions(checking, &[tx("2026-08-01", "Groceries", "-50.00")]).unwrap();
+        let transaction_id = store.all_transactions().unwrap()[0].id;
+        store.set_transaction_member(transaction_id, Some(member)).unwrap();
+
+        let transactions = store.all_transactions().unwrap();
+
+        assert_eq!(transactions[0].member_name, Some("Alex".to_string()));
+    }
+
+    #[test]
+    fn opening_a_pre_member_id_database_migrates_every_table_without_losing_data() {
+        // Simulates a database from before family member attribution
+        // existed: accounts/transactions/recurring/buckets/assets with no
+        // `member_id` column on any of them.
+        let dir = std::env::temp_dir().join(format!("meadow-member-id-migration-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("pre_member_id.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).unwrap();
+        }
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    account_type TEXT NOT NULL,
+                    starting_balance TEXT NOT NULL DEFAULT '0',
+                    institution TEXT,
+                    mask TEXT,
+                    interest_rate TEXT,
+                    excluded_from_debt_payoff INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL REFERENCES accounts(id),
+                    date TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    amount TEXT NOT NULL,
+                    category TEXT,
+                    category_source TEXT,
+                    confidence REAL,
+                    fingerprint TEXT NOT NULL
+                );
+                CREATE TABLE recurring (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    merchant TEXT NOT NULL,
+                    category TEXT,
+                    amount TEXT NOT NULL,
+                    cadence TEXT NOT NULL,
+                    anchor_date TEXT NOT NULL,
+                    account_id INTEGER
+                );
+                CREATE TABLE buckets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    target_amount TEXT,
+                    target_date TEXT,
+                    account_id INTEGER
+                );
+                CREATE TABLE assets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    asset_type TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    valued_on TEXT NOT NULL,
+                    notes TEXT
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO accounts (id, name, account_type, starting_balance) VALUES (1, 'Everyday Checking', 'checking', '0')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (account_id, date, description, amount, fingerprint) VALUES (1, '2026-08-01', 'Groceries', '-50.00', 'fp1')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO recurring (merchant, amount, cadence, anchor_date, account_id) VALUES ('Netflix', '-15.00', 'monthly', '2026-08-01', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO buckets (name, account_id) VALUES ('Emergency Fund', 1)", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO assets (name, asset_type, value, valued_on) VALUES ('House', 'Real Estate', '300000.00', '2026-08-01')",
+                [],
+            )
+            .unwrap();
+        } // old-style connection dropped here
+
+        let store = Store::open(&db_path).unwrap();
+        let member = store.create_family_member("Alex").unwrap();
+
+        let accounts = store.list_accounts(far_future()).unwrap();
+        assert_eq!(accounts.len(), 1, "the pre-existing account must survive the migration");
+        assert_eq!(accounts[0].member_id, None);
+        store.set_account_member(accounts[0].id, Some(member)).unwrap();
+        assert_eq!(store.list_accounts(far_future()).unwrap()[0].member_id, Some(member));
+
+        let transactions = store.all_transactions().unwrap();
+        assert_eq!(transactions.len(), 1, "the pre-existing transaction must survive the migration");
+        store.set_transaction_member(transactions[0].id, Some(member)).unwrap();
+        assert_eq!(store.all_transactions().unwrap()[0].member_id, Some(member));
+
+        let recurring = store.list_recurring(far_future()).unwrap();
+        assert_eq!(recurring.len(), 1, "the pre-existing recurring item must survive the migration");
+        store.set_recurring_member(recurring[0].id, Some(member)).unwrap();
+        assert_eq!(store.list_recurring(far_future()).unwrap()[0].member_id, Some(member));
+
+        let buckets = store.list_buckets().unwrap();
+        assert_eq!(buckets.len(), 1, "the pre-existing bucket must survive the migration");
+        store.set_bucket_member(buckets[0].id, Some(member)).unwrap();
+        assert_eq!(store.list_buckets().unwrap()[0].member_id, Some(member));
+
+        let assets = store.list_assets().unwrap();
+        assert_eq!(assets.len(), 1, "the pre-existing asset must survive the migration");
+        store.set_asset_member(assets[0].id, Some(member)).unwrap();
+        assert_eq!(store.list_assets().unwrap()[0].member_id, Some(member));
+
+        drop(store);
+        std::fs::remove_file(&db_path).unwrap();
     }
 
     #[test]
@@ -6118,6 +7001,175 @@ mod tests {
     fn delete_holding_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
         store.delete_holding(999).unwrap();
+    }
+
+    #[test]
+    fn list_distinct_holding_symbols_dedupes_across_accounts() {
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Brokerage", AccountType::Investment).unwrap();
+        let ira = store.get_or_create_account("IRA", AccountType::Investment).unwrap();
+        store
+            .create_holding(brokerage, "AAPL", "Apple Inc.", "1".parse().unwrap(), "200".parse().unwrap(), "200".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_holding(ira, "AAPL", "Apple Inc.", "2".parse().unwrap(), "200".parse().unwrap(), "400".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_holding(brokerage, "MSFT", "Microsoft Corp.", "1".parse().unwrap(), "300".parse().unwrap(), "300".parse().unwrap(), None)
+            .unwrap();
+
+        let symbols = store.list_distinct_holding_symbols().unwrap();
+
+        assert_eq!(symbols, vec!["AAPL".to_string(), "MSFT".to_string()]);
+    }
+
+    #[test]
+    fn update_holding_prices_for_symbol_updates_all_matching_holdings() {
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Brokerage", AccountType::Investment).unwrap();
+        let ira = store.get_or_create_account("IRA", AccountType::Investment).unwrap();
+        store
+            .create_holding(brokerage, "AAPL", "Apple Inc.", "1".parse().unwrap(), "200".parse().unwrap(), "200".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_holding(ira, "AAPL", "Apple Inc.", "2".parse().unwrap(), "200".parse().unwrap(), "400".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_holding(brokerage, "MSFT", "Microsoft Corp.", "1".parse().unwrap(), "300".parse().unwrap(), "300".parse().unwrap(), None)
+            .unwrap();
+
+        let updated = store.update_holding_prices_for_symbol("AAPL", "250".parse().unwrap()).unwrap();
+
+        assert_eq!(updated, 2);
+        let holdings = store.list_holdings().unwrap();
+        for h in &holdings {
+            if h.symbol == "AAPL" {
+                assert_eq!(h.price, "250".parse().unwrap());
+            } else {
+                assert_eq!(h.price, "300".parse().unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn update_holding_prices_for_symbol_on_unknown_symbol_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        let updated = store.update_holding_prices_for_symbol("NOSUCH", "1".parse().unwrap()).unwrap();
+        assert_eq!(updated, 0);
+    }
+
+    #[test]
+    fn live_price_settings_default_when_never_set() {
+        let store = Store::open_in_memory().unwrap();
+
+        let settings = store.get_live_price_settings().unwrap();
+
+        assert_eq!(settings.api_key, None);
+        assert_eq!(settings.last_refreshed_at, None);
+    }
+
+    #[test]
+    fn set_live_price_api_key_then_get_returns_it() {
+        let store = Store::open_in_memory().unwrap();
+
+        store.set_live_price_api_key(Some("demo-key")).unwrap();
+
+        let settings = store.get_live_price_settings().unwrap();
+        assert_eq!(settings.api_key, Some("demo-key".to_string()));
+    }
+
+    #[test]
+    fn set_live_price_api_key_none_clears_it() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_live_price_api_key(Some("demo-key")).unwrap();
+
+        store.set_live_price_api_key(None).unwrap();
+
+        let settings = store.get_live_price_settings().unwrap();
+        assert_eq!(settings.api_key, None);
+    }
+
+    #[test]
+    fn set_live_prices_last_refreshed_persists_timestamp() {
+        let store = Store::open_in_memory().unwrap();
+        let at = NaiveDateTime::parse_from_str("2026-08-30 14:05:00", "%Y-%m-%d %H:%M:%S").unwrap();
+
+        store.set_live_prices_last_refreshed(at).unwrap();
+
+        let settings = store.get_live_price_settings().unwrap();
+        assert_eq!(settings.last_refreshed_at, Some(at));
+    }
+
+    #[test]
+    fn live_price_requests_used_today_is_zero_when_never_recorded() {
+        let store = Store::open_in_memory().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 8, 30).unwrap();
+
+        assert_eq!(store.live_price_requests_used_today(today).unwrap(), 0);
+    }
+
+    #[test]
+    fn record_live_price_request_increments_and_returns_the_new_count() {
+        let store = Store::open_in_memory().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 8, 30).unwrap();
+
+        assert_eq!(store.record_live_price_request(today).unwrap(), 1);
+        assert_eq!(store.record_live_price_request(today).unwrap(), 2);
+        assert_eq!(store.record_live_price_request(today).unwrap(), 3);
+        assert_eq!(store.live_price_requests_used_today(today).unwrap(), 3);
+    }
+
+    #[test]
+    fn record_live_price_request_resets_to_one_on_a_new_day() {
+        let store = Store::open_in_memory().unwrap();
+        let yesterday = NaiveDate::from_ymd_opt(2026, 8, 29).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 8, 30).unwrap();
+        store.record_live_price_request(yesterday).unwrap();
+        store.record_live_price_request(yesterday).unwrap();
+
+        let count = store.record_live_price_request(today).unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(store.live_price_requests_used_today(today).unwrap(), 1);
+        assert_eq!(store.live_price_requests_used_today(yesterday).unwrap(), 0);
+    }
+
+    #[test]
+    fn opening_a_pre_request_tracking_database_migrates_it_without_losing_the_api_key() {
+        // Simulates a database from before the daily request counter
+        // existed: a `live_price_settings` table with just the original two
+        // columns, already holding a saved API key.
+        let dir = std::env::temp_dir().join(format!("pennyworth-live-price-migration-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("pre_request_tracking.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).unwrap();
+        }
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE live_price_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    api_key TEXT,
+                    last_refreshed_at TEXT
+                );",
+            )
+            .unwrap();
+            conn.execute("INSERT INTO live_price_settings (id, api_key) VALUES (1, 'saved-key')", [])
+                .unwrap();
+        } // old-style connection dropped here
+
+        let store = Store::open(&db_path).unwrap();
+        let settings = store.get_live_price_settings().unwrap();
+        assert_eq!(settings.api_key, Some("saved-key".to_string()), "the saved API key must survive the migration");
+
+        let today = NaiveDate::from_ymd_opt(2026, 8, 30).unwrap();
+        assert_eq!(store.live_price_requests_used_today(today).unwrap(), 0);
+        assert_eq!(store.record_live_price_request(today).unwrap(), 1);
+
+        drop(store);
+        std::fs::remove_file(&db_path).unwrap();
     }
 
     // Manual assets ("Property & Valuables").

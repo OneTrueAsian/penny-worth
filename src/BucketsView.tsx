@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import type { Account, Bucket } from "./types";
+import type { Account, Bucket, FamilyMember } from "./types";
 import { ProgressRing } from "./charts";
 import { formatAmount } from "./format";
 
@@ -21,15 +21,24 @@ function daysLeft(targetDate: string): number {
 
 function NewBucketForm({
   accounts,
+  familyMembers,
   onCreate,
 }: {
   accounts: Account[];
-  onCreate: (name: string, targetAmount: string | null, targetDate: string | null, accountId: number | null) => void;
+  familyMembers: FamilyMember[];
+  onCreate: (
+    name: string,
+    targetAmount: string | null,
+    targetDate: string | null,
+    accountId: number | null,
+    memberId: number | null,
+  ) => void;
 }) {
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
   const [targetDate, setTargetDate] = useState("");
   const [accountId, setAccountId] = useState("");
+  const [memberId, setMemberId] = useState("");
   const [open, setOpen] = useState(false);
 
   function handleSubmit(e: FormEvent) {
@@ -40,11 +49,13 @@ function NewBucketForm({
       target.trim() ? target.trim() : null,
       targetDate.trim() ? targetDate.trim() : null,
       accountId ? Number(accountId) : null,
+      memberId ? Number(memberId) : null,
     );
     setName("");
     setTarget("");
     setTargetDate("");
     setAccountId("");
+    setMemberId("");
     setOpen(false);
   }
 
@@ -65,6 +76,16 @@ function NewBucketForm({
           </option>
         ))}
       </select>
+      {familyMembers.length > 0 && (
+        <select value={memberId} onChange={(e) => setMemberId(e.target.value)}>
+          <option value="">Unassigned</option>
+          {familyMembers.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      )}
       <button type="submit" disabled={!name.trim()}>
         Create
       </button>
@@ -112,13 +133,21 @@ function ContributionForm({
 export function BucketsView({
   buckets,
   accounts,
+  familyMembers,
   onCreateBucket,
   onAddContribution,
   onDeleteBucket,
 }: {
   buckets: Bucket[];
   accounts: Account[];
-  onCreateBucket: (name: string, targetAmount: string | null, targetDate: string | null, accountId: number | null) => void;
+  familyMembers: FamilyMember[];
+  onCreateBucket: (
+    name: string,
+    targetAmount: string | null,
+    targetDate: string | null,
+    accountId: number | null,
+    memberId: number | null,
+  ) => void;
   onAddContribution: (bucketId: number, date: string, amount: string, note: string | null) => void;
   onDeleteBucket: (id: number) => void;
 }) {
@@ -163,7 +192,9 @@ export function BucketsView({
                   </p>
                   <p className="bucket-target">
                     {b.account_name && `${b.account_name}`}
-                    {b.account_name && b.target_date && " · "}
+                    {b.account_name && (b.member_name || b.target_date) && " · "}
+                    {b.member_name && `${b.member_name}`}
+                    {b.member_name && b.target_date && " · "}
                     {b.target_date && `${daysLeft(b.target_date)} days left`}
                   </p>
                 </div>
@@ -176,7 +207,7 @@ export function BucketsView({
       {buckets.length === 0 && (
         <p className="empty-state">No savings buckets yet — create one to start tracking a goal.</p>
       )}
-      <NewBucketForm accounts={accounts} onCreate={onCreateBucket} />
+      <NewBucketForm accounts={accounts} familyMembers={familyMembers} onCreate={onCreateBucket} />
     </div>
   );
 }

@@ -34,10 +34,12 @@ file on your own computer, and nothing is ever sent anywhere else.
   **Insights** feed that surfaces things worth a look on its own: a
   category on pace to go over budget, a month-over-month spending jump, or
   an unusually large charge.
-- **Ledger** — every transaction, filterable by account/category/tag,
-  with inline category correction (one at a time or in bulk), splitting a
-  transaction across multiple categories, tagging, and applying a payment
-  toward a debt account.
+- **Ledger** — every transaction, filterable by account/category/tag/family
+  member, with inline category correction (one at a time or in bulk),
+  splitting a transaction across multiple categories, tagging, applying a
+  payment toward a debt account, and — for households tracking more than
+  one person — assigning any account, transaction, bucket, asset, or
+  recurring item to a family member via **"Manage family members…"**.
 - **Budget** — this month's budgeted vs. actual per category, with
   prev/next month navigation and drag-to-reorder. **Click any category
   name** to see every transaction behind that number and fix any that are
@@ -61,16 +63,20 @@ file on your own computer, and nothing is ever sent anywhere else.
 - **Investments** — holdings per account (shares, price, cost basis) with
   computed value and gain/loss, plus a **goal projection** calculator that
   projects a future balance from a starting amount, a monthly
-  contribution, and an assumed annual return. This is a manual tracker,
-  not a live market-data feed.
+  contribution, and an assumed annual return. Prices are manual by
+  default; optionally turn on live pricing (Settings tab) to auto-fill a
+  new holding's price by symbol and keep existing ones current
+  automatically.
 - **Reports** — accounts management, net worth breakdown, total saved,
   all-time income, spending by tag, this month's budget snapshot,
   **Property & Valuables** (manually tracked assets like a home or a
   vehicle, folded into your net worth), and the CSV/PDF export and
   setup-data import/export tools described below.
-- **Settings** — where your data file lives (and a button to move it),
-  plus your backup history with a manual "Back up now" and per-backup
-  restore.
+- **Settings** — separate profiles (completely independent data files you
+  can create, switch, rename, and delete — see FAQ), where your data file
+  lives (and a button to move it), your backup history with a manual
+  "Back up now" and per-backup restore, and an optional live stock-price
+  integration for the Investments tab.
 
 ## Importing transactions
 
@@ -216,3 +222,30 @@ left behind untouched, in case you want it back.
 **Where's my data if I want to back it up myself?**
 `%APPDATA%\com.<user>.pennyworth\pennyworth.db` is the entire ledger — copy
 that one file to back it up or move it to another computer.
+
+**Can Penny Worth track spending for multiple people?**
+Two different ways, depending on what you actually want:
+
+- **Family members** — tag any account, transaction, bucket, asset, or
+  recurring item with who it belongs to, then filter down to just one
+  person wherever a member filter appears. Everyone still shares the same
+  file and sees the same data; it's attribution, not separation. Manage
+  them from the Ledger tab's "Manage family members…" button.
+- **Profiles** — completely separate, independent data files, one per
+  person, with nothing shared between them. Switch profiles from the
+  indicator in the sidebar, or manage them fully (create, rename, delete)
+  from the Settings tab.
+
+Use family members for one combined household view with who-spent-what
+attribution. Use profiles for genuinely separate finances under one
+install — roommates, or keeping a side business apart from personal
+spending, for example.
+
+**Can holding prices update automatically?**
+Optionally — off by default, so nothing changes unless you turn it on. In
+Settings, add a free Alpha Vantage API key to enable it: new holdings can
+auto-fill their price by symbol, and existing ones refresh automatically
+when the app opens and every 2 hours it stays open (one request per
+distinct symbol you hold, not per holding). Turn it off any time and
+prices go back to fully manual. Alpha Vantage's free tier is capped at 25
+requests/day, which comfortably covers casual use.

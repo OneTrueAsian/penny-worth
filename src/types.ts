@@ -5,6 +5,13 @@ export type Asset = {
   value: string;
   valued_on: string;
   notes: string | null;
+  member_id: number | null;
+  member_name: string | null;
+};
+
+export type FamilyMember = {
+  id: number;
+  name: string;
 };
 
 export type ForecastPoint = {
@@ -16,6 +23,24 @@ export type Backup = {
   filename: string;
   created_at: string;
   size_bytes: number;
+};
+
+export type Profile = {
+  id: string;
+  name: string;
+  is_active: boolean;
+};
+
+export type LivePriceSettings = {
+  enabled: boolean;
+  last_refreshed_at: string | null;
+  requests_used_today: number;
+  requests_limit: number;
+};
+
+export type LivePriceRefreshSummary = {
+  updated: string[];
+  failed: { symbol: string; error: string }[];
 };
 
 export type Insight = {
@@ -43,6 +68,8 @@ export type Transaction = {
   applied_to_debt: AppliedDebtPayment | null;
   split_count: number;
   tags: string[];
+  member_id: number | null;
+  member_name: string | null;
 };
 
 export type TransactionSplit = {
@@ -62,6 +89,8 @@ export type Account = {
   mask: string | null;
   interest_rate: string | null;
   excluded_from_debt_payoff: boolean;
+  member_id: number | null;
+  member_name: string | null;
 };
 
 export type DebtPayoffLine = {
@@ -86,6 +115,8 @@ export type Bucket = {
   target_date: string | null;
   account_id: number | null;
   account_name: string | null;
+  member_id: number | null;
+  member_name: string | null;
 };
 
 export type BudgetGroup = "income" | "fixed" | "flexible" | "nonmonthly";
@@ -107,6 +138,8 @@ export type Recurring = {
   next_date: string;
   account_id: number | null;
   account_name: string | null;
+  member_id: number | null;
+  member_name: string | null;
 };
 
 export type RecurringCandidate = {

@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import type { Account, Asset, Bucket, DebtPayoffPlan, Report, Transaction } from "./types";
+import type { Account, Asset, Bucket, DebtPayoffPlan, FamilyMember, Report, Transaction } from "./types";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 import { GROUP_LABELS, GROUP_ORDER, groupOf } from "./accountGroups";
@@ -17,20 +17,35 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function NewAssetForm({ onCreate }: { onCreate: (name: string, assetType: string, value: string, valuedOn: string, notes: string | null) => void }) {
+function NewAssetForm({
+  familyMembers,
+  onCreate,
+}: {
+  familyMembers: FamilyMember[];
+  onCreate: (
+    name: string,
+    assetType: string,
+    value: string,
+    valuedOn: string,
+    notes: string | null,
+    memberId: number | null,
+  ) => void;
+}) {
   const [name, setName] = useState("");
   const [assetType, setAssetType] = useState(ASSET_TYPE_OPTIONS[0]);
   const [value, setValue] = useState("");
   const [notes, setNotes] = useState("");
+  const [memberId, setMemberId] = useState("");
   const [open, setOpen] = useState(false);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!name.trim() || !value.trim()) return;
-    onCreate(name.trim(), assetType, value.trim(), todayIso(), notes.trim() || null);
+    onCreate(name.trim(), assetType, value.trim(), todayIso(), notes.trim() || null, memberId ? Number(memberId) : null);
     setName("");
     setValue("");
     setNotes("");
+    setMemberId("");
     setOpen(false);
   }
 
@@ -52,6 +67,16 @@ function NewAssetForm({ onCreate }: { onCreate: (name: string, assetType: string
       </select>
       <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Current value" />
       <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" />
+      {familyMembers.length > 0 && (
+        <select value={memberId} onChange={(e) => setMemberId(e.target.value)}>
+          <option value="">Unassigned</option>
+          {familyMembers.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      )}
       <button type="submit" disabled={!name.trim() || !value.trim()}>
         Save
       </button>
@@ -64,13 +89,24 @@ function NewAssetForm({ onCreate }: { onCreate: (name: string, assetType: string
 
 function PropertyAssetsSection({
   assets,
+  familyMembers,
   onCreate,
   onUpdateValue,
+  onSetMember,
   onDelete,
 }: {
   assets: Asset[];
-  onCreate: (name: string, assetType: string, value: string, valuedOn: string, notes: string | null) => void;
+  familyMembers: FamilyMember[];
+  onCreate: (
+    name: string,
+    assetType: string,
+    value: string,
+    valuedOn: string,
+    notes: string | null,
+    memberId: number | null,
+  ) => void;
   onUpdateValue: (id: number, value: string, valuedOn: string) => void;
+  onSetMember: (id: number, memberId: number | null) => void;
   onDelete: (id: number) => void;
 }) {
   const [editing, setEditing] = useState<{ id: number; value: string } | null>(null);
@@ -95,6 +131,7 @@ function PropertyAssetsSection({
             <th>Name</th>
             <th>Type</th>
             <th className="amount-col">Value</th>
+            <th>Member</th>
             <th>Updated</th>
             <th className="actions-col"></th>
           </tr>
@@ -130,6 +167,19 @@ function PropertyAssetsSection({
                   </span>
                 )}
               </td>
+              <td className="member-col">
+                <select
+                  value={a.member_id ?? ""}
+                  onChange={(e) => onSetMember(a.id, e.target.value ? Number(e.target.value) : null)}
+                >
+                  <option value="">Unassigned</option>
+                  {familyMembers.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </td>
               <td>{a.valued_on}</td>
               <td className="actions-col">
                 {confirmingDeleteId === a.id ? (
@@ -151,14 +201,14 @@ function PropertyAssetsSection({
           ))}
           {assets.length === 0 && (
             <tr>
-              <td colSpan={5} className="empty-state">
+              <td colSpan={6} className="empty-state">
                 No property or valuables tracked yet.
               </td>
             </tr>
           )}
           <tr>
-            <td colSpan={5}>
-              <NewAssetForm onCreate={onCreate} />
+            <td colSpan={6}>
+              <NewAssetForm familyMembers={familyMembers} onCreate={onCreate} />
             </td>
           </tr>
         </tbody>
@@ -187,12 +237,13 @@ function netWorthContribution(a: Account): number {
 /** Every stat on this page that can be clicked open to show what makes
  * it up — shared between the top-level stats and AccountsSection's own,
  * so only one breakdown panel is ever open at a time. */
-type ReportStatKey = "totalSaved" | "income" | "byTag" | "assets" | "liabilities" | "networth";
+type ReportStatKey = "totalSaved" | "income" | "byTag" | "byMember" | "assets" | "liabilities" | "networth";
 
 const REPORT_STAT_LABELS: Record<ReportStatKey, string> = {
   totalSaved: "Total Saved",
   income: "Income (all-time)",
   byTag: "Spending by Tag",
+  byMember: "Spending by Member",
   assets: "Total Assets",
   liabilities: "Total Liabilities",
   networth: "Net Worth",
@@ -370,6 +421,8 @@ function AccountRow({
   editingDetails,
   setEditingDetails,
   onSetAccountDetails,
+  familyMembers,
+  onSetAccountMember,
   confirmingDeleteId,
   setConfirmingDeleteId,
   onDeleteAccount,
@@ -382,6 +435,8 @@ function AccountRow({
   editingDetails: { id: number; institution: string; mask: string } | null;
   setEditingDetails: (v: { id: number; institution: string; mask: string } | null) => void;
   onSetAccountDetails: (accountId: number, institution: string | null, mask: string | null) => void;
+  familyMembers: FamilyMember[];
+  onSetAccountMember: (accountId: number, memberId: number | null) => void;
   confirmingDeleteId: number | null;
   setConfirmingDeleteId: (id: number | null) => void;
   onDeleteAccount: (accountId: number) => void;
@@ -475,6 +530,19 @@ function AccountRow({
           </span>
         )}
       </td>
+      <td className="member-col">
+        <select
+          value={a.member_id ?? ""}
+          onChange={(e) => onSetAccountMember(a.id, e.target.value ? Number(e.target.value) : null)}
+        >
+          <option value="">Unassigned</option>
+          {familyMembers.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      </td>
       <td className="source-col">
         {isCredit
           ? `Owed ${formatAmount(owed)} · Available ${formatAmount(a.current_balance)}`
@@ -509,6 +577,8 @@ function AccountsSection({
   onUpdateAccountType,
   onDeleteAccount,
   onSetAccountDetails,
+  familyMembers,
+  onSetAccountMember,
   onAddAccount,
   expandedStat,
   onToggleStat,
@@ -521,6 +591,8 @@ function AccountsSection({
   onUpdateAccountType: (accountId: number, accountType: string) => void;
   onDeleteAccount: (accountId: number) => void;
   onSetAccountDetails: (accountId: number, institution: string | null, mask: string | null) => void;
+  familyMembers: FamilyMember[];
+  onSetAccountMember: (accountId: number, memberId: number | null) => void;
   onAddAccount: () => void;
   expandedStat: ReportStatKey | null;
   onToggleStat: (key: ReportStatKey) => void;
@@ -552,6 +624,8 @@ function AccountsSection({
     editingDetails,
     setEditingDetails,
     onSetAccountDetails,
+    familyMembers,
+    onSetAccountMember,
     confirmingDeleteId,
     setConfirmingDeleteId,
     onDeleteAccount,
@@ -613,17 +687,19 @@ function AccountsSection({
             </h2>
             <table className="ledger accounts-table">
               <colgroup>
-                <col style={{ width: "26%" }} />
-                <col style={{ width: "12%" }} />
+                <col style={{ width: "24%" }} />
+                <col style={{ width: "11%" }} />
+                <col style={{ width: "14%" }} />
                 <col style={{ width: "15%" }} />
-                <col style={{ width: "27%" }} />
-                <col style={{ width: "20%" }} />
+                <col style={{ width: "21%" }} />
+                <col style={{ width: "15%" }} />
               </colgroup>
               <thead>
                 <tr>
                   <th>Account</th>
                   <th>Type</th>
                   <th className="amount-col">{"Balance / limit"}</th>
+                  <th>Member</th>
                   <th>Details</th>
                   <th className="actions-col"></th>
                 </tr>
@@ -648,10 +724,12 @@ export function ReportsView({
   buckets,
   transactions,
   assets,
+  familyMembers,
   onSetStartingBalance,
   onUpdateAccountType,
   onDeleteAccount,
   onSetAccountDetails,
+  onSetAccountMember,
   onAddAccount,
   onExportCsv,
   onPrint,
@@ -659,6 +737,7 @@ export function ReportsView({
   onImportSetupData,
   onCreateAsset,
   onUpdateAssetValue,
+  onSetAssetMember,
   onDeleteAsset,
 }: {
   report: Report | null;
@@ -666,17 +745,27 @@ export function ReportsView({
   buckets: Bucket[];
   transactions: Transaction[];
   assets: Asset[];
+  familyMembers: FamilyMember[];
   onSetStartingBalance: (accountId: number, balance: string) => void;
   onUpdateAccountType: (accountId: number, accountType: string) => void;
   onDeleteAccount: (accountId: number) => void;
   onSetAccountDetails: (accountId: number, institution: string | null, mask: string | null) => void;
+  onSetAccountMember: (accountId: number, memberId: number | null) => void;
   onAddAccount: () => void;
   onExportCsv: () => void;
   onPrint: () => void;
   onDownloadSetupTemplate: () => void;
   onImportSetupData: () => void;
-  onCreateAsset: (name: string, assetType: string, value: string, valuedOn: string, notes: string | null) => void;
+  onCreateAsset: (
+    name: string,
+    assetType: string,
+    value: string,
+    valuedOn: string,
+    notes: string | null,
+    memberId: number | null,
+  ) => void;
   onUpdateAssetValue: (id: number, value: string, valuedOn: string) => void;
+  onSetAssetMember: (id: number, memberId: number | null) => void;
   onDeleteAsset: (id: number) => void;
 }) {
   const [expandedStat, setExpandedStat] = useState<ReportStatKey | null>(null);
@@ -711,11 +800,44 @@ export function ReportsView({
   }
   const tagBreakdown = Array.from(tagTotals, ([name, amount]) => ({ name, amount }));
 
-  const topLevelBreakdowns: Record<"totalSaved" | "income" | "byTag", { name: string; amount: number }[]> = {
+  // All-time spending grouped by family member — same outflows-only
+  // convention as tag spending above. Unlike a tag, a transaction carries
+  // at most one member, so there's no double-counting; an unattributed
+  // transaction is left out entirely rather than lumped into a catch-all
+  // "Unassigned" bucket — this is meant to answer "how much did each named
+  // person spend," not to track attribution coverage.
+  const memberTotals = new Map<string, number>();
+  for (const t of transactions) {
+    const amount = parseFloat(t.amount);
+    if (amount >= 0 || !t.member_name) continue;
+    memberTotals.set(t.member_name, (memberTotals.get(t.member_name) ?? 0) + Math.abs(amount));
+  }
+  const memberBreakdown = Array.from(memberTotals, ([name, amount]) => ({ name, amount }));
+
+  const topLevelBreakdowns: Record<"totalSaved" | "income" | "byTag" | "byMember", { name: string; amount: number }[]> = {
     totalSaved: totalSavedBreakdown,
     income: incomeBreakdown,
     byTag: tagBreakdown,
+    byMember: memberBreakdown,
   };
+
+  // Net worth grouped by family member — accounts plus manually-tracked
+  // assets, same netWorthContribution convention `AccountsSection` uses for
+  // its type-based grouping. An "Unassigned" row covers whatever isn't
+  // attributed to anyone, so (unlike the spending breakdown above) this
+  // total always reconciles with the overall Net Worth stat.
+  const netWorthByMember = new Map<string, number>();
+  for (const a of accounts) {
+    const key = a.member_name ?? "Unassigned";
+    netWorthByMember.set(key, (netWorthByMember.get(key) ?? 0) + netWorthContribution(a));
+  }
+  for (const asset of assets) {
+    const key = asset.member_name ?? "Unassigned";
+    netWorthByMember.set(key, (netWorthByMember.get(key) ?? 0) + parseFloat(asset.value));
+  }
+  const netWorthByMemberRows = Array.from(netWorthByMember, ([name, amount]) => ({ name, amount })).sort((x, y) =>
+    x.name === "Unassigned" ? 1 : y.name === "Unassigned" ? -1 : x.name.localeCompare(y.name),
+  );
 
   return (
     <div className="reports-view">
@@ -759,18 +881,30 @@ export function ReportsView({
           <span className="stat-value">{tagBreakdown.length}</span>
           <span className="stat-label">Tags in use</span>
         </button>
+        {familyMembers.length > 0 && (
+          <button
+            type="button"
+            className={expandedStat === "byMember" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+            onClick={() => toggleStat("byMember")}
+          >
+            <span className="stat-value">{memberBreakdown.length}</span>
+            <span className="stat-label">Members with spending</span>
+          </button>
+        )}
       </div>
 
       {expandedStat && expandedStat in topLevelBreakdowns && (
         <StatDetailPanel
           title={REPORT_STAT_LABELS[expandedStat]}
-          rows={topLevelBreakdowns[expandedStat as "totalSaved" | "income" | "byTag"]}
+          rows={topLevelBreakdowns[expandedStat as "totalSaved" | "income" | "byTag" | "byMember"]}
           emptyMessage={
             expandedStat === "totalSaved"
               ? "No savings buckets yet."
               : expandedStat === "income"
                 ? "No income recorded yet."
-                : "No tags used yet — add some from the Ledger."
+                : expandedStat === "byTag"
+                  ? "No tags used yet — add some from the Ledger."
+                  : "No spending attributed to a family member yet."
           }
           onClose={() => toggleStat(expandedStat)}
         />
@@ -783,6 +917,8 @@ export function ReportsView({
         onUpdateAccountType={onUpdateAccountType}
         onDeleteAccount={onDeleteAccount}
         onSetAccountDetails={onSetAccountDetails}
+        familyMembers={familyMembers}
+        onSetAccountMember={onSetAccountMember}
         onAddAccount={onAddAccount}
         expandedStat={expandedStat}
         onToggleStat={toggleStat}
@@ -790,10 +926,41 @@ export function ReportsView({
 
       <PropertyAssetsSection
         assets={assets}
+        familyMembers={familyMembers}
         onCreate={onCreateAsset}
         onUpdateValue={onUpdateAssetValue}
+        onSetMember={onSetAssetMember}
         onDelete={onDeleteAsset}
       />
+
+      {familyMembers.length > 0 && (
+        <div>
+          <h2 className="reports-section-title">Net Worth by Member</h2>
+          <table className="ledger">
+            <thead>
+              <tr>
+                <th>Member</th>
+                <th className="amount-col">Net Worth</th>
+              </tr>
+            </thead>
+            <tbody>
+              {netWorthByMemberRows.map((row) => (
+                <tr key={row.name}>
+                  <td>{row.name}</td>
+                  <td className="amount-col">{formatAmount(row.amount)}</td>
+                </tr>
+              ))}
+              {netWorthByMemberRows.length === 0 && (
+                <tr>
+                  <td colSpan={2} className="empty-state">
+                    Nothing to show yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <h2 className="reports-section-title">{report.month_label}'s budget</h2>
       <table className="ledger">

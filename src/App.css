@@ -277,6 +277,105 @@ body {
   color: var(--sidebar-text-active);
 }
 
+.profile-switcher {
+  position: relative;
+  margin: 0 2px 14px;
+}
+
+.profile-switcher-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--sidebar-border);
+  background: var(--sidebar-bg-hover);
+  color: var(--sidebar-text-active);
+  cursor: pointer;
+}
+
+.profile-switcher-toggle .ico {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  opacity: 0.9;
+}
+
+.profile-switcher-name {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-switcher-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-width: 200px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+  padding: 6px;
+}
+
+.profile-switcher-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 7px 8px;
+  font-size: 13px;
+  border-radius: 7px;
+  cursor: pointer;
+  color: inherit;
+  font-family: inherit;
+}
+
+.profile-switcher-option:hover {
+  background: var(--surface-2);
+}
+
+.profile-switcher-option-active {
+  font-weight: 600;
+  cursor: default;
+}
+
+.profile-switcher-option-active:hover {
+  background: none;
+}
+
+.profile-switcher-manage {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding: 8px 8px 4px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.profile-switcher-manage:hover {
+  color: var(--text);
+}
+
 .main {
   flex: 1;
   min-width: 0;
@@ -451,6 +550,25 @@ button:disabled {
 
 .help-view li {
   margin-bottom: 8px;
+}
+
+.help-search {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 9px 12px;
+  margin: 0 0 16px 0;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: inherit;
+}
+
+.help-faq-entry:not(:last-child) {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
 }
 
 .accounts-table {
@@ -1427,6 +1545,29 @@ button:disabled {
   cursor: pointer;
 }
 
+.live-price-usage {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0 0 10px 0;
+}
+
+.live-price-usage-warning,
+.live-price-usage-limit {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+
+.live-price-usage-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.live-price-usage-limit {
+  background: var(--negative-soft);
+  color: var(--negative);
+}
+
 .update-banner {
   display: flex;
   align-items: center;
@@ -1803,6 +1944,22 @@ button:disabled {
 
   .sidebar-foot {
     display: none;
+  }
+
+  .profile-switcher-name,
+  .profile-switcher .account-filter-caret {
+    display: none;
+  }
+
+  .profile-switcher-toggle {
+    justify-content: center;
+    padding: 8px;
+  }
+
+  .profile-switcher-panel {
+    left: 0;
+    right: auto;
+    min-width: 180px;
   }
 
   .page {
