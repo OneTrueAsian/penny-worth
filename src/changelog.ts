@@ -34,5 +34,6 @@ export const CHANGELOG: Record<string, string[]> = {
     "Bulk-import investment holdings — \"Holdings\" is now a 5th section on the setup-data template (Reports tab), so you can add many stocks at once instead of one at a time.",
     "Two more live-price providers alongside Alpha Vantage: Finnhub (60 requests/minute, no daily cap) and Twelve Data (800 requests/day) — pick whichever fits your portfolio in Settings.",
     "Fixed an account's balance sometimes not reflecting a transaction added the same day its monthly balance rolled forward, until the next day.",
+    "Fixed a payment applied to a credit card, loan, or mortgage counting twice — once as the real payment and again as an extra expense in Budget, Cash Flow, and category totals.",
   ],
 };

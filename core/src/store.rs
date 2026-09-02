@@ -1699,6 +1699,13 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Every transaction, except the synthetic ones `apply_debt_payment`
+    /// generates on a debt account — those exist purely so that account's
+    /// balance moves (see `account_balance_as_of`), not as something the
+    /// user ever added themselves, so surfacing one as its own Ledger row
+    /// would double it: the real payment already appears as the *source*
+    /// transaction (which carries the "→ account (amount)" badge instead),
+    /// and the generated one is just its balance-side bookkeeping twin.
     pub fn all_transactions(&self) -> rusqlite::Result<Vec<StoredTransaction>> {
         let mut stmt = self.conn.prepare(
             "SELECT t.id, t.date, t.description, t.amount, t.category, t.category_source,
@@ -1713,6 +1720,7 @@ impl Store {
              LEFT JOIN accounts da ON da.id = dp.debt_account_id
              LEFT JOIN transaction_tags tt ON tt.transaction_id = t.id
              LEFT JOIN family_members fm ON fm.id = t.member_id
+             WHERE t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
              GROUP BY t.id
              ORDER BY t.id",
         )?;
@@ -2361,10 +2369,14 @@ impl Store {
 
     /// All-time total of every transaction categorized "Income" — matches
     /// the convention `RuleSet::seeded` already uses (payroll, interest).
+    /// Excludes `apply_debt_payment`'s generated transactions, same as
+    /// `all_transactions` — see its doc comment.
     pub fn income_total(&self) -> rusqlite::Result<Decimal> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT amount FROM transactions WHERE category = 'Income'")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT amount FROM transactions
+             WHERE category = 'Income'
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
+        )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut total = Decimal::ZERO;
         for row in rows {
@@ -2384,7 +2396,11 @@ impl Store {
     /// A split transaction (see `set_transaction_splits`) contributes
     /// through its split lines' own categories instead of its own —
     /// `id NOT IN (...)` excludes any transaction that's been split from
-    /// also counting under its own (now superseded) category.
+    /// also counting under its own (now superseded) category. Also excludes
+    /// `apply_debt_payment`'s generated transactions, same as
+    /// `all_transactions` — see its doc comment: the real expense already
+    /// counts through the source transaction, so counting the generated
+    /// one too would inflate "actual" by whatever was applied to the debt.
     pub fn monthly_budget_actuals(&self, year: i32, month: u32) -> rusqlite::Result<Vec<BudgetActual>> {
         let month_key = format!("{year:04}-{month:02}");
         let budgets = self.list_budgets(&month_key)?;
@@ -2393,10 +2409,12 @@ impl Store {
             "SELECT amount FROM transactions
              WHERE category = ?1 AND substr(date, 1, 7) = ?2
                    AND id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
              UNION ALL
              SELECT ts.amount FROM transaction_splits ts
              JOIN transactions t ON t.id = ts.transaction_id
-             WHERE ts.category = ?1 AND substr(t.date, 1, 7) = ?2",
+             WHERE ts.category = ?1 AND substr(t.date, 1, 7) = ?2
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
         )?;
         let mut result = Vec::with_capacity(budgets.len());
         for line in budgets {
@@ -2428,8 +2446,10 @@ impl Store {
     /// entry for a month — clicking a category on the Budget page drills
     /// into this. Same split-aware shape as `monthly_budget_actuals`: a
     /// transaction that's been split contributes its split lines instead
-    /// of itself, so the line items shown here sum to exactly the same
-    /// "actual" the budget row displays. Sorted oldest first.
+    /// of itself, and `apply_debt_payment`'s generated transactions are
+    /// excluded the same way too, so the line items shown here sum to
+    /// exactly the same "actual" the budget row displays. Sorted oldest
+    /// first.
     pub fn transactions_for_category_in_month(
         &self,
         category: &str,
@@ -2443,12 +2463,14 @@ impl Store {
              JOIN accounts a ON a.id = t.account_id
              WHERE t.category = ?1 AND substr(t.date, 1, 7) = ?2
                    AND t.id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
              UNION ALL
              SELECT t.id, t.date, t.description, ts.amount, a.name, 1, ts.note
              FROM transaction_splits ts
              JOIN transactions t ON t.id = ts.transaction_id
              JOIN accounts a ON a.id = t.account_id
              WHERE ts.category = ?1 AND substr(t.date, 1, 7) = ?2
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
              ORDER BY 2",
         )?;
         let rows = stmt.query_map(params![category, month_key], |row| {
@@ -3516,10 +3538,15 @@ impl Store {
     /// "spent" number, from negative amounts) across *every* transaction
     /// in the given month — unlike `monthly_budget_actuals`, not scoped to
     /// budgeted categories, since a cash-flow chart cares about the whole
-    /// picture.
+    /// picture. Excludes `apply_debt_payment`'s generated transactions,
+    /// same as `all_transactions` — see its doc comment.
     pub fn monthly_totals(&self, year: i32, month: u32) -> rusqlite::Result<(Decimal, Decimal)> {
         let month_key = format!("{year:04}-{month:02}");
-        let mut stmt = self.conn.prepare("SELECT amount FROM transactions WHERE substr(date, 1, 7) = ?1")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT amount FROM transactions
+             WHERE substr(date, 1, 7) = ?1
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
+        )?;
         let rows = stmt.query_map(params![month_key], |row| row.get::<_, String>(0))?;
 
         let mut income = Decimal::ZERO;
@@ -3537,16 +3564,20 @@ impl Store {
 
     /// Total spend per category (as positive "spent" numbers) across every
     /// transaction dated within `[start_date, end_date]`, sorted highest
-    /// spend first. Uncategorized transactions and income are excluded.
+    /// spend first. Uncategorized transactions and income are excluded, as
+    /// are `apply_debt_payment`'s generated transactions — see
+    /// `all_transactions`'s doc comment.
     pub fn spending_by_category(&self, start_date: NaiveDate, end_date: NaiveDate) -> rusqlite::Result<Vec<(String, Decimal)>> {
         let mut stmt = self.conn.prepare(
             "SELECT category, amount FROM transactions
              WHERE category IS NOT NULL AND date >= ?1 AND date <= ?2
                    AND id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
              UNION ALL
              SELECT ts.category, ts.amount FROM transaction_splits ts
              JOIN transactions t ON t.id = ts.transaction_id
-             WHERE ts.category IS NOT NULL AND t.date >= ?1 AND t.date <= ?2",
+             WHERE ts.category IS NOT NULL AND t.date >= ?1 AND t.date <= ?2
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
         )?;
         let rows = stmt.query_map(params![start_date.to_string(), end_date.to_string()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -3569,16 +3600,21 @@ impl Store {
     /// `[start_date, end_date]` — "merchant" here is just the raw
     /// transaction description, since this app has no separate normalized
     /// merchant-name concept; a repeat merchant with varying suffixes
-    /// (store numbers, etc.) lists as separate entries.
+    /// (store numbers, etc.) lists as separate entries. Excludes
+    /// `apply_debt_payment`'s generated transactions (its "Payment applied
+    /// from: ..." description isn't a merchant) — see `all_transactions`'s
+    /// doc comment.
     pub fn top_merchants(
         &self,
         start_date: NaiveDate,
         end_date: NaiveDate,
         limit: usize,
     ) -> rusqlite::Result<Vec<(String, Decimal)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT description, amount FROM transactions WHERE date >= ?1 AND date <= ?2")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT description, amount FROM transactions
+             WHERE date >= ?1 AND date <= ?2
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
+        )?;
         let rows = stmt.query_map(params![start_date.to_string(), end_date.to_string()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -3804,6 +3840,24 @@ mod tests {
     /// every transaction date used anywhere in this file.
     fn far_future() -> NaiveDate {
         "2099-12-31".parse().unwrap()
+    }
+
+    /// Raw row count in `transactions`, unlike `all_transactions()` this
+    /// does *not* exclude `apply_debt_payment`'s generated rows — for
+    /// tests asserting on that cascade-delete/creation behavior itself
+    /// rather than on what the Ledger shows.
+    fn raw_transaction_count(store: &Store) -> i64 {
+        store.conn.query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0)).unwrap()
+    }
+
+    /// The `member_id` of the single transaction on `account_id` — for
+    /// tests inspecting an `apply_debt_payment`-generated row directly,
+    /// which `all_transactions()` no longer surfaces (see its doc comment).
+    fn raw_transaction_member_id(store: &Store, account_id: i64) -> Option<i64> {
+        store
+            .conn
+            .query_row("SELECT member_id FROM transactions WHERE account_id = ?1", params![account_id], |row| row.get(0))
+            .unwrap()
     }
 
     #[test]
@@ -4539,11 +4593,11 @@ mod tests {
         store
             .apply_debt_payment(source_id, loan, "500.00".parse().unwrap(), "2026-08-20".parse().unwrap())
             .unwrap();
-        assert_eq!(store.all_transactions().unwrap().len(), 2);
+        assert_eq!(raw_transaction_count(&store), 2);
 
         store.delete_account(checking).unwrap();
 
-        assert!(store.all_transactions().unwrap().is_empty(), "the generated debt-account transaction must go too");
+        assert_eq!(raw_transaction_count(&store), 0, "the generated debt-account transaction must go too");
     }
 
     #[test]
@@ -4731,8 +4785,7 @@ mod tests {
             .apply_debt_payment(source_id, loan, "500.00".parse().unwrap(), "2026-08-20".parse().unwrap())
             .unwrap();
 
-        let generated = store.all_transactions().unwrap().into_iter().find(|t| t.account_id == loan).unwrap();
-        assert_eq!(generated.member_id, Some(member));
+        assert_eq!(raw_transaction_member_id(&store, loan), Some(member));
     }
 
     #[test]
@@ -5372,11 +5425,11 @@ mod tests {
         store
             .apply_debt_payment(source_id, loan, "500.00".parse().unwrap(), "2026-08-20".parse().unwrap())
             .unwrap();
-        assert_eq!(store.all_transactions().unwrap().len(), 2);
+        assert_eq!(raw_transaction_count(&store), 2);
 
         store.delete_transaction(source_id).unwrap();
 
-        assert_eq!(store.all_transactions().unwrap().len(), 0);
+        assert_eq!(raw_transaction_count(&store), 0);
     }
 
     #[test]
@@ -5408,6 +5461,49 @@ mod tests {
         assert_eq!(applied.debt_account_id, loan);
         assert_eq!(applied.debt_account_name, "Car Loan");
         assert_eq!(applied.amount, "500.00".parse().unwrap());
+    }
+
+    #[test]
+    fn applying_a_debt_payment_does_not_double_count_it_as_spending() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = test_account(&store);
+        let loan = store.get_or_create_account("Car Loan", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "10000.00".parse().unwrap()).unwrap();
+        store
+            .save_transactions(
+                checking,
+                &[Transaction {
+                    category: Some("Auto Loan".to_string()),
+                    ..tx("2026-08-20", "Loan Payment", "-500.00")
+                }],
+            )
+            .unwrap();
+        let source_id = store.all_transactions().unwrap()[0].id;
+
+        store
+            .apply_debt_payment(source_id, loan, "500.00".parse().unwrap(), "2026-08-20".parse().unwrap())
+            .unwrap();
+
+        // Only the source transaction should ever be visible or counted —
+        // the generated one on `loan` exists purely to move that account's
+        // balance (see `all_transactions`'s doc comment).
+        assert_eq!(store.all_transactions().unwrap().len(), 1);
+        assert_eq!(raw_transaction_count(&store), 2, "the generated transaction still exists, just hidden");
+
+        let spend = store
+            .spending_by_category("2026-08-01".parse().unwrap(), "2026-08-31".parse().unwrap())
+            .unwrap();
+        assert_eq!(spend, vec![("Auto Loan".to_string(), "500.00".parse().unwrap())]);
+
+        let actuals = store.monthly_budget_actuals(2026, 8).unwrap();
+        assert!(actuals.is_empty(), "no budget line was set for Auto Loan, so nothing to assert on here");
+
+        store.set_budget("Auto Loan", "2026-08", "500.00".parse().unwrap(), "expense").unwrap();
+        let actuals = store.monthly_budget_actuals(2026, 8).unwrap();
+        assert_eq!(actuals[0].actual, "500.00".parse().unwrap());
+
+        let (_, expense) = store.monthly_totals(2026, 8).unwrap();
+        assert_eq!(expense, "500.00".parse().unwrap());
     }
 
     // Split transactions.
