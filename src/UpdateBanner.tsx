@@ -65,7 +65,16 @@ function pickAsset(assets: ReleaseAsset[], platform: "windows" | "macos" | null)
  * updating is a nice-to-have and should never strand the user, so a failed
  * "Update now" falls back to just opening the release page. Dismissing
  * remembers that specific version (per viewer, in localStorage) so it
- * won't nag again until a *newer* one ships. */
+ * won't nag again until a *newer* one ships.
+ *
+ * `openPath` requires `opener:allow-open-path` in
+ * `src-tauri/capabilities/default.json` — `opener:default` alone (the
+ * plugin's own bundled default permission set) only covers `open_url` and
+ * `reveal_item_in_dir`, not `open_path`, which the plugin treats as more
+ * sensitive since it's "without any pre-configured scope." Missing that
+ * permission doesn't crash anything (the catch block below falls back
+ * gracefully), it just silently never actually launches the installer —
+ * a real incident that shipped unnoticed until a live update check hit it. */
 export function UpdateBanner() {
   const [latest, setLatest] = useState<{ tag: string; version: string; url: string; asset: ReleaseAsset | null } | null>(
     null,
