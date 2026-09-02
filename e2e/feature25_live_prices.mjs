@@ -1,11 +1,13 @@
 // E2E smoke test for the opt-in live stock prices feature: confirms the
-// Settings tab's "Live stock prices" card starts in the off/manual state,
-// saving an API key flips it to the enabled state, and disabling clears it
-// back — all purely local persistence (`set_live_price_api_key`), so this
-// deliberately never calls `refresh_live_prices` or hits the real Alpha
-// Vantage API. The live network path (autofill on symbol entry, the
-// scheduled refresh, and the rate-limit error path) needs a real API key
-// and is a manual-test-only path — see the plan's Known Risks section.
+// Settings tab's "Live stock prices" card starts in the off/manual state
+// (defaulting to the Alpha Vantage provider), saving an API key flips it
+// to the enabled state, and disabling clears it back — all purely local
+// persistence (`set_live_price_settings`), so this deliberately never
+// calls `refresh_live_prices` or hits a real provider API. The live
+// network path (autofill on symbol entry, the scheduled refresh, and the
+// rate-limit error path) needs a real API key and is a manual-test-only
+// path — see the plan's Known Risks section. See
+// feature32_finnhub_provider.mjs for provider-picker-specific coverage.
 //
 // Run with: node e2e/feature25_live_prices.mjs
 
@@ -27,7 +29,7 @@ try {
     throw new Error(`expected the disabled/manual-only state by default, got:\n${beforeText}`);
   }
 
-  const apiKeyInput = await livePricesCard.$("input");
+  const apiKeyInput = await livePricesCard.$("input[type='password']");
   await apiKeyInput.setValue("demo-test-key");
   const saveButton = await livePricesCard.$("button*=Save");
   await saveButton.click();

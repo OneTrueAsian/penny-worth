@@ -31,11 +31,14 @@ export type Profile = {
   is_active: boolean;
 };
 
+export type LivePriceProviderId = "alpha_vantage" | "finnhub" | "twelve_data";
+
 export type LivePriceSettings = {
   enabled: boolean;
+  provider: LivePriceProviderId;
   last_refreshed_at: string | null;
   requests_used_today: number;
-  requests_limit: number;
+  requests_limit: number | null;
 };
 
 export type LivePriceRefreshSummary = {
@@ -288,11 +291,24 @@ export type SetupBucketRow = {
   already_exists: boolean;
 };
 
+export type SetupHoldingRow = {
+  index: number;
+  account_name: string;
+  symbol: string;
+  name: string | null;
+  shares: string;
+  price: string;
+  cost_basis: string;
+  asset_class: string | null;
+  account_found: boolean;
+};
+
 export type SetupImportPreview = {
   accounts: SetupAccountRow[];
   categories: SetupCategoryRow[];
   budgets: SetupBudgetRow[];
   buckets: SetupBucketRow[];
+  holdings: SetupHoldingRow[];
   row_errors: number;
 };
 
@@ -301,6 +317,7 @@ export type SetupImportSummary = {
   categories_created: number;
   budgets_set: number;
   buckets_created: number;
+  holdings_created: number;
   skipped: string[];
   row_errors: number;
 };

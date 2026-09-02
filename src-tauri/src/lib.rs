@@ -1,8 +1,11 @@
 mod backups;
 mod commands;
 mod config;
+mod finnhub;
+mod live_price_provider;
 mod live_prices;
 mod profiles;
+mod twelve_data;
 mod updater;
 
 use commands::{AppState, AppStateHandle};
@@ -38,8 +41,23 @@ pub fn run() {
             // fixed, discoverable location) even after the user relocates
             // their actual database elsewhere via the Reports tab's
             // Settings section — see config::resolve_db_path.
+            //
+            // **Debug builds default to a dev-only directory, never the
+            // real AppData folder, even without PENNYWORTH_DB_DIR set** —
+            // a real incident: `npm run tauri dev` (no env var, ordinary
+            // local dev workflow) opened a real relocated production
+            // database, because config.json is a single machine-wide file
+            // keyed only by app identifier, shared by *any* build unless
+            // something overrides it. `cfg!(debug_assertions)` is true for
+            // every debug/dev build (including `tauri dev` and `tauri
+            // build --debug`) and false for a real release build, so this
+            // only changes untested local development, never what ships
+            // to an actual user — release builds still resolve to the
+            // real AppData folder exactly as before. Explicitly setting
+            // PENNYWORTH_DB_DIR (E2E tests do) still wins over this.
             let default_dir = match std::env::var_os("PENNYWORTH_DB_DIR") {
                 Some(dir) => std::path::PathBuf::from(dir),
+                None if cfg!(debug_assertions) => std::env::temp_dir().join("pennyworth-dev-data"),
                 None => app.path().app_data_dir()?,
             };
             std::fs::create_dir_all(&default_dir)?;
@@ -142,7 +160,7 @@ pub fn run() {
             commands::update_holding_price,
             commands::delete_holding,
             commands::get_live_price_settings,
-            commands::set_live_price_api_key,
+            commands::set_live_price_settings,
             commands::fetch_live_quote,
             commands::refresh_live_prices,
             commands::create_asset,

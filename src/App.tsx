@@ -50,6 +50,7 @@ import type {
   ForecastPoint,
   Holding,
   Insight,
+  LivePriceProviderId,
   LivePriceRefreshSummary,
   LivePriceSettings,
   MonthExpenseDetail,
@@ -337,9 +338,9 @@ function App({
     }
   }
 
-  async function handleSetLivePriceApiKey(apiKey: string | null) {
+  async function handleSetLivePriceApiKey(provider: LivePriceProviderId, apiKey: string | null) {
     try {
-      await invoke("set_live_price_api_key", { apiKey });
+      await invoke("set_live_price_settings", { provider, apiKey });
       await refreshLivePriceSettings();
     } catch (e) {
       setStatus(String(e));
@@ -456,6 +457,7 @@ function App({
     includedCategories: Set<number>;
     includedBudgets: Set<number>;
     includedBuckets: Set<number>;
+    includedHoldings: Set<number>;
   } | null>(null);
   const [includedIndices, setIncludedIndices] = useState<Set<number>>(new Set());
   const [accountOverrides, setAccountOverrides] = useState<Map<number, number>>(new Map());
@@ -1579,7 +1581,11 @@ function App({
     try {
       const preview = await invoke<SetupImportPreview>("preview_setup_import", { path });
       const total =
-        preview.accounts.length + preview.categories.length + preview.budgets.length + preview.buckets.length;
+        preview.accounts.length +
+        preview.categories.length +
+        preview.budgets.length +
+        preview.buckets.length +
+        preview.holdings.length;
       if (total === 0) {
         setStatus(
           preview.row_errors > 0
@@ -1591,6 +1597,8 @@ function App({
       // Duplicates start unchecked, same convention as the transaction
       // import's review screen; budget "will update" rows stay checked
       // since updating an existing budget line is usually the intent.
+      // Holdings with an unresolved account start unchecked too — checking
+      // one would just get silently skipped at commit time anyway.
       setPendingSetupImport({
         path,
         preview,
@@ -1598,6 +1606,7 @@ function App({
         includedCategories: new Set(preview.categories.filter((r) => !r.already_exists).map((r) => r.index)),
         includedBudgets: new Set(preview.budgets.map((r) => r.index)),
         includedBuckets: new Set(preview.buckets.filter((r) => !r.already_exists).map((r) => r.index)),
+        includedHoldings: new Set(preview.holdings.filter((r) => r.account_found).map((r) => r.index)),
       });
     } catch (e) {
       setStatus(String(e));
@@ -1605,7 +1614,7 @@ function App({
   }
 
   function toggleSetupIncluded(
-    section: "includedAccounts" | "includedCategories" | "includedBudgets" | "includedBuckets",
+    section: "includedAccounts" | "includedCategories" | "includedBudgets" | "includedBuckets" | "includedHoldings",
     index: number,
   ) {
     setPendingSetupImport((prev) => {
@@ -1627,14 +1636,16 @@ function App({
         includedCategories: Array.from(pendingSetupImport.includedCategories),
         includedBudgets: Array.from(pendingSetupImport.includedBudgets),
         includedBuckets: Array.from(pendingSetupImport.includedBuckets),
+        includedHoldings: Array.from(pendingSetupImport.includedHoldings),
       });
       setPendingSetupImport(null);
-      await Promise.all([refresh(), refreshBuckets(), refreshReport()]);
+      await Promise.all([refresh(), refreshBuckets(), refreshReport(), refreshHoldings()]);
       const parts = [
         `${summary.accounts_created} account(s)`,
         `${summary.categories_created} categor${summary.categories_created === 1 ? "y" : "ies"}`,
         `${summary.budgets_set} budget line(s)`,
         `${summary.buckets_created} bucket(s)`,
+        `${summary.holdings_created} holding(s)`,
       ];
       let message = `Setup import done: ${parts.join(", ")}.`;
       if (summary.skipped.length > 0) message += ` Skipped: ${summary.skipped.join("; ")}.`;
@@ -2859,6 +2870,47 @@ function App({
             </>
           )}
 
+          {pendingSetupImport.preview.holdings.length > 0 && (
+            <>
+              <h2 className="reports-section-title">Holdings</h2>
+              <table className="dup-review-table">
+                <thead>
+                  <tr>
+                    <th className="select-col"></th>
+                    <th>Account</th>
+                    <th>Symbol</th>
+                    <th>Name</th>
+                    <th className="amount-col">Shares</th>
+                    <th className="amount-col">Price</th>
+                    <th className="amount-col">Cost basis</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingSetupImport.preview.holdings.map((row) => (
+                    <tr key={row.index} className={row.account_found ? undefined : "import-row-duplicate"}>
+                      <td className="select-col">
+                        <input
+                          type="checkbox"
+                          checked={pendingSetupImport.includedHoldings.has(row.index)}
+                          onChange={() => toggleSetupIncluded("includedHoldings", row.index)}
+                          aria-label={`Include holding ${row.symbol}`}
+                        />
+                      </td>
+                      <td>{row.account_name}</td>
+                      <td>{row.symbol}</td>
+                      <td>{row.name ?? ""}</td>
+                      <td className="amount-col">{row.shares}</td>
+                      <td className="amount-col">{formatAmount(row.price)}</td>
+                      <td className="amount-col">{formatAmount(row.cost_basis)}</td>
+                      <td className="source-col">{row.account_found ? "New" : "Account not found"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
           <div className="dup-review-actions">
             <button className="modal-secondary" onClick={() => setPendingSetupImport(null)} disabled={busy}>
               Cancel
@@ -2870,7 +2922,8 @@ function App({
                 pendingSetupImport.includedAccounts.size +
                   pendingSetupImport.includedCategories.size +
                   pendingSetupImport.includedBudgets.size +
-                  pendingSetupImport.includedBuckets.size ===
+                  pendingSetupImport.includedBuckets.size +
+                  pendingSetupImport.includedHoldings.size ===
                   0
               }
             >

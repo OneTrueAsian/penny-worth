@@ -11,6 +11,8 @@ export function buildSetupTemplate(): string {
     "# Delete the example rows, keep the section titles and header rows.\r\n" +
     "# Account types: checking, savings, credit, loan, investment, other.\r\n" +
     "# Budget groups: income, fixed, flexible, nonmonthly. A blank budget Period means the current month.\r\n" +
+    "# Holdings' Account must match an existing account's name exactly (case-insensitive) - a row whose\r\n" +
+    "# account isn't found is skipped, not partially created.\r\n" +
     "\r\n";
   const accounts =
     "Accounts\r\n" +
@@ -28,5 +30,11 @@ export function buildSetupTemplate(): string {
       ["Name", "Target Amount", "Target Date", "Linked Account"],
       [["Emergency Fund", "5000.00", "", "Everyday Checking"]],
     );
-  return intro + accounts + "\r\n" + categories + "\r\n" + budgets + "\r\n" + buckets;
+  const holdings =
+    "Holdings\r\n" +
+    toCsv(
+      ["Account", "Symbol", "Name", "Shares", "Price", "Cost Basis", "Asset Class"],
+      [["Brokerage", "AAPL", "Apple Inc.", "10", "231.20", "1450.00", "US Stocks"]],
+    );
+  return intro + accounts + "\r\n" + categories + "\r\n" + budgets + "\r\n" + buckets + "\r\n" + holdings;
 }

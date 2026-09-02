@@ -30,4 +30,9 @@ export const CHANGELOG: Record<string, string[]> = {
     "Cash Flow is now split into Overview / Forecast / Debt Payoff tabs instead of one long scrolling page.",
     "Smaller polish: a \"Due soon\" badge on upcoming recurring bills, labeled fields on the Investments \"Add holding\" form, and a clearer note distinguishing family members from profiles.",
   ],
+  "1.1.6": [
+    "Bulk-import investment holdings — \"Holdings\" is now a 5th section on the setup-data template (Reports tab), so you can add many stocks at once instead of one at a time.",
+    "Two more live-price providers alongside Alpha Vantage: Finnhub (60 requests/minute, no daily cap) and Twelve Data (800 requests/day) — pick whichever fits your portfolio in Settings.",
+    "Fixed an account's balance sometimes not reflecting a transaction added the same day its monthly balance rolled forward, until the next day.",
+  ],
 };

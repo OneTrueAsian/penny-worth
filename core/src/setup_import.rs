@@ -56,12 +56,29 @@ pub struct BucketRow {
     pub linked_account_name: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct HoldingRow {
+    /// Required, unlike `BucketRow::linked_account_name` — `holdings.
+    /// account_id` is `NOT NULL`, so there's no sensible "no account"
+    /// holding to fall back to.
+    pub account_name: String,
+    pub symbol: String,
+    /// Blank -> defaults to the symbol, same convention as the manual
+    /// "Add holding…" form.
+    pub name: Option<String>,
+    pub shares: Decimal,
+    pub price: Decimal,
+    pub cost_basis: Decimal,
+    pub asset_class: Option<String>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SetupImportResult {
     pub accounts: Vec<AccountRow>,
     pub categories: Vec<CategoryRow>,
     pub budgets: Vec<BudgetRow>,
     pub buckets: Vec<BucketRow>,
+    pub holdings: Vec<HoldingRow>,
     pub errors: Vec<RowError>,
 }
 
@@ -77,14 +94,36 @@ pub fn load_setup_csv(path: impl AsRef<Path>) -> std::io::Result<SetupImportResu
 /// section — the header row is whatever non-blank line comes right after
 /// it, and every line after *that* until a blank line or the next section
 /// title belongs to it.
+///
+/// Only the line's first comma-separated field is checked, with every
+/// other field required to be blank, rather than the whole line: opening
+/// the template in Excel and saving it back pads *every* row out to the
+/// sheet's widest row (its "used range"), so a section-title line like
+/// `Accounts` comes back as `Accounts,,,,,,` once any section — Holdings,
+/// at 7 columns, is the widest — is wider than it. Matching the whole line
+/// verbatim would silently stop recognizing every section title in a file
+/// like that, not just the padded ones.
 fn section_kind(line: &str) -> Option<&'static str> {
-    match line.trim().to_lowercase().as_str() {
+    let mut fields = line.split(',');
+    let first = fields.next()?.trim().to_lowercase();
+    if !fields.all(|f| f.trim().is_empty()) {
+        return None;
+    }
+    match first.as_str() {
         "accounts" => Some("Accounts"),
         "categories" => Some("Categories"),
         "budgets" => Some("Budgets"),
         "buckets" => Some("Buckets"),
+        "holdings" => Some("Holdings"),
         _ => None,
     }
+}
+
+/// A blank separator line between sections, same Excel "used range" padding
+/// as `section_kind` above: it comes back as `,,,,,,` rather than empty
+/// once any section in the file is wider than the section it separates.
+fn is_blank_line(line: &str) -> bool {
+    line.split(',').all(|f| f.trim().is_empty())
 }
 
 fn load_from_str(text: &str) -> SetupImportResult {
@@ -104,7 +143,7 @@ fn load_from_str(text: &str) -> SetupImportResult {
             continue;
         };
         i += 1;
-        while i < lines.len() && lines[i].trim().is_empty() {
+        while i < lines.len() && is_blank_line(lines[i]) {
             i += 1; // blank lines between the section title and its header are tolerated
         }
         if i >= lines.len() {
@@ -114,7 +153,7 @@ fn load_from_str(text: &str) -> SetupImportResult {
         i += 1;
         let mut body = String::from(lines[header_line]);
         body.push('\n');
-        while i < lines.len() && !lines[i].trim().is_empty() && section_kind(lines[i]).is_none() {
+        while i < lines.len() && !is_blank_line(lines[i]) && section_kind(lines[i]).is_none() {
             body.push_str(lines[i]);
             body.push('\n');
             i += 1;
@@ -156,6 +195,10 @@ fn parse_section(section: &str, body: &str, first_data_row_number: usize, result
             },
             "Buckets" => match parse_bucket_row(&headers, &record) {
                 Ok(row) => result.buckets.push(row),
+                Err(message) => result.errors.push(RowError { section: section.to_string(), row_number, message }),
+            },
+            "Holdings" => match parse_holding_row(&headers, &record) {
+                Ok(row) => result.holdings.push(row),
                 Err(message) => result.errors.push(RowError { section: section.to_string(), row_number, message }),
             },
             _ => unreachable!("section_kind only ever returns a known section"),
@@ -232,12 +275,32 @@ fn parse_bucket_row(headers: &csv::StringRecord, record: &csv::StringRecord) -> 
     })
 }
 
+fn parse_holding_row(headers: &csv::StringRecord, record: &csv::StringRecord) -> Result<HoldingRow, String> {
+    let account_name = non_blank(field(headers, record, "Account")).ok_or("missing account")?;
+    let symbol = non_blank(field(headers, record, "Symbol")).ok_or("missing symbol")?.to_uppercase();
+    let shares_str = non_blank(field(headers, record, "Shares")).ok_or("missing shares")?;
+    let shares = Decimal::from_str(&shares_str).map_err(|_| format!("invalid shares '{shares_str}'"))?;
+    let price_str = non_blank(field(headers, record, "Price")).ok_or("missing price")?;
+    let price = Decimal::from_str(&price_str).map_err(|_| format!("invalid price '{price_str}'"))?;
+    let cost_basis_str = non_blank(field(headers, record, "Cost Basis")).ok_or("missing cost basis")?;
+    let cost_basis = Decimal::from_str(&cost_basis_str).map_err(|_| format!("invalid cost basis '{cost_basis_str}'"))?;
+    Ok(HoldingRow {
+        account_name,
+        symbol,
+        name: non_blank(field(headers, record, "Name")),
+        shares,
+        price,
+        cost_basis,
+        asset_class: non_blank(field(headers, record, "Asset Class")),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_all_four_sections_happy_path() {
+    fn parses_all_five_sections_happy_path() {
         let result = load_from_str(
             "Accounts\n\
              Name,Type,Starting Balance,Institution,Mask\n\
@@ -253,7 +316,11 @@ mod tests {
              \n\
              Buckets\n\
              Name,Target Amount,Target Date,Linked Account\n\
-             Emergency Fund,5000.00,2027-01-01,Everyday Checking\n",
+             Emergency Fund,5000.00,2027-01-01,Everyday Checking\n\
+             \n\
+             Holdings\n\
+             Account,Symbol,Name,Shares,Price,Cost Basis,Asset Class\n\
+             Brokerage,aapl,Apple Inc.,10,231.20,1450.00,US Stocks\n",
         );
 
         assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
@@ -276,6 +343,15 @@ mod tests {
             target_amount: Some("5000.00".parse().unwrap()),
             target_date: Some("2027-01-01".parse().unwrap()),
             linked_account_name: Some("Everyday Checking".to_string()),
+        }]);
+        assert_eq!(result.holdings, vec![HoldingRow {
+            account_name: "Brokerage".to_string(),
+            symbol: "AAPL".to_string(),
+            name: Some("Apple Inc.".to_string()),
+            shares: "10".parse().unwrap(),
+            price: "231.20".parse().unwrap(),
+            cost_basis: "1450.00".parse().unwrap(),
+            asset_class: Some("US Stocks".to_string()),
         }]);
     }
 
@@ -399,5 +475,106 @@ mod tests {
 
         assert!(result.errors.is_empty());
         assert_eq!(result.accounts.len(), 1);
+    }
+
+    #[test]
+    fn blank_holding_name_and_asset_class_parse_as_none() {
+        let result = load_from_str(
+            "Holdings\nAccount,Symbol,Name,Shares,Price,Cost Basis,Asset Class\nBrokerage,VTI,,5,220.00,1000.00,\n",
+        );
+
+        assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+        assert_eq!(result.holdings[0].name, None);
+        assert_eq!(result.holdings[0].asset_class, None);
+    }
+
+    #[test]
+    fn a_holdings_row_missing_a_required_field_is_a_row_error() {
+        let result = load_from_str(
+            "Holdings\nAccount,Symbol,Name,Shares,Price,Cost Basis,Asset Class\n,VTI,,5,220.00,1000.00,\n",
+        );
+
+        assert!(result.holdings.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].section, "Holdings");
+        assert!(result.errors[0].message.contains("account"));
+    }
+
+    #[test]
+    fn a_holdings_row_with_an_invalid_number_is_a_row_error() {
+        let result = load_from_str(
+            "Holdings\nAccount,Symbol,Name,Shares,Price,Cost Basis,Asset Class\nBrokerage,VTI,,not-a-number,220.00,1000.00,\n",
+        );
+
+        assert!(result.holdings.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("not-a-number"));
+    }
+
+    #[test]
+    fn holdings_symbol_is_uppercased_on_parse() {
+        let result = load_from_str(
+            "Holdings\nAccount,Symbol,Name,Shares,Price,Cost Basis,Asset Class\nBrokerage,vti,,5,220.00,1000.00,\n",
+        );
+
+        assert_eq!(result.holdings[0].symbol, "VTI");
+    }
+
+    #[test]
+    fn section_titles_padded_with_trailing_commas_are_still_recognized() {
+        // Opening the template in Excel and saving it back pads every row to
+        // the sheet's widest row ("used range") — once Holdings (7 columns)
+        // is present, even bare section-title lines like "Accounts" come
+        // back as "Accounts,,,,,,". A real round-tripped file, reproducing
+        // a user-reported "nothing importable" bug where the padding broke
+        // every section title in the file, not just Holdings.
+        let result = load_from_str(
+            "Accounts,,,,,,\n\
+             Name,Type,Starting Balance,Institution,Mask,,\n\
+             Everyday Checking,checking,1000.00,Ally,1234,,\n\
+             ,,,,,,\n\
+             Categories,,,,,,\n\
+             Name,,,,,,\n\
+             Groceries,,,,,,\n\
+             ,,,,,,\n\
+             Holdings,,,,,,\n\
+             Account,Symbol,Name,Shares,Price,Cost Basis,Asset Class\n\
+             Brokerage,aapl,Apple Inc.,10,231.20,1450.00,US Stocks\n",
+        );
+
+        assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+        assert_eq!(result.accounts.len(), 1);
+        assert_eq!(result.categories.len(), 1);
+        assert_eq!(result.holdings.len(), 1);
+        assert_eq!(result.holdings[0].symbol, "AAPL");
+    }
+
+    #[test]
+    fn a_multi_line_quoted_holding_name_is_parsed_as_one_row() {
+        // A cell with a manual line break (common for long ETF names) is
+        // exported as a quoted field spanning multiple physical lines —
+        // this must still be read as a single logical CSV record.
+        let result = load_from_str(
+            "Holdings,,,,,,\n\
+             Account,Symbol,Name,Shares,Price,Cost Basis,Asset Class\n\
+             Joey-IRA,AAAU,\"GOLDMAN SACHS\nPHYSICAL GOLD ETF\",45,42.46,1910.5,US Stocks\n",
+        );
+
+        assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+        assert_eq!(result.holdings.len(), 1);
+        assert_eq!(result.holdings[0].name, Some("GOLDMAN SACHS\nPHYSICAL GOLD ETF".to_string()));
+    }
+
+    #[test]
+    fn unknown_holdings_columns_are_ignored() {
+        // Same tolerance every other section already has — `field()` looks
+        // columns up by name, so an extra column (or a different order)
+        // never breaks parsing.
+        let result = load_from_str(
+            "Holdings\nNotes,Account,Symbol,Shares,Price,Cost Basis\nignore me,Brokerage,VTI,5,220.00,1000.00\n",
+        );
+
+        assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+        assert_eq!(result.holdings[0].symbol, "VTI");
     }
 }

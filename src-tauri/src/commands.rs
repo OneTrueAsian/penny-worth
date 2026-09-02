@@ -651,11 +651,31 @@ pub struct SetupBucketRowDto {
 }
 
 #[derive(Serialize)]
+pub struct SetupHoldingRowDto {
+    pub index: usize,
+    pub account_name: String,
+    pub symbol: String,
+    pub name: Option<String>,
+    pub shares: String,
+    pub price: String,
+    pub cost_basis: String,
+    pub asset_class: Option<String>,
+    /// Unlike every other section's `already_exists` (a name-uniqueness
+    /// check), this flags whether `account_name` actually resolves — a
+    /// holding row is dropped entirely when it doesn't (see
+    /// `Store::apply_setup_import`), so the review screen can catch a
+    /// typo'd account name before committing rather than only reporting it
+    /// afterward in the skipped-rows summary.
+    pub account_found: bool,
+}
+
+#[derive(Serialize)]
 pub struct SetupImportPreviewDto {
     pub accounts: Vec<SetupAccountRowDto>,
     pub categories: Vec<SetupCategoryRowDto>,
     pub budgets: Vec<SetupBudgetRowDto>,
     pub buckets: Vec<SetupBucketRowDto>,
+    pub holdings: Vec<SetupHoldingRowDto>,
     pub row_errors: usize,
 }
 
@@ -665,6 +685,7 @@ pub struct SetupImportSummaryDto {
     pub categories_created: usize,
     pub budgets_set: usize,
     pub buckets_created: usize,
+    pub holdings_created: usize,
     pub skipped: Vec<String>,
     pub row_errors: usize,
 }
@@ -748,11 +769,31 @@ pub fn preview_setup_import(
         })
         .collect();
 
+    let holdings = data
+        .holdings
+        .iter()
+        .enumerate()
+        .map(|(index, row)| SetupHoldingRowDto {
+            index,
+            account_name: row.account_name.clone(),
+            symbol: row.symbol.clone(),
+            name: row.name.clone(),
+            shares: row.shares.to_string(),
+            price: row.price.to_string(),
+            cost_basis: row.cost_basis.to_string(),
+            asset_class: row.asset_class.clone(),
+            account_found: existing_accounts
+                .iter()
+                .any(|a| a.account.name.eq_ignore_ascii_case(&row.account_name)),
+        })
+        .collect();
+
     Ok(SetupImportPreviewDto {
         accounts,
         categories,
         budgets,
         buckets,
+        holdings,
         row_errors: data.errors.len(),
     })
 }
@@ -767,6 +808,7 @@ pub fn commit_setup_import(
     included_categories: Vec<usize>,
     included_budgets: Vec<usize>,
     included_buckets: Vec<usize>,
+    included_holdings: Vec<usize>,
     state: tauri::State<AppStateHandle>,
 ) -> Result<SetupImportSummaryDto, String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
@@ -785,6 +827,7 @@ pub fn commit_setup_import(
     data.categories = keep(data.categories, &included_categories);
     data.budgets = keep(data.budgets, &included_budgets);
     data.buckets = keep(data.buckets, &included_buckets);
+    data.holdings = keep(data.holdings, &included_holdings);
 
     let outcome = state
         .store
@@ -796,6 +839,7 @@ pub fn commit_setup_import(
         categories_created: outcome.categories_created,
         budgets_set: outcome.budgets_set,
         buckets_created: outcome.buckets_created,
+        holdings_created: outcome.holdings_created,
         skipped: outcome.skipped,
         row_errors,
     })
@@ -1827,48 +1871,64 @@ pub fn delete_holding(id: i64, state: tauri::State<AppStateHandle>) -> Result<()
 #[derive(Serialize)]
 pub struct LivePriceSettingsDto {
     pub enabled: bool,
+    pub provider: String,
     pub last_refreshed_at: Option<String>,
     pub requests_used_today: i64,
-    pub requests_limit: i64,
+    /// `None` when the active provider has no daily cap to enforce
+    /// (Finnhub — a real per-*minute* limit, not a per-day one; see
+    /// `live_price_provider.rs`). `Some(25)` for Alpha Vantage.
+    pub requests_limit: Option<i64>,
 }
 
 /// The opt-in live-price feature's current state — the API key itself is
 /// never sent back to the frontend once saved (write-only, standard
 /// credential handling). `requests_used_today`/`requests_limit` let the
-/// Settings UI show (and warn about) today's Alpha Vantage usage without a
-/// separate command.
+/// Settings UI show (and warn about) today's usage without a separate
+/// command.
 #[tauri::command]
 pub fn get_live_price_settings(state: tauri::State<AppStateHandle>) -> Result<LivePriceSettingsDto, String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
     let settings = state.store.get_live_price_settings().map_err(|e| e.to_string())?;
     let today = chrono::Local::now().date_naive();
     let requests_used_today = state.store.live_price_requests_used_today(today).map_err(|e| e.to_string())?;
+    let provider = crate::live_price_provider::LivePriceProvider::parse(&settings.provider)
+        .unwrap_or(crate::live_price_provider::LivePriceProvider::AlphaVantage);
     Ok(LivePriceSettingsDto {
         enabled: settings.api_key.is_some(),
+        provider: provider.as_str().to_string(),
         last_refreshed_at: settings.last_refreshed_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()),
         requests_used_today,
-        requests_limit: crate::live_prices::ALPHA_VANTAGE_DAILY_LIMIT,
+        requests_limit: provider.daily_limit(),
     })
 }
 
-/// Saves (or, with `None`/an empty string, clears) the Alpha Vantage API
-/// key. Purely local persistence — no network call, so a typo'd key isn't
-/// caught here; "Refresh now" on the Settings tab is what actually
-/// exercises it and would surface Alpha Vantage's own error message.
+/// Saves (or, with `api_key: None`/an empty string, clears) the chosen
+/// provider and its API key together. Purely local persistence — no
+/// network call, so a typo'd key isn't caught here; "Refresh now" on the
+/// Settings tab is what actually exercises it and would surface the
+/// provider's own error message.
 #[tauri::command]
-pub fn set_live_price_api_key(api_key: Option<String>, state: tauri::State<AppStateHandle>) -> Result<(), String> {
+pub fn set_live_price_settings(
+    provider: String,
+    api_key: Option<String>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let provider = crate::live_price_provider::LivePriceProvider::parse(&provider)
+        .ok_or_else(|| format!("unknown live-price provider: {provider}"))?;
     let api_key = api_key.filter(|k| !k.trim().is_empty());
-    state.store.set_live_price_api_key(api_key.as_deref()).map_err(|e| e.to_string())
+    state.store.set_live_price_settings(provider.as_str(), api_key.as_deref()).map_err(|e| e.to_string())
 }
 
 /// Looks up one live quote — used only by the New Holding form's autofill,
 /// so it deliberately does not write a price anywhere. Returns `Ok(None)`
-/// (not an error) when the feature isn't enabled or Alpha Vantage has no
+/// (not an error) when the feature isn't enabled or the provider has no
 /// data for the symbol, since either way the form should just leave Price
-/// for the user to fill in by hand. Once today's request budget is spent,
-/// this returns an `Err` instead of attempting the call at all — see
-/// `refresh_live_prices` below for the same budget check on the main path.
+/// for the user to fill in by hand. For Alpha Vantage, once today's
+/// request budget is spent, this returns an `Err` instead of attempting
+/// the call at all — see `refresh_live_prices` below for the same budget
+/// check on the main path. Finnhub has no such proactive local check (its
+/// real limit is per-minute, not per-day — see `live_price_provider.rs`).
 ///
 /// Locks `state` only in short scoped blocks that close before the network
 /// `.await` below — `AppStateHandle`'s `std::sync::MutexGuard` isn't `Send`,
@@ -1877,26 +1937,34 @@ pub fn set_live_price_api_key(api_key: Option<String>, state: tauri::State<AppSt
 #[tauri::command]
 pub async fn fetch_live_quote(symbol: String, state: tauri::State<'_, AppStateHandle>) -> Result<Option<String>, String> {
     let today = chrono::Local::now().date_naive();
-    let (api_key, used_today) = {
+    let (api_key, provider, used_today) = {
         let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
-        let api_key = state.store.get_live_price_settings().map_err(|e| e.to_string())?.api_key;
+        let settings = state.store.get_live_price_settings().map_err(|e| e.to_string())?;
         let used_today = state.store.live_price_requests_used_today(today).map_err(|e| e.to_string())?;
-        (api_key, used_today)
+        (settings.api_key, settings.provider, used_today)
     };
     let Some(api_key) = api_key else {
         return Ok(None);
     };
-    let limit = crate::live_prices::ALPHA_VANTAGE_DAILY_LIMIT;
-    if used_today >= limit {
-        return Err(format!(
-            "Today's Alpha Vantage limit ({limit}/day) has been reached — enter the price manually, or try again tomorrow."
-        ));
+    let provider = crate::live_price_provider::LivePriceProvider::parse(&provider)
+        .unwrap_or(crate::live_price_provider::LivePriceProvider::AlphaVantage);
+
+    if let Some(limit) = provider.daily_limit() {
+        if used_today >= limit {
+            return Err(format!(
+                "Today's {} limit ({limit}/day) has been reached — enter the price manually, or try again tomorrow.",
+                provider.label()
+            ));
+        }
     }
 
     let client = reqwest::Client::new();
-    let result = crate::live_prices::fetch_quote(&client, &api_key, &symbol).await;
+    let result = crate::live_price_provider::fetch_quote(provider, &client, &api_key, &symbol).await;
     {
         let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+        // Recorded unconditionally for every provider — for one with no
+        // daily_limit() (Finnhub) this is an informational-only "requests
+        // used today" count with no limit attached, not a budget check.
         state.store.record_live_price_request(today).map_err(|e| e.to_string())?;
     }
     Ok(result?.map(|p| p.to_string()))
@@ -1920,40 +1988,54 @@ pub struct LivePriceRefreshSummary {
 /// every 2 hours while the app stays open (see App.tsx), plus on demand via
 /// the Settings tab's "Refresh now".
 ///
-/// **Stops pulling data once today's Alpha Vantage budget is spent** —
-/// checked locally against `Store::live_price_requests_used_today` before
-/// any request goes out, not just reacted to after the fact. If fewer than
-/// `symbols.len()` requests remain today, only that many are actually
-/// attempted; the rest land in `failed` with a "Skipped — limit" message
-/// instead of being sent and failing anyway. This is a proactive cap, not
-/// just error handling: opening and closing the app repeatedly through the
-/// day (each launch triggers a refresh) accumulates against the same
-/// per-profile counter, so it still stops at 25 total regardless of how
-/// many separate launches it took to get there. Symbols are fetched one at
-/// a time, not concurrently, so the running total stays accurate mid-batch.
+/// **For Alpha Vantage, stops pulling data once today's budget is spent**
+/// — checked locally against `Store::live_price_requests_used_today`
+/// before any request goes out, not just reacted to after the fact. If
+/// fewer than `symbols.len()` requests remain today, only that many are
+/// actually attempted; the rest land in `failed` with a "Skipped — limit"
+/// message instead of being sent and failing anyway. This is a proactive
+/// cap, not just error handling: opening and closing the app repeatedly
+/// through the day (each launch triggers a refresh) accumulates against
+/// the same per-profile counter, so it still stops at the daily total
+/// regardless of how many separate launches it took to get there (see
+/// `LivePriceProvider::daily_limit` — Alpha Vantage is 25/day, Twelve
+/// Data is 800/day). **Finnhub has no such cap** — its real limit is 60
+/// requests/*minute*, not a day, and this app's usage pattern (one
+/// request per distinct symbol, refreshed at most every 2 hours) never
+/// comes close to it; if it's ever actually exceeded, that 429 just lands
+/// in `failed` like any other per-symbol error, with no proactive skip.
+/// Symbols are fetched one at a time, not concurrently, so the running
+/// total stays accurate mid-batch.
 ///
 /// Same locking discipline as `fetch_live_quote` above: the network calls
 /// below run with no lock held at all, and results are written back in
 /// short, separate locks — one per request (to record it against today's
-/// count as it happens), then one more at the end for the price/timestamp
-/// writes.
+/// count as it happens, unconditionally for both providers), then one
+/// more at the end for the price/timestamp writes.
 #[tauri::command]
 pub async fn refresh_live_prices(state: tauri::State<'_, AppStateHandle>) -> Result<LivePriceRefreshSummary, String> {
     let today = chrono::Local::now().date_naive();
-    let (api_key, symbols, used_today) = {
+    let (api_key, provider, symbols, used_today) = {
         let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
-        let api_key = state.store.get_live_price_settings().map_err(|e| e.to_string())?.api_key;
+        let settings = state.store.get_live_price_settings().map_err(|e| e.to_string())?;
         let symbols = state.store.list_distinct_holding_symbols().map_err(|e| e.to_string())?;
         let used_today = state.store.live_price_requests_used_today(today).map_err(|e| e.to_string())?;
-        (api_key, symbols, used_today)
+        (settings.api_key, settings.provider, symbols, used_today)
     };
-    let api_key =
-        api_key.ok_or_else(|| "Live prices aren't enabled — add an Alpha Vantage API key in Settings.".to_string())?;
+    let provider = crate::live_price_provider::LivePriceProvider::parse(&provider)
+        .unwrap_or(crate::live_price_provider::LivePriceProvider::AlphaVantage);
+    let api_key = api_key
+        .ok_or_else(|| format!("Live prices aren't enabled — add a {} API key in Settings.", provider.label()))?;
 
-    let limit = crate::live_prices::ALPHA_VANTAGE_DAILY_LIMIT;
-    let remaining = (limit - used_today).max(0) as usize;
+    let limit = provider.daily_limit();
     let mut symbols = symbols;
-    let skipped = if symbols.len() > remaining { symbols.split_off(remaining) } else { Vec::new() };
+    let skipped = match limit {
+        Some(limit) => {
+            let remaining = (limit - used_today).max(0) as usize;
+            if symbols.len() > remaining { symbols.split_off(remaining) } else { Vec::new() }
+        }
+        None => Vec::new(),
+    };
     let to_attempt = symbols;
     let attempted_any = !to_attempt.is_empty();
 
@@ -1961,16 +2043,22 @@ pub async fn refresh_live_prices(state: tauri::State<'_, AppStateHandle>) -> Res
         .into_iter()
         .map(|symbol| FailedQuote {
             symbol,
-            error: format!("Skipped — today's Alpha Vantage limit ({limit}/day) would be exceeded."),
+            error: format!(
+                "Skipped — today's {} limit ({}/day) would be exceeded.",
+                provider.label(),
+                limit.expect("skipped is only ever non-empty when a limit exists")
+            ),
         })
         .collect();
 
     let client = reqwest::Client::new();
     let mut quotes = Vec::new();
     for symbol in to_attempt {
-        let result = crate::live_prices::fetch_quote(&client, &api_key, &symbol).await;
+        let result = crate::live_price_provider::fetch_quote(provider, &client, &api_key, &symbol).await;
         {
             let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+            // Recorded unconditionally for both providers — informational
+            // only for Finnhub, which has no limit to check it against.
             state.store.record_live_price_request(today).map_err(|e| e.to_string())?;
         }
         match result {

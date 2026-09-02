@@ -129,7 +129,18 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
     ),
   },
   {
-    tags: ["investments", "holdings", "shares", "cost basis", "goal projection", "live prices", "stocks", "alpha vantage"],
+    tags: [
+      "investments",
+      "holdings",
+      "shares",
+      "cost basis",
+      "goal projection",
+      "live prices",
+      "stocks",
+      "alpha vantage",
+      "finnhub",
+      "twelve data",
+    ],
     node: (
       <li>
         <strong>Investments</strong> — holdings per account (shares, price,
@@ -210,20 +221,32 @@ const IMPORTING_ENTRY: HelpEntry = {
 };
 
 const BULK_SETUP_ENTRY: HelpEntry = {
-  tags: ["bulk", "setup template", "csv", "accounts", "categories", "budgets", "buckets", "import setup data"],
+  tags: [
+    "bulk",
+    "setup template",
+    "csv",
+    "excel",
+    "accounts",
+    "categories",
+    "budgets",
+    "buckets",
+    "holdings",
+    "investments",
+    "import setup data",
+  ],
   node: (
     <>
       <p>
-        If you'd rather set up accounts, categories, budgets, and buckets
-        in bulk instead of one at a time through the UI, use the two
-        buttons on the <strong>Reports</strong> tab:
+        If you'd rather set up accounts, categories, budgets, buckets, and
+        investment holdings in bulk instead of one at a time through the
+        UI, use the two buttons on the <strong>Reports</strong> tab:
       </p>
       <ul>
         <li>
           <strong>"Download setup template…"</strong> saves one CSV file
           with a section for each of Accounts / Categories / Budgets /
-          Buckets, with one example row in each section to show the
-          expected columns.
+          Buckets / Holdings, with one example row in each section to show
+          the expected columns. Opens and saves fine in Excel.
         </li>
         <li>
           Open it, delete the example rows, fill in your own (keep the
@@ -236,6 +259,11 @@ const BULK_SETUP_ENTRY: HelpEntry = {
           written.
         </li>
         <li>A blank "Period" on a budget row defaults to the current month.</li>
+        <li>
+          A Holdings row's Account must match an existing account's name
+          exactly (case-insensitive) — a row whose account isn't found is
+          flagged on the review screen and skipped, not partially created.
+        </li>
       </ul>
     </>
   ),
@@ -490,17 +518,30 @@ const FAQ_ENTRIES: FaqEntry[] = [
   },
   {
     question: "Can holding prices update automatically?",
-    tags: ["investments", "stocks", "live prices", "alpha vantage", "api key", "auto-fill", "refresh"],
+    tags: [
+      "investments",
+      "stocks",
+      "live prices",
+      "alpha vantage",
+      "finnhub",
+      "twelve data",
+      "api key",
+      "auto-fill",
+      "refresh",
+    ],
     answer: (
       <p>
         Optionally — off by default, so nothing changes unless you turn it
-        on. In Settings, add a free Alpha Vantage API key to enable it: new
-        holdings can auto-fill their price by symbol, and existing ones
-        refresh automatically when the app opens and every 2 hours it stays
-        open (one request per distinct symbol you hold, not per holding).
-        Turn it off any time and prices go back to fully manual. Alpha
-        Vantage's free tier is capped at 25 requests/day, which comfortably
-        covers casual use.
+        on. In Settings, pick a provider (Alpha Vantage, Finnhub, or Twelve
+        Data) and add its free API key to enable it: new holdings can
+        auto-fill their price by symbol, and existing ones refresh
+        automatically when the app opens and every 2 hours it stays open
+        (one request per distinct symbol you hold, not per holding). Turn
+        it off any time and prices go back to fully manual. Alpha Vantage's
+        free tier is capped at 25 requests/day, which comfortably covers
+        casual use; Twelve Data's free tier raises that to 800 requests/day
+        for a larger portfolio; Finnhub's free tier allows 60
+        requests/minute instead, so there's no daily limit to track at all.
       </p>
     ),
   },

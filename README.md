@@ -100,19 +100,23 @@ From the **Ledger** tab, click **"Import transactions…"**:
 
 ## Bulk setup-data import/export
 
-If you'd rather set up accounts, categories, budgets, and buckets in bulk
-instead of one at a time through the UI, use the two buttons on the
-**Reports** tab:
+If you'd rather set up accounts, categories, budgets, buckets, and
+investment holdings in bulk instead of one at a time through the UI, use
+the two buttons on the **Reports** tab:
 
 - **"Download setup template…"** saves one CSV file with a section for
-  each of Accounts / Categories / Budgets / Buckets, with one example row
-  in each section to show the expected columns.
+  each of Accounts / Categories / Budgets / Buckets / Holdings, with one
+  example row in each section to show the expected columns. Opens and
+  saves fine in Excel.
 - Open it, delete the example rows, fill in your own (keep the section
   titles and column headers as they are), and save.
 - **"Import setup data…"** reads the file back in and shows you a review
   screen — anything that already exists is flagged, and you choose what
   to actually apply before anything is written.
 - A blank `Period` on a budget row defaults to the current month.
+- A Holdings row's `Account` must match an existing account's name exactly
+  (case-insensitive) — a row whose account isn't found is flagged on the
+  review screen and skipped, not partially created.
 
 ## Exporting your data
 
@@ -243,9 +247,12 @@ spending, for example.
 
 **Can holding prices update automatically?**
 Optionally — off by default, so nothing changes unless you turn it on. In
-Settings, add a free Alpha Vantage API key to enable it: new holdings can
-auto-fill their price by symbol, and existing ones refresh automatically
-when the app opens and every 2 hours it stays open (one request per
-distinct symbol you hold, not per holding). Turn it off any time and
-prices go back to fully manual. Alpha Vantage's free tier is capped at 25
-requests/day, which comfortably covers casual use.
+Settings, pick a provider (Alpha Vantage, Finnhub, or Twelve Data) and add
+its free API key to enable it: new holdings can auto-fill their price by
+symbol, and existing ones refresh automatically when the app opens and
+every 2 hours it stays open (one request per distinct symbol you hold,
+not per holding). Turn it off any time and prices go back to fully
+manual. Alpha Vantage's free tier is capped at 25 requests/day, which
+comfortably covers casual use; Twelve Data's free tier raises that to 800
+requests/day for a larger portfolio; Finnhub's free tier allows 60
+requests/minute instead, so there's no daily limit to track at all.

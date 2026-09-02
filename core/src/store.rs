@@ -240,6 +240,7 @@ pub struct SetupImportOutcome {
     pub categories_created: usize,
     pub budgets_set: usize,
     pub buckets_created: usize,
+    pub holdings_created: usize,
     pub skipped: Vec<String>,
 }
 
@@ -296,10 +297,15 @@ pub struct StoredHolding {
 
 /// Opt-in live-price configuration (see `Store::get_live_price_settings`).
 /// `api_key` being `None` means the feature is off — holding prices stay
-/// fully manual, exactly like before this existed.
+/// fully manual, exactly like before this existed. `provider` is the raw
+/// stored identifier (`"alpha_vantage"`/`"finnhub"`) — kept as a plain
+/// `String` here rather than an enum so `core` stays free of any
+/// src-tauri-side concern; `src-tauri::live_price_provider::LivePriceProvider`
+/// is what actually interprets it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredLivePriceSettings {
     pub api_key: Option<String>,
+    pub provider: String,
     pub last_refreshed_at: Option<NaiveDateTime>,
 }
 
@@ -503,6 +509,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS live_price_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 api_key TEXT,
+                provider TEXT NOT NULL DEFAULT 'alpha_vantage',
                 last_refreshed_at TEXT,
                 requests_used_today INTEGER NOT NULL DEFAULT 0,
                 requests_count_date TEXT
@@ -524,6 +531,7 @@ impl Store {
         self.migrate_add_member_id_to_buckets_if_missing()?;
         self.migrate_add_member_id_to_assets_if_missing()?;
         self.migrate_add_live_price_request_tracking_if_missing()?;
+        self.migrate_add_live_price_provider_if_missing()?;
         self.seed_categories_if_missing()
     }
 
@@ -553,6 +561,35 @@ impl Store {
         self.conn
             .execute("ALTER TABLE live_price_settings ADD COLUMN requests_used_today INTEGER NOT NULL DEFAULT 0", [])?;
         self.conn.execute("ALTER TABLE live_price_settings ADD COLUMN requests_count_date TEXT", [])?;
+        Ok(())
+    }
+
+    /// `live_price_settings` didn't originally track which provider a
+    /// saved API key belongs to — everyone who'd already saved a key was
+    /// necessarily using Alpha Vantage (Finnhub support didn't exist yet),
+    /// so this backfills existing rows to `'alpha_vantage'` via the
+    /// column's own default. Same missing-column pattern as every other
+    /// migration here.
+    fn migrate_add_live_price_provider_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(live_price_settings)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_provider = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "provider" {
+                has_provider = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_provider {
+            return Ok(());
+        }
+
+        self.conn
+            .execute("ALTER TABLE live_price_settings ADD COLUMN provider TEXT NOT NULL DEFAULT 'alpha_vantage'", [])?;
         Ok(())
     }
 
@@ -1205,6 +1242,28 @@ impl Store {
             }
         }
 
+        for row in &data.holdings {
+            let found = self.conn.query_row(
+                "SELECT id FROM accounts WHERE name = ?1 COLLATE NOCASE",
+                params![row.account_name],
+                |r| r.get::<_, i64>(0),
+            );
+            let account_id = match found {
+                Ok(id) => id,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    outcome.skipped.push(format!(
+                        "{}: account '{}' not found — holding not created",
+                        row.symbol, row.account_name
+                    ));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            let name = row.name.as_deref().unwrap_or(&row.symbol);
+            self.create_holding(account_id, &row.symbol, name, row.shares, row.price, row.cost_basis, row.asset_class.as_deref())?;
+            outcome.holdings_created += 1;
+        }
+
         Ok(outcome)
     }
 
@@ -1241,6 +1300,20 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        // The new baseline represents everything through the *end of the
+        // prior day*, not "as of this exact moment" — anchoring it to
+        // `today` instead would bake in only whatever transactions already
+        // existed the instant this ran, then `account_balance_as_of`'s
+        // `date > since_date` window would permanently exclude anything
+        // dated today added afterward (importing a statement, applying a
+        // debt payment, etc. later the same day this rolled), since a
+        // same-day transaction can never be both "after today" and "on or
+        // before today" at once. Anchoring to yesterday means every
+        // transaction dated today counts today, no matter when today it's
+        // added, and self-corrects nothing tomorrow that wasn't already
+        // correct.
+        let reset_date = today.pred_opt().expect("NaiveDate::pred_opt only fails at the calendar's minimum date");
+
         let mut rolled = Vec::new();
         for (id, name, starting_balance_str) in accounts {
             let already_done: bool = self.conn.query_row(
@@ -1254,11 +1327,11 @@ impl Store {
 
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
-            let balance = self.account_balance_as_of(id, starting_balance, today)?;
+            let balance = self.account_balance_as_of(id, starting_balance, reset_date)?;
 
             self.conn.execute(
                 "INSERT INTO balance_resets (account_id, period, reset_date, balance) VALUES (?1, ?2, ?3, ?4)",
-                params![id, period, today.to_string(), balance.to_string()],
+                params![id, period, reset_date.to_string(), balance.to_string()],
             )?;
             rolled.push((id, name, balance));
         }
@@ -3027,29 +3100,36 @@ impl Store {
     /// app's optional features).
     pub fn get_live_price_settings(&self) -> rusqlite::Result<StoredLivePriceSettings> {
         let row = match self.conn.query_row(
-            "SELECT api_key, last_refreshed_at FROM live_price_settings WHERE id = 1",
+            "SELECT api_key, provider, last_refreshed_at FROM live_price_settings WHERE id = 1",
             [],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| {
+                Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
+            },
         ) {
             Ok(v) => Some(v),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
             Err(e) => return Err(e),
         };
-        let (api_key, last_refreshed_at) = row.unwrap_or((None, None));
+        let (api_key, provider, last_refreshed_at) = row.unwrap_or((None, "alpha_vantage".to_string(), None));
         let last_refreshed_at = last_refreshed_at.map(|s| {
             NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S").expect("timestamp stored by this crate must be valid")
         });
-        Ok(StoredLivePriceSettings { api_key, last_refreshed_at })
+        Ok(StoredLivePriceSettings { api_key, provider, last_refreshed_at })
     }
 
-    /// Sets (or, with `None`, clears/disables) the Alpha Vantage API key.
-    /// Clearing it does not touch `last_refreshed_at` or any holding price
-    /// already on record — it only stops future refreshes from happening.
-    pub fn set_live_price_api_key(&self, api_key: Option<&str>) -> rusqlite::Result<()> {
+    /// Sets (or, with `api_key: None`, clears/disables) the live-price
+    /// feature's provider and API key together — a key is never stored
+    /// disassociated from which provider it belongs to. Disabling still
+    /// writes `provider` (only `api_key` clears) so Settings can
+    /// pre-select the last-used provider if the user re-enables later.
+    /// Clearing the key does not touch `last_refreshed_at` or any holding
+    /// price already on record — it only stops future refreshes from
+    /// happening.
+    pub fn set_live_price_settings(&self, provider: &str, api_key: Option<&str>) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO live_price_settings (id, api_key) VALUES (1, ?1)
-             ON CONFLICT(id) DO UPDATE SET api_key = ?1",
-            params![api_key],
+            "INSERT INTO live_price_settings (id, provider, api_key) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET provider = ?1, api_key = ?2",
+            params![provider, api_key],
         )?;
         Ok(())
     }
@@ -5677,6 +5757,63 @@ mod tests {
     }
 
     #[test]
+    fn apply_setup_import_creates_holdings_linked_by_account_name() {
+        let store = Store::open_in_memory().unwrap();
+        let data = setup_data(
+            "Accounts\nName,Type,Starting Balance,Institution,Mask\nBrokerage,investment,,,\n\
+             \n\
+             Holdings\nAccount,Symbol,Name,Shares,Price,Cost Basis,Asset Class\n\
+             Brokerage,AAPL,Apple Inc.,10,231.20,1450.00,US Stocks\n",
+        );
+
+        let outcome = store.apply_setup_import(&data, "2026-08").unwrap();
+
+        assert_eq!(outcome.holdings_created, 1);
+        assert!(outcome.skipped.is_empty());
+        let holdings = store.list_holdings().unwrap();
+        assert_eq!(holdings.len(), 1);
+        assert_eq!(holdings[0].symbol, "AAPL");
+        assert_eq!(holdings[0].name, "Apple Inc.");
+        assert_eq!(holdings[0].shares, "10".parse().unwrap());
+        assert_eq!(holdings[0].price, "231.20".parse().unwrap());
+        assert_eq!(holdings[0].cost_basis, "1450.00".parse().unwrap());
+        assert_eq!(holdings[0].asset_class, Some("US Stocks".to_string()));
+    }
+
+    #[test]
+    fn a_holdings_unknown_account_is_skipped_entirely_not_created_without_one() {
+        let store = Store::open_in_memory().unwrap();
+        let data = setup_data(
+            "Holdings\nAccount,Symbol,Name,Shares,Price,Cost Basis,Asset Class\n\
+             No Such Account,AAPL,,10,231.20,1450.00,\n",
+        );
+
+        let outcome = store.apply_setup_import(&data, "2026-08").unwrap();
+
+        assert_eq!(outcome.holdings_created, 0);
+        assert_eq!(outcome.skipped.len(), 1);
+        assert!(outcome.skipped[0].contains("No Such Account"));
+        assert!(outcome.skipped[0].contains("AAPL"));
+        assert!(store.list_holdings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_blank_holding_name_defaults_to_the_symbol() {
+        let store = Store::open_in_memory().unwrap();
+        let data = setup_data(
+            "Accounts\nName,Type,Starting Balance,Institution,Mask\nBrokerage,investment,,,\n\
+             \n\
+             Holdings\nAccount,Symbol,Name,Shares,Price,Cost Basis,Asset Class\n\
+             Brokerage,VTI,,5,220.00,1000.00,\n",
+        );
+
+        store.apply_setup_import(&data, "2026-08").unwrap();
+
+        let holdings = store.list_holdings().unwrap();
+        assert_eq!(holdings[0].name, "VTI");
+    }
+
+    #[test]
     fn importing_a_budget_registers_its_category_too() {
         // A budget row for a category the user never separately listed in
         // the Categories section must still leave that category selectable
@@ -7101,28 +7238,42 @@ mod tests {
         let settings = store.get_live_price_settings().unwrap();
 
         assert_eq!(settings.api_key, None);
+        assert_eq!(settings.provider, "alpha_vantage");
         assert_eq!(settings.last_refreshed_at, None);
     }
 
     #[test]
-    fn set_live_price_api_key_then_get_returns_it() {
+    fn set_live_price_settings_then_get_returns_it() {
         let store = Store::open_in_memory().unwrap();
 
-        store.set_live_price_api_key(Some("demo-key")).unwrap();
+        store.set_live_price_settings("alpha_vantage", Some("demo-key")).unwrap();
 
         let settings = store.get_live_price_settings().unwrap();
         assert_eq!(settings.api_key, Some("demo-key".to_string()));
+        assert_eq!(settings.provider, "alpha_vantage");
     }
 
     #[test]
-    fn set_live_price_api_key_none_clears_it() {
+    fn set_live_price_settings_stores_the_chosen_provider() {
         let store = Store::open_in_memory().unwrap();
-        store.set_live_price_api_key(Some("demo-key")).unwrap();
 
-        store.set_live_price_api_key(None).unwrap();
+        store.set_live_price_settings("finnhub", Some("fh-key")).unwrap();
+
+        let settings = store.get_live_price_settings().unwrap();
+        assert_eq!(settings.provider, "finnhub");
+        assert_eq!(settings.api_key, Some("fh-key".to_string()));
+    }
+
+    #[test]
+    fn set_live_price_settings_none_key_clears_it_but_keeps_the_provider() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_live_price_settings("finnhub", Some("fh-key")).unwrap();
+
+        store.set_live_price_settings("finnhub", None).unwrap();
 
         let settings = store.get_live_price_settings().unwrap();
         assert_eq!(settings.api_key, None);
+        assert_eq!(settings.provider, "finnhub", "disabling should still remember the last-used provider");
     }
 
     #[test]
@@ -7203,6 +7354,44 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 8, 30).unwrap();
         assert_eq!(store.live_price_requests_used_today(today).unwrap(), 0);
         assert_eq!(store.record_live_price_request(today).unwrap(), 1);
+
+        drop(store);
+        std::fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
+    fn opening_a_pre_provider_column_database_migrates_it_to_alpha_vantage_without_losing_the_api_key() {
+        // Simulates a database from before Finnhub existed: a
+        // `live_price_settings` table with the request-tracking columns
+        // but no `provider` column yet, already holding a saved API key —
+        // necessarily an Alpha Vantage key, since Finnhub didn't exist.
+        let dir = std::env::temp_dir().join(format!("pennyworth-live-price-provider-migration-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("pre_provider_column.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).unwrap();
+        }
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE live_price_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    api_key TEXT,
+                    last_refreshed_at TEXT,
+                    requests_used_today INTEGER NOT NULL DEFAULT 0,
+                    requests_count_date TEXT
+                );",
+            )
+            .unwrap();
+            conn.execute("INSERT INTO live_price_settings (id, api_key) VALUES (1, 'saved-key')", [])
+                .unwrap();
+        } // old-style connection dropped here
+
+        let store = Store::open(&db_path).unwrap();
+        let settings = store.get_live_price_settings().unwrap();
+        assert_eq!(settings.api_key, Some("saved-key".to_string()), "the saved API key must survive the migration");
+        assert_eq!(settings.provider, "alpha_vantage");
 
         drop(store);
         std::fs::remove_file(&db_path).unwrap();
@@ -7775,6 +7964,30 @@ mod tests {
         // "now" (well into September, no further transactions) reflects the reset directly.
         let accounts = store.list_accounts("2026-09-15".parse().unwrap()).unwrap();
         assert_eq!(accounts[0].current_balance, "299000.00".parse().unwrap());
+    }
+
+    #[test]
+    fn a_transaction_dated_the_same_day_as_the_rollover_still_counts_that_day() {
+        // Reproduces a real user-reported bug: the monthly rollover ran
+        // (say, on app launch the morning of 2026-09-01) before a credit
+        // card statement got imported later that same day. The payment
+        // must still reduce what's owed *today* — not sit invisible until
+        // 2026-09-02 just because it landed on the same calendar day the
+        // reset itself was taken.
+        let store = Store::open_in_memory().unwrap();
+        let card = store.get_or_create_account("Credit Card", AccountType::Credit).unwrap();
+        store.set_account_starting_balance(card, "5000.00".parse().unwrap()).unwrap(); // $5000 limit
+
+        store.roll_forward_monthly_balances("2026-09-01".parse().unwrap()).unwrap();
+
+        // Imported (or applied) after the rollover already ran, but still dated today.
+        store
+            .save_transactions(card, &[tx("2026-09-01", "Payment", "500.00")])
+            .unwrap();
+
+        let accounts = store.list_accounts("2026-09-01".parse().unwrap()).unwrap();
+        let owed = "5000.00".parse::<Decimal>().unwrap() - accounts[0].current_balance;
+        assert_eq!(owed, "-500.00".parse().unwrap(), "today's payment must already reduce what's owed today");
     }
 
     #[test]
