@@ -36,4 +36,17 @@ export const CHANGELOG: Record<string, string[]> = {
     "Fixed an account's balance sometimes not reflecting a transaction added the same day its monthly balance rolled forward, until the next day.",
     "Fixed a payment applied to a credit card, loan, or mortgage counting twice — once as the real payment and again as an extra expense in Budget, Cash Flow, and category totals.",
   ],
+  "1.1.7": [
+    "The sidebar is now organized into groups — Overview, Money, Planning, Insights — with Settings and Help pinned below.",
+    "Accounts is now its own page, split out of Reports, with its own Assets/Liabilities/Net Worth stats.",
+    "The Ledger's toolbar is decluttered — Manage categories, Manage family members, Categorize uncategorized, and Export CSV now live behind a \"⋯\" menu.",
+    "Budget now shows group-summary cards up top, and each budget line has its own progress bar alongside its budgeted/actual/remaining amounts.",
+    "The Dashboard's Net Worth/Cash/Debt/Investments cards now show a trend sparkline and a 6-month change; its spending-by-category donut (and Cash Flow's matching one) now shows the total spent in the center.",
+    "Recurring now has an Account column, and Suggested items are shown as cards instead of a table.",
+    "Settings → Profiles: \"Use existing file…\" points Penny Worth at a pennyworth.db copied over from another computer, instead of only ever starting a new profile empty.",
+    "Exporting the Ledger to CSV and re-importing that same file now actually preserves category, tags, and account — including creating any account that doesn't exist yet — instead of losing that data.",
+    "Fixed \"Update now\" silently failing to open the downloaded installer.",
+    "Fixed a debt payment applied to a credit card, loan, or mortgage still inflating Budget, Cash Flow, and category totals in a few more places the 1.1.6 fix missed.",
+    "Smaller fixes: splitting a transaction now shows the split editor under the row you clicked instead of at the bottom of the table, the Dashboard's Upcoming Bills rows line up in two proper columns, and Budget's category dropdowns line up in a straight column.",
+  ],
 };

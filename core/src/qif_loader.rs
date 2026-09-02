@@ -76,7 +76,7 @@ fn parse_qif(content: &str, invert_amounts: bool) -> LoadResult {
         }
     }
 
-    LoadResult { transactions, errors }
+    LoadResult { transactions, errors, ..Default::default() }
 }
 
 fn build_transaction(

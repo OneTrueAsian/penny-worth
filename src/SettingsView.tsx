@@ -44,7 +44,7 @@ function SettingsSection({
         <span className="reports-section-title">Data file</span>
       </div>
       <p className="modal-message-secondary">Data file location</p>
-      <p className="account-name-detail" style={{ userSelect: "text" }}>
+      <p className="path-box" style={{ userSelect: "text" }}>
         {dataFileLocation ?? "Loading…"}
       </p>
       <button type="button" className="modal-secondary" onClick={onRelocateDataFile}>
@@ -251,12 +251,19 @@ function LivePricesSection({
 function ProfilesSection({
   profiles,
   onCreateProfile,
+  onUseExistingDataFile,
   onSwitchProfile,
   onRenameProfile,
   onDeleteProfile,
 }: {
   profiles: Profile[];
   onCreateProfile: (name: string) => void;
+  /** Opens the native file picker for an existing `.db` file brought over
+   * from another machine — see `App.tsx`'s `handlePickExistingDataFile`.
+   * Takes no arguments; the picked path flows back through a separate
+   * dialog (`UseExistingDataFileDialog`) that asks for a name, same
+   * division of labor as `onRelocateDataFile`. */
+  onUseExistingDataFile: () => void;
   onSwitchProfile: (id: string) => void;
   onRenameProfile: (id: string, newName: string) => void;
   onDeleteProfile: (id: string) => void;
@@ -372,7 +379,14 @@ function ProfilesSection({
         <button type="submit" disabled={!newProfileName.trim()}>
           New profile…
         </button>
+        <button type="button" className="modal-secondary" onClick={onUseExistingDataFile}>
+          Use existing file…
+        </button>
       </form>
+      <p className="modal-message-secondary">
+        Moving to a new computer? "Use existing file…" points Penny Worth at a <code>pennyworth.db</code> you've
+        already copied over, instead of starting empty.
+      </p>
     </div>
   );
 }
@@ -385,6 +399,7 @@ export function SettingsView({
   onRestoreBackup,
   profiles,
   onCreateProfile,
+  onUseExistingDataFile,
   onSwitchProfile,
   onRenameProfile,
   onDeleteProfile,
@@ -399,6 +414,7 @@ export function SettingsView({
   onRestoreBackup: (filename: string) => void;
   profiles: Profile[];
   onCreateProfile: (name: string) => void;
+  onUseExistingDataFile: () => void;
   onSwitchProfile: (id: string) => void;
   onRenameProfile: (id: string, newName: string) => void;
   onDeleteProfile: (id: string) => void;
@@ -411,6 +427,7 @@ export function SettingsView({
       <ProfilesSection
         profiles={profiles}
         onCreateProfile={onCreateProfile}
+        onUseExistingDataFile={onUseExistingDataFile}
         onSwitchProfile={onSwitchProfile}
         onRenameProfile={onRenameProfile}
         onDeleteProfile={onDeleteProfile}

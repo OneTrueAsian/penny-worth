@@ -25,9 +25,9 @@ try {
 
   // The row should now show inline edit inputs, pre-filled with the
   // existing values — scoped by table structure (first td = merchant,
-  // second td = cadence) rather than the input's `value` attribute, since
-  // a controlled React input's DOM attribute isn't reliably queryable
-  // after mount.
+  // third td = cadence, an Account column now sits between them) rather
+  // than the input's `value` attribute, since a controlled React input's
+  // DOM attribute isn't reliably queryable after mount.
   const editingTable = "//table[.//th[text()='Merchant']]/tbody/tr";
   const merchantInput = await app.browser.$(`${editingTable}/td[1]/input`);
   await merchantInput.waitForExist({ timeout: 5000 });
@@ -40,7 +40,7 @@ try {
   await app.browser.keys(["Control", "a"]);
   await app.browser.keys("-22.99");
 
-  const cadenceSelect = await app.browser.$(`${editingTable}/td[2]/select`);
+  const cadenceSelect = await app.browser.$(`${editingTable}/td[3]/select`);
   await cadenceSelect.selectByAttribute("value", "annual");
 
   const saveBtn = await app.browser.$("button=Save");

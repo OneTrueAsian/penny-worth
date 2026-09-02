@@ -2,9 +2,7 @@ import { FormEvent, useState } from "react";
 import type { Account, Asset, Bucket, DebtPayoffPlan, FamilyMember, Report, Transaction } from "./types";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
-import { GROUP_LABELS, GROUP_ORDER, groupOf } from "./accountGroups";
-
-const ACCOUNT_TYPE_OPTIONS = ["checking", "savings", "credit", "loan", "investment", "other"];
+import { groupOf, netWorthContribution } from "./accountGroups";
 
 const ASSET_TYPE_OPTIONS = ["real_estate", "vehicle", "other"];
 const ASSET_TYPE_LABELS: Record<string, string> = {
@@ -218,35 +216,17 @@ function PropertyAssetsSection({
 }
 
 
-/** A credit account's `starting_balance` is a limit — owed starts at $0,
- * so only the change since then (current_balance - starting_balance)
- * counts. A loan's `starting_balance` is the amount already owed, so the
- * whole thing counts as debt from the start, same as a fresh cash
- * account's balance counts in full — just negative. */
-function netWorthContribution(a: Account): number {
-  const group = groupOf(a.account_type);
-  if (group === "credit") {
-    return parseFloat(a.current_balance) - parseFloat(a.starting_balance);
-  }
-  if (group === "loan") {
-    return -parseFloat(a.current_balance);
-  }
-  return parseFloat(a.current_balance);
-}
-
-/** Every stat on this page that can be clicked open to show what makes
- * it up — shared between the top-level stats and AccountsSection's own,
- * so only one breakdown panel is ever open at a time. */
-type ReportStatKey = "totalSaved" | "income" | "byTag" | "byMember" | "assets" | "liabilities" | "networth";
+/** Every stat on this page that can be clicked open to show what makes it
+ * up. Account-level stats (assets/liabilities/net worth) moved to
+ * AccountsView along with the rest of account management — see its own
+ * `AccountStatKey`. */
+type ReportStatKey = "totalSaved" | "income" | "byTag" | "byMember";
 
 const REPORT_STAT_LABELS: Record<ReportStatKey, string> = {
   totalSaved: "Total Saved",
   income: "Income (all-time)",
   byTag: "Spending by Tag",
   byMember: "Spending by Member",
-  assets: "Total Assets",
-  liabilities: "Total Liabilities",
-  networth: "Net Worth",
 };
 
 /** How much is actually owed on a debt account — the positive counterpart
@@ -412,312 +392,6 @@ export function DebtPayoffPlannerSection({
   );
 }
 
-function AccountRow({
-  account: a,
-  editing,
-  setEditing,
-  onSetStartingBalance,
-  onUpdateAccountType,
-  editingDetails,
-  setEditingDetails,
-  onSetAccountDetails,
-  familyMembers,
-  onSetAccountMember,
-  confirmingDeleteId,
-  setConfirmingDeleteId,
-  onDeleteAccount,
-}: {
-  account: Account;
-  editing: { id: number; value: string } | null;
-  setEditing: (v: { id: number; value: string } | null) => void;
-  onSetStartingBalance: (accountId: number, balance: string) => void;
-  onUpdateAccountType: (accountId: number, accountType: string) => void;
-  editingDetails: { id: number; institution: string; mask: string } | null;
-  setEditingDetails: (v: { id: number; institution: string; mask: string } | null) => void;
-  onSetAccountDetails: (accountId: number, institution: string | null, mask: string | null) => void;
-  familyMembers: FamilyMember[];
-  onSetAccountMember: (accountId: number, memberId: number | null) => void;
-  confirmingDeleteId: number | null;
-  setConfirmingDeleteId: (id: number | null) => void;
-  onDeleteAccount: (accountId: number) => void;
-}) {
-  const group = groupOf(a.account_type);
-  const isCredit = group === "credit";
-  const isLoan = group === "loan";
-  const owed = isLoan
-    ? a.current_balance
-    : (parseFloat(a.starting_balance) - parseFloat(a.current_balance)).toFixed(2);
-
-  function commitEdit(id: number, value: string) {
-    setEditing(null);
-    if (!value.trim()) return;
-    onSetStartingBalance(id, value.trim());
-  }
-
-  function commitDetails(id: number) {
-    if (!editingDetails) return;
-    onSetAccountDetails(id, editingDetails.institution.trim() || null, editingDetails.mask.trim() || null);
-    setEditingDetails(null);
-  }
-
-  return (
-    <tr>
-      <td>
-        <div className="account-name-cell">{a.name}</div>
-        {editingDetails?.id === a.id ? (
-          <div className="account-details-edit">
-            <input
-              autoFocus
-              placeholder="Institution"
-              value={editingDetails.institution}
-              onChange={(e) => setEditingDetails({ ...editingDetails, institution: e.target.value })}
-            />
-            <input
-              placeholder="1234"
-              maxLength={4}
-              value={editingDetails.mask}
-              onChange={(e) => setEditingDetails({ ...editingDetails, mask: e.target.value })}
-            />
-            <button type="button" onClick={() => commitDetails(a.id)}>
-              Save
-            </button>
-          </div>
-        ) : (
-          <span
-            className="account-name-detail"
-            title="Click to set institution / account number"
-            onClick={() => setEditingDetails({ id: a.id, institution: a.institution ?? "", mask: a.mask ?? "" })}
-          >
-            {a.institution ? `${a.institution}${a.mask ? " •••• " + a.mask : ""}` : "Add institution…"}
-          </span>
-        )}
-      </td>
-      <td>
-        <select value={a.account_type} onChange={(e) => onUpdateAccountType(a.id, e.target.value)}>
-          {ACCOUNT_TYPE_OPTIONS.map((t) => (
-            <option key={t} value={t}>
-              {t[0].toUpperCase() + t.slice(1)}
-            </option>
-          ))}
-        </select>
-      </td>
-      <td className="amount-col">
-        {editing?.id === a.id ? (
-          <input
-            autoFocus
-            className="amount-edit-input"
-            value={editing.value}
-            onChange={(e) => setEditing({ id: a.id, value: e.target.value })}
-            onBlur={() => commitEdit(a.id, editing.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitEdit(a.id, editing.value);
-              if (e.key === "Escape") setEditing(null);
-            }}
-          />
-        ) : (
-          <span
-            className="amount-editable"
-            title={
-              isCredit
-                ? "Click to set the credit limit"
-                : isLoan
-                  ? "Click to set the amount currently owed"
-                  : "Click to set the starting balance"
-            }
-            onClick={() => setEditing({ id: a.id, value: a.starting_balance })}
-          >
-            {formatAmount(a.starting_balance)}
-          </span>
-        )}
-      </td>
-      <td className="member-col">
-        <select
-          value={a.member_id ?? ""}
-          onChange={(e) => onSetAccountMember(a.id, e.target.value ? Number(e.target.value) : null)}
-        >
-          <option value="">Unassigned</option>
-          {familyMembers.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-            </option>
-          ))}
-        </select>
-      </td>
-      <td className="source-col">
-        {isCredit
-          ? `Owed ${formatAmount(owed)} · Available ${formatAmount(a.current_balance)}`
-          : isLoan
-            ? `Owed ${formatAmount(owed)}`
-            : `Balance ${formatAmount(a.current_balance)}`}
-      </td>
-      <td className="actions-col">
-        {confirmingDeleteId === a.id ? (
-          <span className="row-delete-confirm">
-            <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
-              Cancel
-            </button>
-            <button type="button" onClick={() => onDeleteAccount(a.id)}>
-              Delete
-            </button>
-          </span>
-        ) : (
-          <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(a.id)}>
-            Delete
-          </button>
-        )}
-      </td>
-    </tr>
-  );
-}
-
-function AccountsSection({
-  accounts,
-  manualAssetsTotal,
-  onSetStartingBalance,
-  onUpdateAccountType,
-  onDeleteAccount,
-  onSetAccountDetails,
-  familyMembers,
-  onSetAccountMember,
-  onAddAccount,
-  expandedStat,
-  onToggleStat,
-}: {
-  accounts: Account[];
-  /** Sum of manually-tracked assets (Property & Valuables) — folded into
-   * the Total Assets / Net Worth stats here alongside real accounts. */
-  manualAssetsTotal: number;
-  onSetStartingBalance: (accountId: number, balance: string) => void;
-  onUpdateAccountType: (accountId: number, accountType: string) => void;
-  onDeleteAccount: (accountId: number) => void;
-  onSetAccountDetails: (accountId: number, institution: string | null, mask: string | null) => void;
-  familyMembers: FamilyMember[];
-  onSetAccountMember: (accountId: number, memberId: number | null) => void;
-  onAddAccount: () => void;
-  expandedStat: ReportStatKey | null;
-  onToggleStat: (key: ReportStatKey) => void;
-}) {
-  const [editing, setEditing] = useState<{ id: number; value: string } | null>(null);
-  const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
-  const [editingDetails, setEditingDetails] = useState<{ id: number; institution: string; mask: string } | null>(
-    null,
-  );
-
-  const assetAccounts = accounts.filter((a) => groupOf(a.account_type) !== "credit" && groupOf(a.account_type) !== "loan");
-  const liabilityAccounts = accounts.filter((a) => groupOf(a.account_type) === "credit" || groupOf(a.account_type) === "loan");
-  const assets = assetAccounts.reduce((s, a) => s + netWorthContribution(a), 0) + manualAssetsTotal;
-  const liabilities = liabilityAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
-  const netWorth = assets + liabilities;
-
-  const manualAssetsRow = manualAssetsTotal !== 0 ? [{ name: "Property & Valuables", amount: manualAssetsTotal }] : [];
-  const accountBreakdowns: Record<"assets" | "liabilities" | "networth", { name: string; amount: number }[]> = {
-    assets: [...assetAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })), ...manualAssetsRow],
-    liabilities: liabilityAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
-    networth: [...accounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })), ...manualAssetsRow],
-  };
-
-  const rowProps = {
-    editing,
-    setEditing,
-    onSetStartingBalance,
-    onUpdateAccountType,
-    editingDetails,
-    setEditingDetails,
-    onSetAccountDetails,
-    familyMembers,
-    onSetAccountMember,
-    confirmingDeleteId,
-    setConfirmingDeleteId,
-    onDeleteAccount,
-  };
-
-  return (
-    <>
-      <div className="reports-section-head">
-        <h2 className="reports-section-title">Accounts</h2>
-        <button type="button" onClick={onAddAccount}>
-          Add account…
-        </button>
-      </div>
-
-      <div className="stats">
-        <button
-          type="button"
-          className={expandedStat === "assets" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-          onClick={() => onToggleStat("assets")}
-        >
-          <span className="stat-value">{formatAmount(assets)}</span>
-          <span className="stat-label">Total Assets</span>
-        </button>
-        <button
-          type="button"
-          className={expandedStat === "liabilities" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-          onClick={() => onToggleStat("liabilities")}
-        >
-          <span className="stat-value">{formatAmount(liabilities)}</span>
-          <span className="stat-label">Total Liabilities</span>
-        </button>
-        <button
-          type="button"
-          className={expandedStat === "networth" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-          onClick={() => onToggleStat("networth")}
-        >
-          <span className="stat-value">{formatAmount(netWorth)}</span>
-          <span className="stat-label">Net Worth</span>
-        </button>
-      </div>
-
-      {expandedStat && expandedStat in accountBreakdowns && (
-        <StatDetailPanel
-          title={REPORT_STAT_LABELS[expandedStat]}
-          rows={accountBreakdowns[expandedStat as "assets" | "liabilities" | "networth"]}
-          emptyMessage="No accounts contribute to this yet."
-          onClose={() => onToggleStat(expandedStat)}
-        />
-      )}
-
-      {GROUP_ORDER.map((group) => {
-        const groupAccounts = accounts.filter((a) => groupOf(a.account_type) === group);
-        if (groupAccounts.length === 0) return null;
-        const subtotal = groupAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
-        return (
-          <div key={group}>
-            <h2 className="reports-section-title">
-              {GROUP_LABELS[group]} <span className="account-col">{formatAmount(subtotal)}</span>
-            </h2>
-            <table className="ledger accounts-table">
-              <colgroup>
-                <col style={{ width: "24%" }} />
-                <col style={{ width: "11%" }} />
-                <col style={{ width: "14%" }} />
-                <col style={{ width: "15%" }} />
-                <col style={{ width: "21%" }} />
-                <col style={{ width: "15%" }} />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th>Account</th>
-                  <th>Type</th>
-                  <th className="amount-col">{"Balance / limit"}</th>
-                  <th>Member</th>
-                  <th>Details</th>
-                  <th className="actions-col"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {groupAccounts.map((a) => (
-                  <AccountRow key={a.id} account={a} {...rowProps} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        );
-      })}
-      {accounts.length === 0 && <p className="empty-state">No accounts yet.</p>}
-    </>
-  );
-}
-
 export function ReportsView({
   report,
   accounts,
@@ -725,12 +399,6 @@ export function ReportsView({
   transactions,
   assets,
   familyMembers,
-  onSetStartingBalance,
-  onUpdateAccountType,
-  onDeleteAccount,
-  onSetAccountDetails,
-  onSetAccountMember,
-  onAddAccount,
   onExportCsv,
   onPrint,
   onDownloadSetupTemplate,
@@ -747,12 +415,6 @@ export function ReportsView({
   transactions: Transaction[];
   assets: Asset[];
   familyMembers: FamilyMember[];
-  onSetStartingBalance: (accountId: number, balance: string) => void;
-  onUpdateAccountType: (accountId: number, accountType: string) => void;
-  onDeleteAccount: (accountId: number) => void;
-  onSetAccountDetails: (accountId: number, institution: string | null, mask: string | null) => void;
-  onSetAccountMember: (accountId: number, memberId: number | null) => void;
-  onAddAccount: () => void;
   onExportCsv: () => void;
   onPrint: () => void;
   onDownloadSetupTemplate: () => void;
@@ -895,10 +557,10 @@ export function ReportsView({
         )}
       </div>
 
-      {expandedStat && expandedStat in topLevelBreakdowns && (
+      {expandedStat && (
         <StatDetailPanel
           title={REPORT_STAT_LABELS[expandedStat]}
-          rows={topLevelBreakdowns[expandedStat as "totalSaved" | "income" | "byTag" | "byMember"]}
+          rows={topLevelBreakdowns[expandedStat]}
           emptyMessage={
             expandedStat === "totalSaved"
               ? "No savings buckets yet."
@@ -911,20 +573,6 @@ export function ReportsView({
           onClose={() => toggleStat(expandedStat)}
         />
       )}
-
-      <AccountsSection
-        accounts={accounts}
-        manualAssetsTotal={assets.reduce((s, a) => s + parseFloat(a.value), 0)}
-        onSetStartingBalance={onSetStartingBalance}
-        onUpdateAccountType={onUpdateAccountType}
-        onDeleteAccount={onDeleteAccount}
-        onSetAccountDetails={onSetAccountDetails}
-        familyMembers={familyMembers}
-        onSetAccountMember={onSetAccountMember}
-        onAddAccount={onAddAccount}
-        expandedStat={expandedStat}
-        onToggleStat={toggleStat}
-      />
 
       <PropertyAssetsSection
         assets={assets}

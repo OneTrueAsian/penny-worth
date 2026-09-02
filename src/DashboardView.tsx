@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Account, BudgetAlert, CategoryAmount, Insight, NetWorthPoint, Recurring, Report, Transaction } from "./types";
-import { DonutChart, LineChart, fmtMoneyShort } from "./charts";
+import { DonutChart, LineChart, Sparkline, fmtMoneyShort } from "./charts";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 
@@ -100,6 +100,19 @@ export function DashboardView({
   const debt = debtAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
   const investments = investmentAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
 
+  // Per-stat sparklines/deltas, straight off the same trailing-months
+  // series the big Net worth trend chart uses — real history, not a
+  // fabricated illustration, and shared across all four stat cards
+  // instead of a separate fetch per group.
+  const cashSpark = netWorthHistory.map((p) => parseFloat(p.cash));
+  const debtSpark = netWorthHistory.map((p) => parseFloat(p.debt));
+  const investmentsSpark = netWorthHistory.map((p) => parseFloat(p.investments));
+  const netWorthSpark = netWorthHistory.map((p) => parseFloat(p.value));
+  const cashDelta = cashSpark.length ? cashSpark[cashSpark.length - 1] - cashSpark[0] : 0;
+  const debtDelta = debtSpark.length ? debtSpark[debtSpark.length - 1] - debtSpark[0] : 0;
+  const investmentsDelta = investmentsSpark.length ? investmentsSpark[investmentsSpark.length - 1] - investmentsSpark[0] : 0;
+  const monthsSpan = netWorthHistory.length;
+
   const breakdowns: Record<StatKey, { name: string; amount: number }[]> = {
     networth: [
       ...accounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
@@ -119,6 +132,10 @@ export function DashboardView({
     value: parseFloat(c.amount),
     color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
   }));
+  // The center total matches what the ring itself visually sums to (the
+  // top 6 categories charted), not spendingThisMonth's full, possibly
+  // longer tail — so the number and the ring never disagree.
+  const donutTotal = donutData.reduce((s, d) => s + d.value, 0);
 
   const upcoming = recurring
     .filter((r) => parseFloat(r.amount) < 0)
@@ -139,32 +156,72 @@ export function DashboardView({
           className={expandedStat === "networth" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
           onClick={() => toggleStat("networth")}
         >
-          <span className="stat-value">{fmtMoneyShort(netWorthWithAssets)}</span>
-          <span className="stat-label">Net Worth</span>
+          <div className="stat-top">
+            <div className="stat-top-main">
+              <span className="stat-value">{fmtMoneyShort(netWorthWithAssets)}</span>
+              <span className="stat-label">Net Worth</span>
+            </div>
+            <Sparkline points={netWorthSpark} color="var(--accent)" />
+          </div>
+          {monthsSpan > 1 && (
+            <span className={netWorthDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+              {netWorthDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(netWorthDelta))} over {monthsSpan}mo
+            </span>
+          )}
         </button>
         <button
           type="button"
           className={expandedStat === "cash" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
           onClick={() => toggleStat("cash")}
         >
-          <span className="stat-value">{fmtMoneyShort(cash)}</span>
-          <span className="stat-label">Cash</span>
+          <div className="stat-top">
+            <div className="stat-top-main">
+              <span className="stat-value">{fmtMoneyShort(cash)}</span>
+              <span className="stat-label">Cash</span>
+            </div>
+            <Sparkline points={cashSpark} color="var(--info)" />
+          </div>
+          {monthsSpan > 1 && (
+            <span className={cashDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+              {cashDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(cashDelta))} over {monthsSpan}mo
+            </span>
+          )}
         </button>
         <button
           type="button"
           className={expandedStat === "debt" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
           onClick={() => toggleStat("debt")}
         >
-          <span className={debt < 0 ? "stat-value report-over-budget" : "stat-value"}>{fmtMoneyShort(debt)}</span>
-          <span className="stat-label">Debt</span>
+          <div className="stat-top">
+            <div className="stat-top-main">
+              <span className={debt < 0 ? "stat-value report-over-budget" : "stat-value"}>{fmtMoneyShort(debt)}</span>
+              <span className="stat-label">Debt</span>
+            </div>
+            <Sparkline points={debtSpark} color="var(--negative)" />
+          </div>
+          {monthsSpan > 1 && (
+            <span className={debtDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+              {debtDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(debtDelta))} over {monthsSpan}mo
+            </span>
+          )}
         </button>
         <button
           type="button"
           className={expandedStat === "investments" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
           onClick={() => toggleStat("investments")}
         >
-          <span className="stat-value">{fmtMoneyShort(investments)}</span>
-          <span className="stat-label">Investments</span>
+          <div className="stat-top">
+            <div className="stat-top-main">
+              <span className="stat-value">{fmtMoneyShort(investments)}</span>
+              <span className="stat-label">Investments</span>
+            </div>
+            <Sparkline points={investmentsSpark} color="#8A5FB0" />
+          </div>
+          {monthsSpan > 1 && (
+            <span className={investmentsDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+              {investmentsDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(investmentsDelta))} over {monthsSpan}mo
+            </span>
+          )}
         </button>
       </div>
 
@@ -234,7 +291,11 @@ export function DashboardView({
           </div>
           {donutData.length > 0 ? (
             <div className="donut-with-legend">
-              <DonutChart data={donutData} size={132} />
+              <DonutChart
+                data={donutData}
+                size={132}
+                center={{ value: fmtMoneyShort(donutTotal), label: "this month" }}
+              />
               <div>
                 {donutData.map((d) => (
                   <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
@@ -279,9 +340,9 @@ export function DashboardView({
                     {formatAmount(actual)} of {formatAmount(budgeted)}
                   </span>
                 </div>
-                <div className="bucket-progress-track">
+                <div className="progress-track">
                   <div
-                    className="bucket-progress-fill"
+                    className="progress-fill"
                     style={{ width: `${pct}%`, background: over ? "var(--negative)" : undefined }}
                   />
                 </div>
@@ -297,17 +358,16 @@ export function DashboardView({
           {upcoming.length > 0 ? (
             upcoming.map((r) => (
               <div
-                className="account-name-detail clickable-row"
+                className="suggested-row clickable-row"
                 key={r.id}
-                style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", cursor: "pointer" }}
                 onClick={onOpenRecurring}
                 title="Go to the Recurring tab"
               >
-                <div>
+                <div className="suggested-info">
                   <div className="account-name-cell">{r.merchant}</div>
                   <span className="account-col">{r.next_date}</span>
                 </div>
-                <span className="amount-col">{formatAmount(r.amount)}</span>
+                <span className="suggested-amt">{formatAmount(r.amount)}</span>
               </div>
             ))
           ) : (

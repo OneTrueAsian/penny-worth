@@ -72,7 +72,7 @@ fn parse_ofx(content: &str, invert_amounts: bool) -> LoadResult {
         }
     }
 
-    LoadResult { transactions, errors }
+    LoadResult { transactions, errors, ..Default::default() }
 }
 
 /// Parses one `<TAG>value` (or `<TAG>value</TAG>`) SGML/XML line — returns

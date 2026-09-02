@@ -230,6 +230,57 @@ pub fn switch_profile(
     Ok(target.name)
 }
 
+/// Adopts a database file the user picked from somewhere else on disk (a
+/// copy brought over from another machine, an external drive, a synced
+/// folder) as a new profile — the counterpart to `create_profile`, which
+/// always starts one empty. Opens `db_path` *before* touching the registry
+/// or the live connection, so a bad pick (wrong file type, a corrupt file)
+/// fails with a clear error and leaves everything exactly as it was; only a
+/// file that actually opens as a Penny Worth database gets registered and
+/// hot-swapped to, same "creating/adding a profile means start using it
+/// now" convention as `create_profile`. The file itself is never copied or
+/// moved — it stays wherever the user pointed at it.
+#[tauri::command]
+pub fn add_existing_profile(
+    name: String,
+    db_path: String,
+    paths: tauri::State<crate::config::AppPaths>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<String, String> {
+    let picked_path = std::path::PathBuf::from(&db_path);
+    if !picked_path.exists() {
+        return Err(format!("{} doesn't exist.", picked_path.display()));
+    }
+    let new_state = AppState::open(&picked_path)
+        .map_err(|e| format!("Couldn't open {} as a Penny Worth data file: {e}", picked_path.display()))?;
+
+    let mut state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let live_db_path = current_db_path(&paths);
+    let profile = crate::profiles::add_existing_profile(
+        &paths.config_path,
+        &live_db_path,
+        &name,
+        &picked_path,
+        chrono::Local::now().naive_local(),
+    )?;
+
+    *state = new_state;
+    crate::config::write_db_location_config(&paths.config_path, &picked_path).map_err(|e| e.to_string())?;
+    *paths.db_path.lock().map_err(|_| "db path poisoned".to_string())? = picked_path.clone();
+
+    // Best-effort, matching `create_profile`'s/`switch_profile`'s own
+    // treatment — a file that hasn't been backed up in a while should still
+    // get automatic coverage right away, but this must never block using
+    // the app.
+    let backups_dir = crate::backups::backups_dir_for(&picked_path);
+    if let Err(e) = crate::backups::create_backup_if_due(&state.store, &backups_dir, chrono::Local::now().naive_local())
+    {
+        eprintln!("automatic backup failed (continuing anyway): {e}");
+    }
+
+    Ok(profile.name)
+}
+
 #[tauri::command]
 pub fn rename_profile(
     id: String,
@@ -367,6 +418,12 @@ pub struct ImportRow {
     pub description: String,
     pub amount: String,
     pub is_duplicate: bool,
+    /// The row's own Account column, when the source file has one (this
+    /// app's own Ledger CSV export does; a real bank export never does) —
+    /// `commit_import` routes the row there by default (creating that
+    /// account if it doesn't exist yet) unless the user picks a different
+    /// one for it on the review screen.
+    pub account_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -530,18 +587,26 @@ pub fn preview_import(
             description: tx.description.clone(),
             amount: tx.amount.to_string(),
             is_duplicate: *is_duplicate,
+            account_name: loaded.account_names.get(index).cloned().flatten(),
         })
         .collect();
 
     Ok(ImportPreview { rows, row_errors })
 }
 
-/// Inserts exactly the rows the user chose to keep on the review screen,
-/// each into whichever account they assigned it to (defaulting to
-/// `default_account_id`, the one picked before the file was chosen).
-/// Unlike the old preview-time duplicate check, nothing here re-decides
-/// what counts as a duplicate — the user already made that call by
-/// checking or unchecking each row.
+/// Inserts exactly the rows the user chose to keep on the review screen.
+/// Each row's account is: whatever the user explicitly picked for it on
+/// the review screen, if anything; else the row's own Account column from
+/// the file, resolved by name — case-insensitively, auto-creating a new
+/// account if nothing matches, same as picking a never-before-seen name
+/// when creating one by hand — so a full multi-account Ledger export
+/// re-imports into the right accounts with zero manual setup; else
+/// `default_account_id` (the one picked before the file was chosen), for
+/// a real bank export with no Account column at all. Tags parsed from the
+/// file are attached after insert, once each row has a real id. Unlike
+/// the old preview-time duplicate check, nothing here re-decides what
+/// counts as a duplicate — the user already made that call by checking or
+/// unchecking each row.
 #[tauri::command]
 pub fn commit_import(
     path: String,
@@ -557,20 +622,33 @@ pub fn commit_import(
     let row_errors = loaded.errors.len();
 
     let included: std::collections::HashSet<usize> = included_indices.into_iter().collect();
-    let mut by_account: std::collections::HashMap<i64, Vec<budget_core::models::Transaction>> =
+    let mut by_account: std::collections::HashMap<i64, Vec<(budget_core::models::Transaction, Vec<String>)>> =
         std::collections::HashMap::new();
     for (index, tx) in loaded.transactions.into_iter().enumerate() {
         if !included.contains(&index) {
             continue;
         }
-        let account_id = account_overrides.get(&index).copied().unwrap_or(default_account_id);
-        by_account.entry(account_id).or_default().push(tx);
+        let account_id = if let Some(explicit) = account_overrides.get(&index).copied() {
+            explicit
+        } else if let Some(name) = loaded.account_names.get(index).and_then(|o| o.as_deref()) {
+            state.store.get_or_create_account(name, AccountType::Checking).map_err(|e| e.to_string())?
+        } else {
+            default_account_id
+        };
+        let tags = loaded.tags.get(index).cloned().unwrap_or_default();
+        by_account.entry(account_id).or_default().push((tx, tags));
     }
 
     let mut inserted = 0;
-    for (account_id, txns) in by_account {
-        let save_report = state.store.save_transactions(account_id, &txns).map_err(|e| e.to_string())?;
-        inserted += save_report.inserted;
+    for (account_id, rows) in by_account {
+        let (txns, tags_per_row): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
+        let ids = state.store.save_transactions_with_ids(account_id, &txns).map_err(|e| e.to_string())?;
+        inserted += ids.len();
+        for (id, tags) in ids.into_iter().zip(tags_per_row) {
+            for tag in tags {
+                state.store.add_tag(id, &tag).map_err(|e| e.to_string())?;
+            }
+        }
     }
 
     categorize_uncategorized(&mut state)?;
@@ -2516,6 +2594,12 @@ fn last_day_of_month(year: i32, month: u32) -> chrono::NaiveDate {
 pub struct NetWorthPointDto {
     pub month_label: String,
     pub value: String,
+    /// Dashboard stat-card breakdown for this same point in time — see
+    /// `Store::net_worth_breakdown_as_of`. `debt` is negative-signed
+    /// (credit + loan combined), matching how it's shown everywhere else.
+    pub cash: String,
+    pub debt: String,
+    pub investments: String,
 }
 
 /// Net worth for each of the trailing `months` months (including the
@@ -2546,12 +2630,18 @@ pub fn net_worth_history(months: u32, state: tauri::State<AppStateHandle>) -> Re
     let mut points = Vec::with_capacity(year_months.len());
     for (i, (year, month)) in year_months.into_iter().enumerate() {
         let as_of = if i == last_index { today } else { last_day_of_month(year, month) };
-        let value = state.store.net_worth_as_of(as_of).map_err(|e| e.to_string())?;
+        let breakdown = state.store.net_worth_breakdown_as_of(as_of).map_err(|e| e.to_string())?;
         let label = chrono::NaiveDate::from_ymd_opt(year, month, 1)
             .expect("a year/month this loop generated must be valid")
             .format("%b")
             .to_string();
-        points.push(NetWorthPointDto { month_label: label, value: value.to_string() });
+        points.push(NetWorthPointDto {
+            month_label: label,
+            value: breakdown.net_worth.to_string(),
+            cash: breakdown.cash.to_string(),
+            debt: breakdown.debt.to_string(),
+            investments: breakdown.investments.to_string(),
+        });
     }
     Ok(points)
 }

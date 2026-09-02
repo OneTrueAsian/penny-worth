@@ -162,6 +162,53 @@ pub fn create_profile(
     Ok(Profile { id, name: name.to_string(), db_path, is_active: false })
 }
 
+/// Registers a profile pointing at an *existing* database file elsewhere on
+/// disk — the counterpart to `create_profile`, which always makes a brand
+/// new one under `profiles_dir`. This is how a database moved from another
+/// machine (copied over, downloaded, an external drive) gets adopted: the
+/// file is registered right where the user pointed at it, never copied or
+/// moved (same "leave it where it is" philosophy as `relocate_data_file`
+/// and `switch_profile`). Rejects a case-insensitive duplicate name, same
+/// as `create_profile` — and, since the caller supplies the path directly
+/// rather than one this module computed itself, also rejects a path that's
+/// already registered under another profile, since two names pointing at
+/// the same file would make switching between them a silent no-op.
+pub fn add_existing_profile(
+    config_path: &Path,
+    live_db_path: &Path,
+    name: &str,
+    existing_db_path: &Path,
+    now: NaiveDateTime,
+) -> Result<Profile, String> {
+    let mut entries = entries_or_synthesize(config_path, live_db_path);
+    if entries.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
+        return Err(format!("A profile named '{name}' already exists."));
+    }
+    // Case-insensitive, matching Windows/macOS filesystem semantics (this
+    // app's only two build targets — see the CI workflow) — an exact,
+    // case-sensitive `PathBuf` comparison would miss a duplicate whenever
+    // the file picker returns different letter-casing than what's already
+    // stored, silently defeating the whole point of this check.
+    let picked_lossy = existing_db_path.to_string_lossy();
+    if let Some(existing) = entries.iter().find(|p| p.db_path.eq_ignore_ascii_case(&picked_lossy)) {
+        return Err(format!(
+            "{} is already registered as the '{}' profile.",
+            existing_db_path.display(),
+            existing.name
+        ));
+    }
+
+    let id = unique_profile_id(&entries, name, now);
+    entries.push(ProfileEntry {
+        id: id.clone(),
+        name: name.to_string(),
+        db_path: existing_db_path.to_string_lossy().to_string(),
+    });
+    write_registry(config_path, &Registry { profiles: entries })?;
+
+    Ok(Profile { id, name: name.to_string(), db_path: existing_db_path.to_path_buf(), is_active: false })
+}
+
 /// Renames a profile. An unknown id is a harmless no-op (matching
 /// `rename_family_member`'s convention) — and, unlike a successful rename,
 /// never materializes the registry for a plain Default profile that's
@@ -354,6 +401,91 @@ mod tests {
         let second = create_profile(&config_path, &live_db_path, "Alex Vacation", same_instant).unwrap();
 
         assert_ne!(first.id, second.id, "two profiles created in the same second must not collide");
+    }
+
+    #[test]
+    fn add_existing_profile_registers_the_given_path_verbatim_without_creating_a_directory() {
+        let dir = temp_dir("add-existing-verbatim");
+        let config_path = dir.join("config.json");
+        let live_db_path = dir.join("pennyworth.db");
+        let brought_over = dir.join("from-old-laptop").join("pennyworth.db");
+
+        let profile =
+            add_existing_profile(&config_path, &live_db_path, "Old Laptop", &brought_over, dt("2026-09-02 09:00:00"))
+                .unwrap();
+
+        assert_eq!(profile.db_path, brought_over);
+        assert!(!dir.join("profiles").exists(), "must never create a profiles_dir subdirectory for an existing file");
+    }
+
+    #[test]
+    fn add_existing_profile_seeds_a_default_entry_the_first_time_the_registry_is_written() {
+        let dir = temp_dir("add-existing-seeds-default");
+        let config_path = dir.join("config.json");
+        let live_db_path = dir.join("pennyworth.db");
+        let brought_over = dir.join("brought-over.db");
+
+        add_existing_profile(&config_path, &live_db_path, "Old Laptop", &brought_over, dt("2026-09-02 09:00:00")).unwrap();
+
+        let profiles = list_profiles(&config_path, &live_db_path);
+        assert_eq!(profiles.len(), 2, "expected the seeded Default plus the new Old Laptop profile");
+        assert!(profiles.iter().any(|p| p.name == "Default" && p.db_path == live_db_path));
+    }
+
+    #[test]
+    fn add_existing_profile_rejects_a_duplicate_name_case_insensitively() {
+        let dir = temp_dir("add-existing-rejects-duplicate-name");
+        let config_path = dir.join("config.json");
+        let live_db_path = dir.join("pennyworth.db");
+        create_profile(&config_path, &live_db_path, "Alex", dt("2026-09-02 09:00:00")).unwrap();
+
+        let result = add_existing_profile(
+            &config_path,
+            &live_db_path,
+            "ALEX",
+            &dir.join("brought-over.db"),
+            dt("2026-09-02 09:00:01"),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_existing_profile_rejects_a_path_already_registered_to_another_profile() {
+        let dir = temp_dir("add-existing-rejects-duplicate-path");
+        let config_path = dir.join("config.json");
+        let live_db_path = dir.join("pennyworth.db");
+        let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-09-02 09:00:00")).unwrap();
+
+        let result =
+            add_existing_profile(&config_path, &live_db_path, "Alex Again", &alex.db_path, dt("2026-09-02 09:00:01"));
+
+        let err = result.unwrap_err();
+        assert!(err.contains("Alex"), "error should name the profile already using that file: {err}");
+    }
+
+    #[test]
+    fn add_existing_profile_rejects_a_duplicate_path_that_only_differs_by_case() {
+        let dir = temp_dir("add-existing-rejects-duplicate-path-case-insensitive");
+        let config_path = dir.join("config.json");
+        let live_db_path = dir.join("pennyworth.db");
+        let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-09-02 09:00:00")).unwrap();
+
+        // Same file, different letter-casing — as a file picker can return
+        // on a case-insensitive filesystem (this app's only two build
+        // targets, Windows and macOS both default to case-insensitive).
+        let differently_cased = PathBuf::from(alex.db_path.to_string_lossy().to_uppercase());
+
+        let result = add_existing_profile(
+            &config_path,
+            &live_db_path,
+            "Alex Again",
+            &differently_cased,
+            dt("2026-09-02 09:00:01"),
+        );
+
+        let err = result.unwrap_err();
+        assert!(err.contains("Alex"), "error should name the profile already using that file: {err}");
     }
 
     #[test]

@@ -89,6 +89,7 @@ pub fn run() {
             commands::restore_backup,
             commands::list_profiles,
             commands::create_profile,
+            commands::add_existing_profile,
             commands::switch_profile,
             commands::rename_profile,
             commands::delete_profile,

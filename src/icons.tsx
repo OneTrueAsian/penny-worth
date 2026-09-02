@@ -11,6 +11,16 @@ const PATHS: Record<string, string> = {
 };
 
 export function NavIcon({ name }: { name: string }) {
+  if (name === "bank") {
+    return (
+      <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 9.5 12 4l9 5.5" />
+        <path d="M3 9.5h18" />
+        <path d="M5.5 9.5V19M9.5 9.5V19M14.5 9.5V19M18.5 9.5V19" />
+        <path d="M3 19.5h18" />
+      </svg>
+    );
+  }
   if (name === "wallet") {
     return (
       <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

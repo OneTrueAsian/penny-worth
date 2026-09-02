@@ -603,9 +603,9 @@ export function MonthExpenseDetailDialog({
                 <span style={{ fontWeight: 600 }}>{c.category}</span>
                 <span className="amount-col">{formatAmount(c.amount)}</span>
               </div>
-              <div className="bucket-progress-track">
+              <div className="progress-track">
                 <div
-                  className="bucket-progress-fill"
+                  className="progress-fill"
                   style={{ width: `${(parseFloat(c.amount) / maxCategory) * 100}%` }}
                 />
               </div>
@@ -797,6 +797,62 @@ export function CategoryTransactionsDialog({
           Close
         </button>
       </div>
+    </ModalShell>
+  );
+}
+
+/** The last step of "Use existing file…" in Settings → Profiles: the native
+ * file picker (driven by `App.tsx`, same as every other file-open in this
+ * app) has already returned `path`; this just asks what to call the new
+ * profile before registering it. Mirrors `NewAccountDialog`'s shape more
+ * than `ProfilesSection`'s own inline "New profile…" form, since a picked
+ * file (unlike a brand-new empty profile) needs its path shown so the user
+ * can confirm it's the right one before it becomes live. */
+export function UseExistingDataFileDialog({
+  path,
+  onCancel,
+  onSubmit,
+}: {
+  path: string;
+  onCancel: () => void;
+  onSubmit: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    onSubmit(name.trim());
+  }
+
+  return (
+    <ModalShell title="Use an existing data file" onCancel={onCancel}>
+      <p className="modal-message-secondary" style={{ userSelect: "text", wordBreak: "break-all" }}>
+        {path}
+      </p>
+      <p className="modal-message modal-message-secondary">
+        Penny Worth will start using this file right away, registered as a new profile you can switch away from
+        anytime. The file stays exactly where it is — nothing is copied or moved.
+      </p>
+      <form onSubmit={handleSubmit}>
+        <label className="modal-field">
+          <span>Profile name</span>
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder='e.g. "Old Laptop"'
+          />
+        </label>
+        <div className="modal-actions">
+          <button type="button" className="modal-secondary" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" disabled={!name.trim()}>
+            Use this file
+          </button>
+        </div>
+      </form>
     </ModalShell>
   );
 }

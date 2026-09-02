@@ -23,7 +23,11 @@ try {
   const ledgerNav = await app.browser.$("button*=Ledger");
   await ledgerNav.click();
 
-  // Create a family member through the management dialog.
+  // Create a family member through the management dialog — it lives
+  // behind the toolbar's "More" menu now (Phase 3 decluttering).
+  const moreMenuToggle = await app.browser.$(".more-menu button");
+  await moreMenuToggle.waitForExist({ timeout: 10000 });
+  await moreMenuToggle.click();
   const manageButton = await app.browser.$("button*=Manage family members");
   await manageButton.waitForExist({ timeout: 10000 });
   await manageButton.click();
@@ -79,12 +83,12 @@ try {
     timeoutMsg: "expected Grocery Run to reappear once Alex is re-checked",
   });
 
-  // Reports: assign the Checking account to Alex too, then confirm both
-  // breakdowns reflect it.
-  const reportsNav = await app.browser.$("button*=Reports");
-  await reportsNav.click();
+  // Accounts: assign the Checking account to Alex too, then confirm both
+  // breakdowns reflect it (spending-by-member still lives on Reports).
+  const accountsNav = await app.browser.$("button*=Accounts");
+  await accountsNav.click();
 
-  const accountMemberSelect = await app.browser.$(".member-col select");
+  const accountMemberSelect = await app.browser.$(".member-select");
   await accountMemberSelect.waitForExist({ timeout: 10000 });
   await accountMemberSelect.selectByVisibleText("Alex");
   await app.browser.waitUntil(async () => (await accountMemberSelect.getValue()) !== "", {
@@ -92,6 +96,9 @@ try {
     timeoutMsg: "expected the Checking account's member select to hold Alex's id after assignment",
   });
   console.log("Checking account assigned to Alex");
+
+  const reportsNav = await app.browser.$("button*=Reports");
+  await reportsNav.click();
 
   const spendingStat = await app.browser.$("button*=Members with spending");
   await spendingStat.waitForExist({ timeout: 10000 });

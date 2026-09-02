@@ -227,6 +227,9 @@ export type CategoryTransaction = {
 export type NetWorthPoint = {
   month_label: string;
   value: string;
+  cash: string;
+  debt: string;
+  investments: string;
 };
 
 export type Report = {

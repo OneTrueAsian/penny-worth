@@ -44,10 +44,13 @@ export function DonutChart({
   data,
   size = 132,
   stroke = 22,
+  center,
 }: {
   data: { label: string; value: number; color: string }[];
   size?: number;
   stroke?: number;
+  /** Optional total shown in the donut's hole, e.g. `{ value: "$1,510", label: "this month" }`. */
+  center?: { value: string; label: string };
 }) {
   const r = (size - stroke) / 2;
   const cx = size / 2;
@@ -56,26 +59,65 @@ export function DonutChart({
   const circ = 2 * Math.PI * r;
   let angle = -90;
   return (
-    <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size}>
-      {data.map((d, i) => {
-        const frac = d.value / total;
-        const dash = frac * circ;
-        const rotate = angle;
-        angle += frac * 360;
-        return (
-          <circle
-            key={i}
-            cx={cx}
-            cy={cy}
-            r={r}
-            fill="none"
-            stroke={d.color}
-            strokeWidth={stroke}
-            strokeDasharray={`${dash} ${circ - dash}`}
-            transform={`rotate(${rotate} ${cx} ${cy})`}
-          />
-        );
-      })}
+    <div style={{ position: "relative", width: size, height: size, flex: "none" }}>
+      <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size}>
+        {data.map((d, i) => {
+          const frac = d.value / total;
+          const dash = frac * circ;
+          const rotate = angle;
+          angle += frac * 360;
+          return (
+            <circle
+              key={i}
+              cx={cx}
+              cy={cy}
+              r={r}
+              fill="none"
+              stroke={d.color}
+              strokeWidth={stroke}
+              strokeDasharray={`${dash} ${circ - dash}`}
+              transform={`rotate(${rotate} ${cx} ${cy})`}
+            />
+          );
+        })}
+      </svg>
+      {center && (
+        <div className="donut-hole">
+          <span className="donut-hole-amt">{center.value}</span>
+          <span className="donut-hole-lbl">{center.label}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A minimal per-stat trend indicator — no axes/labels/tooltip, just the
+ * line, matching the small "stat-spark" glyphs in the design mockup this
+ * was adapted from. */
+export function Sparkline({
+  points,
+  width = 52,
+  height = 26,
+  color = "var(--accent)",
+}: {
+  points: number[];
+  width?: number;
+  height?: number;
+  color?: string;
+}) {
+  if (points.length < 2) return null;
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const span = max - min || 1;
+  const pad = 3;
+  const innerW = width - pad * 2;
+  const innerH = height - pad * 2;
+  const x = (i: number) => pad + (innerW * i) / (points.length - 1);
+  const y = (v: number) => pad + innerH - ((v - min) / span) * innerH;
+  const linePts = points.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  return (
+    <svg className="stat-spark" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+      <polyline points={linePts} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

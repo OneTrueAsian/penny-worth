@@ -23,6 +23,11 @@ const app = await launchApp({ dbDir });
 try {
   const ledgerNav = await app.browser.$("button*=Ledger");
   await ledgerNav.click();
+  // Export CSV lives behind the toolbar's "More" menu now (Phase 3
+  // decluttering) — open it first.
+  const moreMenuToggle = await app.browser.$(".more-menu button");
+  await moreMenuToggle.waitForExist({ timeout: 10000 });
+  await moreMenuToggle.click();
   const ledgerExport = await app.browser.$("button*=Export CSV");
   await ledgerExport.waitForExist({ timeout: 10000 });
   if (!(await ledgerExport.isEnabled())) throw new Error("Ledger Export CSV button is disabled");

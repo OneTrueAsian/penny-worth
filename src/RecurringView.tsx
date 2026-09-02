@@ -24,42 +24,26 @@ function SuggestedRecurringSection({
         Detected from your ledger — a merchant and amount that's repeated on a consistent schedule but isn't tracked
         here yet.
       </p>
-      <table className="ledger">
-        <thead>
-          <tr>
-            <th>Merchant</th>
-            <th>Cadence</th>
-            <th>Seen</th>
-            <th className="amount-col">Amount</th>
-            <th className="actions-col"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {candidates.map((c) => (
-            <tr key={`${c.merchant}|${c.amount}|${c.cadence}`}>
-              <td>
-                <div className="account-name-cell">{c.merchant}</div>
-                {c.category && <span className="account-col">{c.category}</span>}
-              </td>
-              <td>
-                <span className="confidence-badge">{c.cadence}</span>
-              </td>
-              <td>{c.occurrence_count} times</td>
-              <td className="amount-col">{formatAmount(c.amount)}</td>
-              <td className="actions-col">
-                <span className="row-delete-confirm">
-                  <button type="button" className="modal-secondary" onClick={() => onDismiss(c)}>
-                    Dismiss
-                  </button>
-                  <button type="button" onClick={() => onAdd(c)}>
-                    Add
-                  </button>
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {candidates.map((c) => (
+        <div className="suggested-row" key={`${c.merchant}|${c.amount}|${c.cadence}`}>
+          <div className="suggested-info">
+            <div className="suggested-name">{c.merchant}</div>
+            <div className="suggested-meta">
+              {c.cadence[0].toUpperCase() + c.cadence.slice(1)} · seen {c.occurrence_count} times
+              {c.category && ` · ${c.category}`}
+            </div>
+          </div>
+          <span className="suggested-amt">{formatAmount(c.amount)}</span>
+          <div className="suggested-actions">
+            <button type="button" className="modal-secondary btn-sm" onClick={() => onDismiss(c)}>
+              Dismiss
+            </button>
+            <button type="button" className="btn-sm" onClick={() => onAdd(c)}>
+              Add
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -209,14 +193,6 @@ function EditRecurringRow({
     <tr>
       <td>
         <input autoFocus className="row-edit-input" value={merchant} onChange={(e) => setMerchant(e.target.value)} />
-        <select className="row-edit-input" value={accountId} onChange={(e) => setAccountId(e.target.value)} style={{ marginTop: 4 }}>
-          <option value="">No linked account</option>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </select>
         {familyMembers.length > 0 && (
           <select
             className="row-edit-input"
@@ -232,6 +208,16 @@ function EditRecurringRow({
             ))}
           </select>
         )}
+      </td>
+      <td>
+        <select className="row-edit-input" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+          <option value="">No linked account</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
       </td>
       <td>
         <select className="row-edit-input" value={cadence} onChange={(e) => setCadence(e.target.value)}>
@@ -357,6 +343,7 @@ export function RecurringView({
         <thead>
           <tr>
             <th>Merchant</th>
+            <th>Account</th>
             <th>Cadence</th>
             <th>Next due</th>
             <th className="amount-col">Amount</th>
@@ -381,9 +368,9 @@ export function RecurringView({
               <tr key={r.id}>
                 <td>
                   <div className="account-name-cell">{r.merchant}</div>
-                  {r.account_name && <span className="account-col">{r.account_name}</span>}
-                  {r.member_name && <span className="account-col"> · {r.member_name}</span>}
+                  {r.member_name && <span className="account-col">{r.member_name}</span>}
                 </td>
+                <td>{r.account_name ?? <span className="account-col">—</span>}</td>
                 <td>
                   <span className="confidence-badge">{r.cadence}</span>
                 </td>
@@ -418,7 +405,7 @@ export function RecurringView({
           )}
           {recurring.length === 0 && (
             <tr>
-              <td colSpan={5} className="empty-state">
+              <td colSpan={6} className="empty-state">
                 No recurring items yet.
               </td>
             </tr>

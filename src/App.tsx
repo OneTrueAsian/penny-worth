@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -16,9 +16,11 @@ import {
   NewAccountDialog,
   NewCategoryDialog,
   NewTransactionDialog,
+  UseExistingDataFileDialog,
   WelcomeDialog,
   WhatsNewDialog,
 } from "./Modal";
+import { AccountsView } from "./AccountsView";
 import { BucketsView } from "./BucketsView";
 import { ProfileSwitcher } from "./ProfileSwitcher";
 import { BudgetView } from "./BudgetView";
@@ -80,6 +82,11 @@ type ImportRow = {
   description: string;
   amount: string;
   is_duplicate: boolean;
+  /** The row's own Account column, when the file has one — this app's own
+   * Ledger CSV export does. `commit_import` routes the row there by
+   * default (creating that account if none matches by name) unless the
+   * row's dropdown is changed. */
+  account_name: string | null;
 };
 
 type ImportPreview = {
@@ -120,6 +127,7 @@ type PendingDialog =
 
 type Tab =
   | "dashboard"
+  | "accounts"
   | "ledger"
   | "buckets"
   | "budget"
@@ -129,6 +137,18 @@ type Tab =
   | "investments"
   | "settings"
   | "help";
+
+/** Groups the sidebar organizes its (reorderable) tabs under — Settings
+ * and Help are pinned below these instead of belonging to a group, so
+ * they're never part of the drag-to-reorder set (see `PINNED_NAV_ITEMS`). */
+type NavGroup = "overview" | "money" | "planning" | "insights";
+const NAV_GROUP_ORDER: NavGroup[] = ["overview", "money", "planning", "insights"];
+const NAV_GROUP_LABELS: Record<NavGroup, string> = {
+  overview: "Overview",
+  money: "Money",
+  planning: "Planning",
+  insights: "Insights",
+};
 
 type Theme = "light" | "dark" | "system";
 
@@ -151,15 +171,29 @@ function compareTransactionsBy(a: Transaction, b: Transaction, column: LedgerSor
   }
 }
 
-const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
-  { id: "dashboard", label: "Dashboard", icon: "home" },
-  { id: "ledger", label: "Ledger", icon: "swap" },
-  { id: "buckets", label: "Buckets", icon: "flag" },
-  { id: "budget", label: "Budget", icon: "pie" },
-  { id: "cashflow", label: "Cash Flow", icon: "trend" },
-  { id: "recurring", label: "Recurring", icon: "repeat" },
-  { id: "investments", label: "Investments", icon: "barchart" },
-  { id: "reports", label: "Reports", icon: "wallet" },
+/** The sidebar's reorderable tabs — grouped for display (see `NavGroup`)
+ * but reordered as one flat sequence via drag-and-drop; rendering then
+ * re-partitions that sequence by `group`, so a drag effectively only ever
+ * reorders within its own group (dropping across a group boundary changes
+ * the stored order but never moves an item out of its group visually) —
+ * this keeps the mental model of the grouped redesign intact without
+ * needing separate per-group order state. Settings and Help are pinned
+ * outside this entirely (see `PINNED_NAV_ITEMS`), not reorderable. */
+const NAV_ITEMS: { id: Tab; label: string; icon: string; group: NavGroup }[] = [
+  { id: "dashboard", label: "Dashboard", icon: "home", group: "overview" },
+  { id: "accounts", label: "Accounts", icon: "bank", group: "money" },
+  { id: "ledger", label: "Ledger", icon: "swap", group: "money" },
+  { id: "recurring", label: "Recurring", icon: "repeat", group: "money" },
+  { id: "budget", label: "Budget", icon: "pie", group: "planning" },
+  { id: "buckets", label: "Buckets", icon: "flag", group: "planning" },
+  { id: "cashflow", label: "Cash Flow", icon: "trend", group: "insights" },
+  { id: "investments", label: "Investments", icon: "barchart", group: "insights" },
+  { id: "reports", label: "Reports", icon: "wallet", group: "insights" },
+];
+
+/** Fixed, non-reorderable — rendered below a divider, outside every
+ * group. */
+const PINNED_NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
   { id: "settings", label: "Settings", icon: "settings" },
   { id: "help", label: "Help", icon: "help" },
 ];
@@ -306,6 +340,27 @@ function App({
     try {
       const created = await invoke<string>("create_profile", { name });
       onDataFileChanged(`Switched to the new "${created}" profile — it starts completely empty.`);
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  /** "Use existing file…" step 1: pick the file. Step 2 (naming it) happens
+   * in `UseExistingDataFileDialog` once `pendingExistingDbPath` is set —
+   * split the same way `handleRelocateDataFile` splits picking a folder
+   * from the backend call, except a name has to come from the user first. */
+  async function handlePickExistingDataFile() {
+    const path = await open({ multiple: false, filters: [{ name: "Penny Worth Database", extensions: ["db"] }] });
+    if (!path || Array.isArray(path)) return;
+    setPendingExistingDbPath(path);
+  }
+
+  async function handleAddExistingProfile(name: string) {
+    if (!pendingExistingDbPath) return;
+    try {
+      const added = await invoke<string>("add_existing_profile", { name, dbPath: pendingExistingDbPath });
+      setPendingExistingDbPath(null);
+      onDataFileChanged(`Switched to "${added}".`);
     } catch (e) {
       setStatus(String(e));
     }
@@ -464,6 +519,22 @@ function App({
   const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
   const [manageFamilyMembersOpen, setManageFamilyMembersOpen] = useState(false);
   const [newTransactionOpen, setNewTransactionOpen] = useState(false);
+  const [pendingExistingDbPath, setPendingExistingDbPath] = useState<string | null>(null);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+
+  // Closes the Ledger toolbar's "More" menu on an outside click — same
+  // pattern as MoreFiltersPopover/AccountFilterDropdown.
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setMoreMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [moreMenuOpen]);
   const [editingAmount, setEditingAmount] = useState<{ id: number; value: string } | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   const [applyingDebtId, setApplyingDebtId] = useState<number | null>(null);
@@ -1324,7 +1395,22 @@ function App({
       // duplicates default to excluded (matches the old behavior), everything
       // else defaults to included; the user can flip any row either way
       setIncludedIndices(new Set(preview.rows.filter((r) => !r.is_duplicate).map((r) => r.index)));
-      setAccountOverrides(new Map());
+      // A row whose file said which account it belongs to (this app's own
+      // Ledger CSV export does) pre-selects that account in its dropdown
+      // when it matches one that already exists, rather than defaulting
+      // every row to the account picked before the file was chosen — the
+      // user still sees exactly what will happen and can change it.
+      // Unmatched account names (commit_import creates those fresh) are
+      // left showing the default, with a hint below the dropdown instead.
+      const seededOverrides = new Map<number, number>();
+      for (const row of preview.rows) {
+        if (!row.account_name) continue;
+        const matched = accounts.find((a) => a.name.toLowerCase() === row.account_name!.toLowerCase());
+        if (matched && matched.id !== accountId) {
+          seededOverrides.set(row.index, matched.id);
+        }
+      }
+      setAccountOverrides(seededOverrides);
       setPendingImport({ path, invertAmounts, defaultAccountId: accountId, preview });
       setStatus("");
     } catch (e) {
@@ -1925,44 +2011,64 @@ function App({
           onSwitchProfile={handleSwitchProfile}
           onManageProfiles={() => setActiveTab("settings")}
         />
+        {NAV_GROUP_ORDER.map((group) => (
+          <div className="nav-group" key={group}>
+            <div className="nav-group-label">{NAV_GROUP_LABELS[group]}</div>
+            <nav className="nav-list">
+              {orderedNavItems
+                .filter((item) => item.group === group)
+                .map((item) => (
+                  <button
+                    key={item.id}
+                    draggable
+                    className={
+                      activeTab === item.id
+                        ? "nav-item nav-item-active"
+                        : dragNavTab === item.id
+                          ? "nav-item nav-item-dragging"
+                          : "nav-item"
+                    }
+                    onClick={() => setActiveTab(item.id)}
+                    onDragStart={(e) => {
+                      // Native drag-and-drop requires a payload via setData or
+                      // the browser treats the drag as invalid and shows
+                      // "not-allowed" over every drop target, regardless of
+                      // what dragover/drop do.
+                      e.dataTransfer.effectAllowed = "move";
+                      e.dataTransfer.setData("text/plain", item.id);
+                      setDragNavTab(item.id);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      handleNavDrop(item.id);
+                    }}
+                    onDragEnd={() => setDragNavTab(null)}
+                  >
+                    <NavIcon name={item.icon} />
+                    <span className="nav-text">{item.label}</span>
+                  </button>
+                ))}
+            </nav>
+          </div>
+        ))}
+        <div className="sidebar-spacer"></div>
+        <div className="sidebar-divider"></div>
         <nav className="nav-list">
-          {orderedNavItems.map((item) => (
+          {PINNED_NAV_ITEMS.map((item) => (
             <button
               key={item.id}
-              draggable
-              className={
-                activeTab === item.id
-                  ? "nav-item nav-item-active"
-                  : dragNavTab === item.id
-                    ? "nav-item nav-item-dragging"
-                    : "nav-item"
-              }
+              className={activeTab === item.id ? "nav-item nav-item-active" : "nav-item"}
               onClick={() => setActiveTab(item.id)}
-              onDragStart={(e) => {
-                // Native drag-and-drop requires a payload via setData or
-                // the browser treats the drag as invalid and shows
-                // "not-allowed" over every drop target, regardless of
-                // what dragover/drop do.
-                e.dataTransfer.effectAllowed = "move";
-                e.dataTransfer.setData("text/plain", item.id);
-                setDragNavTab(item.id);
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                handleNavDrop(item.id);
-              }}
-              onDragEnd={() => setDragNavTab(null)}
             >
               <NavIcon name={item.icon} />
               <span className="nav-text">{item.label}</span>
             </button>
           ))}
         </nav>
-        <div className="sidebar-spacer"></div>
         <div className="sidebar-foot">
           {appVersion && <p className="sidebar-version">v{appVersion}</p>}
           <div className="theme-toggle" role="group" aria-label="Theme">
@@ -2011,31 +2117,65 @@ function App({
               >
                 Add transaction…
               </button>
-              <button
-                className="modal-secondary"
-                onClick={openManageCategories}
-                disabled={busy || pendingImport !== null}
-              >
-                Manage categories…
-              </button>
-              <button
-                className="modal-secondary"
-                onClick={openManageFamilyMembers}
-                disabled={busy || pendingImport !== null}
-              >
-                Manage family members…
-              </button>
-              <button
-                className="modal-secondary"
-                onClick={handleRecategorize}
-                disabled={busy || pendingImport !== null}
-                title="Re-run categorization on every Uncategorized transaction using what's been learned so far"
-              >
-                Categorize uncategorized
-              </button>
-              <button className="modal-secondary" onClick={handleExportLedgerCsv} disabled={busy}>
-                Export CSV…
-              </button>
+              <div className="more-menu" ref={moreMenuRef}>
+                <button
+                  type="button"
+                  className="modal-secondary btn-icon"
+                  onClick={() => setMoreMenuOpen((v) => !v)}
+                  disabled={busy || pendingImport !== null}
+                  aria-label="More actions"
+                  title="More actions"
+                >
+                  ⋯
+                </button>
+                {moreMenuOpen && (
+                  <div className="more-menu-panel">
+                    <button
+                      type="button"
+                      className="more-menu-item"
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        openManageCategories();
+                      }}
+                    >
+                      Manage categories…
+                    </button>
+                    <button
+                      type="button"
+                      className="more-menu-item"
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        openManageFamilyMembers();
+                      }}
+                    >
+                      Manage family members…
+                    </button>
+                    <div className="more-menu-divider"></div>
+                    <button
+                      type="button"
+                      className="more-menu-item"
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        handleRecategorize();
+                      }}
+                      title="Re-run categorization on every Uncategorized transaction using what's been learned so far"
+                    >
+                      Categorize uncategorized
+                    </button>
+                    <div className="more-menu-divider"></div>
+                    <button
+                      type="button"
+                      className="more-menu-item"
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        handleExportLedgerCsv();
+                      }}
+                    >
+                      Export CSV…
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </header>
@@ -2118,6 +2258,12 @@ function App({
                           </option>
                         ))}
                       </select>
+                      {row.account_name &&
+                        !accounts.some((a) => a.name.toLowerCase() === row.account_name!.toLowerCase()) && (
+                          <div className="account-col" title="No account by that name exists yet — it'll be created on import">
+                            CSV: {row.account_name} (new)
+                          </div>
+                        )}
                     </td>
                     <td className="source-col">{row.is_duplicate ? "Already in ledger" : "New"}</td>
                   </tr>
@@ -2341,7 +2487,8 @@ function App({
         </thead>
         <tbody>
           {pagedTransactions.map((t) => (
-            <tr key={t.id} className={selectedIds.has(t.id) ? "ledger-row-selected" : undefined}>
+            <Fragment key={t.id}>
+            <tr className={selectedIds.has(t.id) ? "ledger-row-selected" : undefined}>
               <td className="select-col">
                 <input
                   type="checkbox"
@@ -2523,62 +2670,60 @@ function App({
                 )}
               </td>
             </tr>
-          ))}
-          {pagedTransactions.map(
-            (t) =>
-              expandedSplitId === t.id && (
-                <tr key={`split-${t.id}`} className="split-editor-row">
-                  <td colSpan={10}>
-                    <div className="split-editor">
-                      {splitLines.map((line, i) => (
-                        <div className="split-editor-line" key={i}>
-                          <select value={line.category} onChange={(e) => updateSplitLine(i, { category: e.target.value })}>
-                            {categoryOptions.map((c) => (
-                              <option key={c} value={c}>
-                                {c}
-                              </option>
-                            ))}
-                          </select>
-                          <input
-                            className="debt-apply-amount"
-                            value={line.amount}
-                            onChange={(e) => updateSplitLine(i, { amount: e.target.value })}
-                            placeholder="Amount"
-                          />
-                          <input
-                            value={line.note}
-                            onChange={(e) => updateSplitLine(i, { note: e.target.value })}
-                            placeholder="Note (optional)"
-                          />
-                          <button type="button" className="modal-secondary" onClick={() => removeSplitLine(i)}>
-                            Remove
-                          </button>
-                        </div>
-                      ))}
-                      <div className="split-editor-actions">
-                        <button type="button" className="modal-secondary" onClick={addSplitLine}>
-                          Add line
-                        </button>
-                        <span className={Math.abs(splitRemaining(t)) < 0.01 ? "split-remaining split-remaining-ok" : "split-remaining"}>
-                          Remaining to allocate: {formatAmount(splitRemaining(t).toFixed(2))}
-                        </span>
-                        <button type="button" disabled={Math.abs(splitRemaining(t)) >= 0.01} onClick={() => saveSplits(t)}>
-                          Save splits
-                        </button>
-                        {t.split_count > 0 && (
-                          <button type="button" className="modal-secondary" onClick={() => clearSplits(t)}>
-                            Clear splits
-                          </button>
-                        )}
-                        <button type="button" className="modal-secondary" onClick={() => setExpandedSplitId(null)}>
-                          Cancel
+            {expandedSplitId === t.id && (
+              <tr className="split-editor-row">
+                <td colSpan={10}>
+                  <div className="split-editor">
+                    {splitLines.map((line, i) => (
+                      <div className="split-editor-line" key={i}>
+                        <select value={line.category} onChange={(e) => updateSplitLine(i, { category: e.target.value })}>
+                          {categoryOptions.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          className="debt-apply-amount"
+                          value={line.amount}
+                          onChange={(e) => updateSplitLine(i, { amount: e.target.value })}
+                          placeholder="Amount"
+                        />
+                        <input
+                          value={line.note}
+                          onChange={(e) => updateSplitLine(i, { note: e.target.value })}
+                          placeholder="Note (optional)"
+                        />
+                        <button type="button" className="modal-secondary" onClick={() => removeSplitLine(i)}>
+                          Remove
                         </button>
                       </div>
+                    ))}
+                    <div className="split-editor-actions">
+                      <button type="button" className="modal-secondary" onClick={addSplitLine}>
+                        Add line
+                      </button>
+                      <span className={Math.abs(splitRemaining(t)) < 0.01 ? "split-remaining split-remaining-ok" : "split-remaining"}>
+                        Remaining to allocate: {formatAmount(splitRemaining(t).toFixed(2))}
+                      </span>
+                      <button type="button" disabled={Math.abs(splitRemaining(t)) >= 0.01} onClick={() => saveSplits(t)}>
+                        Save splits
+                      </button>
+                      {t.split_count > 0 && (
+                        <button type="button" className="modal-secondary" onClick={() => clearSplits(t)}>
+                          Clear splits
+                        </button>
+                      )}
+                      <button type="button" className="modal-secondary" onClick={() => setExpandedSplitId(null)}>
+                        Cancel
+                      </button>
                     </div>
-                  </td>
-                </tr>
-              ),
-          )}
+                  </div>
+                </td>
+              </tr>
+            )}
+            </Fragment>
+          ))}
           {filteredTransactions.length === 0 && (
             <tr>
               <td colSpan={10} className="empty-state">
@@ -2933,6 +3078,20 @@ function App({
         </div>
       )}
 
+      {activeTab === "accounts" && (
+        <AccountsView
+          accounts={accounts}
+          manualAssetsTotal={assets.reduce((s, a) => s + parseFloat(a.value), 0)}
+          onSetStartingBalance={handleSetStartingBalance}
+          onUpdateAccountType={handleUpdateAccountType}
+          onDeleteAccount={handleDeleteAccount}
+          onSetAccountDetails={handleSetAccountDetails}
+          familyMembers={familyMembers}
+          onSetAccountMember={handleSetAccountMember}
+          onAddAccount={handleNewAccount}
+        />
+      )}
+
       {activeTab === "reports" && !pendingSetupImport && (
         <ReportsView
           report={report}
@@ -2941,12 +3100,6 @@ function App({
           transactions={transactions}
           assets={assets}
           familyMembers={familyMembers}
-          onSetStartingBalance={handleSetStartingBalance}
-          onUpdateAccountType={handleUpdateAccountType}
-          onDeleteAccount={handleDeleteAccount}
-          onSetAccountDetails={handleSetAccountDetails}
-          onSetAccountMember={handleSetAccountMember}
-          onAddAccount={handleNewAccount}
           onExportCsv={handleExportReportsCsv}
           onPrint={() => window.print()}
           onDownloadSetupTemplate={handleDownloadSetupTemplate}
@@ -2968,6 +3121,7 @@ function App({
           onRestoreBackup={handleRestoreBackup}
           profiles={profiles}
           onCreateProfile={handleCreateProfile}
+          onUseExistingDataFile={handlePickExistingDataFile}
           onSwitchProfile={handleSwitchProfile}
           onRenameProfile={handleRenameProfile}
           onDeleteProfile={handleDeleteProfile}
@@ -3030,6 +3184,13 @@ function App({
           onCreate={handleCreateFamilyMember}
           onRename={handleRenameFamilyMember}
           onDelete={handleDeleteFamilyMember}
+        />
+      )}
+      {pendingExistingDbPath && (
+        <UseExistingDataFileDialog
+          path={pendingExistingDbPath}
+          onCancel={() => setPendingExistingDbPath(null)}
+          onSubmit={handleAddExistingProfile}
         />
       )}
       {newTransactionOpen && (

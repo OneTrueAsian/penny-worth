@@ -126,6 +126,10 @@ export function CashFlowView({
     };
   });
 
+  // Same "total matches what the ring itself sums to" convention as the
+  // Dashboard's own Spending by category donut.
+  const donutTotal = donutData.reduce((s, d) => s + d.value, 0);
+
   const topMerchants = topCategoriesData?.top_merchants ?? [];
   const maxMerchant = topMerchants.length ? parseFloat(topMerchants[0].amount) : 1;
 
@@ -239,7 +243,11 @@ export function CashFlowView({
                   <p className="empty-state">Loading…</p>
                 ) : donutData.length > 0 ? (
                   <div className="donut-with-legend">
-                    <DonutChart data={donutData} size={132} />
+                    <DonutChart
+                      data={donutData}
+                      size={132}
+                      center={{ value: fmtMoneyShort(donutTotal), label: selectedMonthLabel }}
+                    />
                     <div>
                       {donutData.map((d) => (
                         <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
@@ -298,9 +306,9 @@ export function CashFlowView({
                       <span style={{ fontWeight: 600 }}>{m.description}</span>
                       <span className="amount-col">{formatAmount(m.amount)}</span>
                     </div>
-                    <div className="bucket-progress-track">
+                    <div className="progress-track">
                       <div
-                        className="bucket-progress-fill"
+                        className="progress-fill"
                         style={{ width: `${(parseFloat(m.amount) / maxMerchant) * 100}%` }}
                       />
                     </div>

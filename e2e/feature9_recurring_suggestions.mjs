@@ -41,8 +41,12 @@ try {
   }
 
   // Add the Netflix suggestion -> should land in the real recurring table
-  // and drop out of Suggested.
-  const netflixRow = await app.browser.$("//tr[.//div[text()='Netflix']]");
+  // and drop out of Suggested. The Suggested section renders each
+  // candidate as a `.suggested-row` (not a table row) — see
+  // RecurringView.tsx's `SuggestedRecurringSection`.
+  const netflixRow = await app.browser.$(
+    "//div[contains(@class,'suggested-row')][.//div[contains(@class,'suggested-name')][text()='Netflix']]",
+  );
   await netflixRow.waitForExist({ timeout: 5000 });
   const netflixAddBtn = await netflixRow.$("button=Add");
   await netflixAddBtn.click();
@@ -55,9 +59,8 @@ try {
     { timeout: 10000, timeoutMsg: "expected Netflix to drop out of Suggested after Add" },
   );
 
-  // Both the Suggested section and the active list render a `table.ledger`
-  // — disambiguate via the "Next due" header, unique to the active table
-  // (Suggested has "Seen" instead).
+  // The active list is the only remaining `table.ledger` with a "Next due"
+  // header (the Suggested section is no longer a table at all).
   const activeTable = await app.browser.$("//table[contains(@class,'ledger')][.//th[text()='Next due']]");
   const activeText = await activeTable.getText();
   console.log("active recurring table after add:", activeText);
@@ -65,7 +68,9 @@ try {
 
   // Dismiss the Spotify suggestion -> drops out of Suggested, and must NOT
   // appear in the active table (dismissal isn't the same as adding).
-  const spotifyRow = await app.browser.$("//tr[.//div[text()='Spotify']]");
+  const spotifyRow = await app.browser.$(
+    "//div[contains(@class,'suggested-row')][.//div[contains(@class,'suggested-name')][text()='Spotify']]",
+  );
   await spotifyRow.waitForExist({ timeout: 5000 });
   const spotifyDismissBtn = await spotifyRow.$("button=Dismiss");
   await spotifyDismissBtn.click();

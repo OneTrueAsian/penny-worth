@@ -601,7 +601,7 @@ export function HelpView() {
       {tabTourVisible.length > 0 && (
         <div className="card">
           <h2 className="reports-section-title">A tour of the tabs</h2>
-          <ul>
+          <ul className="tour-list">
             {tabTourVisible.map((e, i) => (
               <Fragment key={i}>{e.node}</Fragment>
             ))}

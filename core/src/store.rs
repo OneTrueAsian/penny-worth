@@ -1671,6 +1671,18 @@ impl Store {
     /// that made it impossible to honor a user's explicit "keep it anyway"
     /// on a flagged duplicate.
     pub fn save_transactions(&self, account_id: i64, txns: &[Transaction]) -> rusqlite::Result<SaveReport> {
+        let ids = self.save_transactions_with_ids(account_id, txns)?;
+        Ok(SaveReport { inserted: ids.len() })
+    }
+
+    /// Same insert as `save_transactions`, but also returns each row's new
+    /// id, in the same order — import needs this to attach tags to the
+    /// exact row they belong to right after insert. A separate method
+    /// (rather than changing `SaveReport`'s shape) so `save_transactions`'
+    /// many existing callers, which only care about the count, are
+    /// untouched.
+    pub fn save_transactions_with_ids(&self, account_id: i64, txns: &[Transaction]) -> rusqlite::Result<Vec<i64>> {
+        let mut ids = Vec::with_capacity(txns.len());
         for tx in txns {
             self.conn.execute(
                 "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint, member_id)
@@ -1684,8 +1696,9 @@ impl Store {
                     fingerprint(account_id, tx),
                 ],
             )?;
+            ids.push(self.conn.last_insert_rowid());
         }
-        Ok(SaveReport { inserted: txns.len() })
+        Ok(ids)
     }
 
     /// One manually-entered transaction (the Ledger's "Add transaction…"
@@ -3644,6 +3657,17 @@ impl Store {
     /// needed, since this is fully computable from data already on hand
     /// for any date, past or present.
     pub fn net_worth_as_of(&self, as_of: NaiveDate) -> rusqlite::Result<Decimal> {
+        Ok(self.net_worth_breakdown_as_of(as_of)?.net_worth)
+    }
+
+    /// Same computation as `net_worth_as_of`, but also splits the total
+    /// into the groups the Dashboard's stat cards show (cash, debt,
+    /// investments) — one account pass shared by all four figures instead
+    /// of a separate query per group. `cash`/`debt`/`investments` use the
+    /// same per-group contribution convention as `net_worth`: `debt`
+    /// (credit + loan combined) is negative-signed, matching how it's
+    /// displayed everywhere else in the app.
+    pub fn net_worth_breakdown_as_of(&self, as_of: NaiveDate) -> rusqlite::Result<NetWorthBreakdown> {
         let mut stmt = self.conn.prepare("SELECT id, account_type, starting_balance FROM accounts")?;
         let accounts: Vec<(i64, String, String)> = stmt
             .query_map([], |row| {
@@ -3651,22 +3675,39 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        let mut net_worth = Decimal::ZERO;
+        let mut breakdown = NetWorthBreakdown::default();
         for (id, account_type, starting_balance_str) in accounts {
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
             let balance = self.account_balance_as_of(id, starting_balance, as_of)?;
             let account_type =
                 AccountType::parse(&account_type).expect("account_type stored by this crate must be valid");
-            let contribution = match account_type.group() {
+            let group = account_type.group();
+            let contribution = match group {
                 "credit" => balance - starting_balance,
                 "loan" => -balance,
                 _ => balance,
             };
-            net_worth += contribution;
+            breakdown.net_worth += contribution;
+            match group {
+                "cash" => breakdown.cash += contribution,
+                "credit" | "loan" => breakdown.debt += contribution,
+                "investment" => breakdown.investments += contribution,
+                _ => {}
+            }
         }
-        Ok(net_worth)
+        Ok(breakdown)
     }
+}
+
+/// Net worth split by Dashboard stat-card group — see
+/// `Store::net_worth_breakdown_as_of`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct NetWorthBreakdown {
+    pub net_worth: Decimal,
+    pub cash: Decimal,
+    pub debt: Decimal,
+    pub investments: Decimal,
 }
 
 /// Same transaction imported twice into the same account (even from a
@@ -3876,6 +3917,24 @@ mod tests {
         assert_eq!(stored.len(), 2);
         assert_eq!(stored[0].transaction.description, "Union Realty");
         assert_eq!(stored[1].transaction.amount, "3120.00".parse().unwrap());
+    }
+
+    #[test]
+    fn save_transactions_with_ids_returns_each_rows_new_id_in_order() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        let txns = vec![
+            tx("2026-08-20", "Union Realty", "-1850.00"),
+            tx("2026-08-26", "Payroll Deposit", "3120.00"),
+        ];
+
+        let ids = store.save_transactions_with_ids(account, &txns).unwrap();
+
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        let stored = store.all_transactions().unwrap();
+        assert_eq!(stored.iter().find(|s| s.id == ids[0]).unwrap().transaction.description, "Union Realty");
+        assert_eq!(stored.iter().find(|s| s.id == ids[1]).unwrap().transaction.description, "Payroll Deposit");
     }
 
     #[test]
@@ -8006,6 +8065,30 @@ mod tests {
 
         // 1000 cash - 300 owed on the card = 700
         assert_eq!(net_worth, "700.00".parse().unwrap());
+    }
+
+    #[test]
+    fn net_worth_breakdown_as_of_splits_cash_debt_and_investments() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        let card = store.get_or_create_account("Sapphire Rewards", AccountType::Credit).unwrap();
+        store.set_account_starting_balance(card, "2000.00".parse().unwrap()).unwrap(); // limit
+        store.save_transactions(card, &[tx("2026-08-05", "Grocery Store", "-300.00")]).unwrap(); // $300 owed
+        let loan = store.get_or_create_account("Auto Loan", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "15000.00".parse().unwrap()).unwrap();
+        let brokerage = store.get_or_create_account("Brokerage", AccountType::Investment).unwrap();
+        store.set_account_starting_balance(brokerage, "5000.00".parse().unwrap()).unwrap();
+
+        let breakdown = store.net_worth_breakdown_as_of("2026-08-31".parse().unwrap()).unwrap();
+
+        assert_eq!(breakdown.cash, "1000.00".parse().unwrap());
+        // -300 (card) + -15000 (loan) = -15300 owed
+        assert_eq!(breakdown.debt, "-15300.00".parse().unwrap());
+        assert_eq!(breakdown.investments, "5000.00".parse().unwrap());
+        // 1000 cash - 300 owed - 15000 owed + 5000 investments = -9300
+        assert_eq!(breakdown.net_worth, "-9300.00".parse().unwrap());
+        assert_eq!(breakdown.net_worth, store.net_worth_as_of("2026-08-31".parse().unwrap()).unwrap());
     }
 
     #[test]

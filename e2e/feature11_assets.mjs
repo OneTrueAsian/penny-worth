@@ -39,8 +39,10 @@ try {
     throw new Error(`expected Home at $350,000.00, got:\n${sectionText}`);
   }
 
-  // Total Assets / Net Worth stats should now include it (1000 checking +
-  // 350000 home = 351000 net worth).
+  // Total Assets / Net Worth stats live on the Accounts tab now (1000
+  // checking + 350000 home = 351000 net worth).
+  const accountsNav = await app.browser.$("button*=Accounts");
+  await accountsNav.click();
   const netWorthStat = await app.browser.$("//span[text()='Net Worth']/parent::button");
   await netWorthStat.waitForExist({ timeout: 5000 });
   let netWorthText = await netWorthStat.getText();
@@ -49,10 +51,9 @@ try {
     throw new Error(`expected Net Worth to include the $350,000 asset, got:\n${netWorthText}`);
   }
 
-  // Edit the value — scoped to the table row containing "Home" specifically
-  // (via fresh top-level XPath queries at each step, not a chained element
-  // handle, since the page also has an Accounts table with its own
-  // amount-editable span for Checking's starting balance).
+  // Back to Reports to edit the value — scoped to the table row containing
+  // "Home" specifically.
+  await reportsNav.click();
   const valueCellXPath = "//tr[.//div[text()='Home']]//span[contains(@class,'amount-editable')]";
   const valueCell = await app.browser.$(valueCellXPath);
   await valueCell.waitForExist({ timeout: 5000 });
@@ -87,6 +88,8 @@ try {
     { timeout: 10000, timeoutMsg: "expected the asset to be gone after delete" },
   );
 
+  await accountsNav.click();
+  await netWorthStat.waitForExist({ timeout: 5000 });
   const netWorthAfterDelete = await netWorthStat.getText();
   console.log("net worth stat after delete:", netWorthAfterDelete);
   if (!netWorthAfterDelete.includes("$1,000.00")) {

@@ -24,10 +24,19 @@ impl fmt::Display for RowError {
 
 /// Malformed rows are collected in `errors` rather than aborting the whole
 /// import — a handful of bad rows shouldn't cost the user every good one.
+///
+/// `account_names` and `tags` are parallel to `transactions` (same index,
+/// same length) — populated only when the source has its own "Account" /
+/// "Tags" column, which a real bank export never does but this app's own
+/// Ledger CSV export does (see `toCsv`'s headers in `src/App.tsx`), so a
+/// round-tripped export can restore both instead of losing them. `None` /
+/// empty for every row otherwise.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct LoadResult {
     pub transactions: Vec<Transaction>,
     pub errors: Vec<RowError>,
+    pub account_names: Vec<Option<String>>,
+    pub tags: Vec<Vec<String>>,
 }
 
 /// Loads transactions from a CSV file at `path`. A header row is required;
@@ -36,7 +45,11 @@ pub struct LoadResult {
 /// ...) and a different column order — as real bank exports commonly have —
 /// don't matter. Dates accept `YYYY-MM-DD` or `M/D/YYYY`; amounts accept a
 /// plain decimal or accounting style (`$1,234.56`, `($1,234.56)` for
-/// negative).
+/// negative). An optional "Category" column is used as each row's starting
+/// category (skipping the auto-categorizer for that row entirely — see
+/// `categorize_uncategorized`'s own `category.is_some()` check); optional
+/// "Account" and "Tags" columns are likewise picked up when present — see
+/// `LoadResult`'s own doc comment.
 ///
 /// This crate's convention is negative = money out, positive = money in.
 /// Some exports (credit-card statements in particular) use the opposite —
@@ -46,6 +59,16 @@ pub struct LoadResult {
 /// caller (ultimately the user, at import time) has to know which this is.
 pub fn load_csv(path: impl AsRef<Path>, invert_amounts: bool) -> std::io::Result<LoadResult> {
     load_from_reader(File::open(path)?, invert_amounts)
+}
+
+/// The optional columns (found by name, same as `date`/`description`) that
+/// only this app's own CSV export carries — a real bank export has none of
+/// these, so every field here is routinely `None`.
+#[derive(Debug, Default, Clone, Copy)]
+struct ExtraColumns {
+    account: Option<usize>,
+    category: Option<usize>,
+    tags: Option<usize>,
 }
 
 fn load_from_reader<R: Read>(reader: R, invert_amounts: bool) -> std::io::Result<LoadResult> {
@@ -62,28 +85,58 @@ fn load_from_reader<R: Read>(reader: R, invert_amounts: bool) -> std::io::Result
     };
 
     // A real header ("Date", "Amount", ...) never parses as a valid date +
-    // amount pair; a headerless export's first row always does.
-    let (date_col, description_col, amount_source, data_rows, first_row_number) =
+    // amount pair; a headerless export's first row always does. A
+    // headerless file has no named columns at all, so it can never carry
+    // Account/Category/Tags either — those stay None.
+    let (date_col, description_col, amount_source, extra, data_rows, first_row_number) =
         if first_row_is_plain_data(first_row) {
-            (0, 1, AmountSource::Single(2), &rows[..], 1)
+            (0, 1, AmountSource::Single(2), ExtraColumns::default(), &rows[..], 1)
         } else {
             let date_col = find_date_column(first_row)?;
             let description_col =
                 find_column_exact(first_row, "description").ok_or_else(|| missing_column("description"))?;
             let amount_source = find_amount_source(first_row)?;
-            (date_col, description_col, amount_source, &rows[1..], 2)
+            let extra = ExtraColumns {
+                account: find_column_exact(first_row, "account"),
+                category: find_column_exact(first_row, "category"),
+                tags: find_column_exact(first_row, "tags"),
+            };
+            (date_col, description_col, amount_source, extra, &rows[1..], 2)
         };
 
     let mut result = LoadResult::default();
     for (idx, record) in data_rows.iter().enumerate() {
         let row_number = first_row_number + idx;
-        match parse_row(record, date_col, description_col, &amount_source, invert_amounts) {
-            Ok(tx) => result.transactions.push(tx),
+        match parse_row(record, date_col, description_col, &amount_source, &extra, invert_amounts) {
+            Ok((tx, account_name, tags)) => {
+                result.transactions.push(tx);
+                result.account_names.push(account_name);
+                result.tags.push(tags);
+            }
             Err(message) => result.errors.push(RowError { row_number, message }),
         }
     }
 
     Ok(result)
+}
+
+/// A non-empty, trimmed cell at `col` (if any) — the shared "blank means
+/// absent" rule for the optional Account/Category columns.
+fn optional_cell(record: &csv::StringRecord, col: Option<usize>) -> Option<String> {
+    col.and_then(|c| record.get(c))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Splits the Tags column the same way `toCsv` joins it (`"; "` — see
+/// `src/App.tsx`'s ledger export), tolerating a lone `;` or extra spaces
+/// from a hand-edited file.
+fn parse_tags(record: &csv::StringRecord, col: Option<usize>) -> Vec<String> {
+    let Some(raw) = col.and_then(|c| record.get(c)) else {
+        return Vec::new();
+    };
+    raw.split(';').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()
 }
 
 /// True when the row parses cleanly as (date, _, amount) at the fixed
@@ -142,8 +195,9 @@ fn parse_row(
     date_col: usize,
     description_col: usize,
     amount_source: &AmountSource,
+    extra: &ExtraColumns,
     invert_amounts: bool,
-) -> Result<Transaction, String> {
+) -> Result<(Transaction, Option<String>, Vec<String>), String> {
     let date_str = record.get(date_col).ok_or("missing date column")?;
     let raw_description = record.get(description_col).ok_or("missing description column")?;
 
@@ -160,12 +214,20 @@ fn parse_row(
         amount = -amount;
     }
 
-    Ok(Transaction {
-        date,
-        description,
-        amount,
-        category: None,
-    })
+    let category = optional_cell(record, extra.category);
+    let account_name = optional_cell(record, extra.account);
+    let tags = parse_tags(record, extra.tags);
+
+    Ok((
+        Transaction {
+            date,
+            description,
+            amount,
+            category,
+        },
+        account_name,
+        tags,
+    ))
 }
 
 fn extract_amount(record: &csv::StringRecord, source: &AmountSource) -> Result<Decimal, String> {
@@ -481,5 +543,48 @@ mod tests {
         assert_eq!(result.transactions.len(), 1);
         assert_eq!(result.errors.len(), 1);
         assert_eq!(result.errors[0].row_number, 2);
+    }
+
+    // A sixth shape: this app's own Ledger CSV export (Date, Description,
+    // Amount, Account, Category, Tags — see `toCsv`'s headers in
+    // `src/App.tsx`), re-imported. The round trip only works if these
+    // extra columns are actually read back, not just tolerated as noise
+    // like a bank export's balance/check-number columns are.
+
+    #[test]
+    fn reads_back_this_apps_own_exported_account_category_and_tags_columns() {
+        let result = load_str(
+            "Date,Description,Amount,Account,Category,Tags\n\
+             2026-08-20,Union Realty,-1850.00,Checking,Rent,\n\
+             2026-08-26,Farmers Market,-42.50,Checking,Groceries,weekend; cash\n",
+        );
+
+        assert!(result.errors.is_empty());
+        assert_eq!(result.transactions.len(), 2);
+        assert_eq!(result.account_names, vec![Some("Checking".to_string()), Some("Checking".to_string())]);
+        assert_eq!(result.transactions[0].category.as_deref(), Some("Rent"));
+        assert_eq!(result.tags[0], Vec::<String>::new());
+        assert_eq!(result.transactions[1].category.as_deref(), Some("Groceries"));
+        assert_eq!(result.tags[1], vec!["weekend".to_string(), "cash".to_string()]);
+    }
+
+    #[test]
+    fn a_blank_category_or_account_cell_is_none_not_an_empty_string() {
+        let result = load_str("Date,Description,Amount,Account,Category,Tags\n2026-08-20,Union Realty,-1850.00,,,\n");
+
+        assert_eq!(result.account_names, vec![None]);
+        assert_eq!(result.transactions[0].category, None);
+        assert_eq!(result.tags[0], Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_real_bank_export_without_those_columns_leaves_account_and_tags_empty() {
+        // Confirms the new optional columns don't change behavior for the
+        // overwhelmingly common case — a real bank CSV never has them.
+        let result = load_str("date,description,amount\n2026-08-20,Union Realty,-1850.00\n");
+
+        assert_eq!(result.account_names, vec![None]);
+        assert_eq!(result.transactions[0].category, None);
+        assert_eq!(result.tags[0], Vec::<String>::new());
     }
 }

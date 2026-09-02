@@ -142,13 +142,20 @@ function BudgetRow({
   onDrop: (e: DragEvent) => void;
   onDragEnd: () => void;
 }) {
+  const isIncome = line.budget_group === "income";
   // For expenses, "remaining" is budgeted minus actual (positive = under
   // budget). Income is the opposite — exceeding the expected amount is
   // good, so the sign flips for the income group.
-  const remaining =
-    line.budget_group === "income"
-      ? parseFloat(line.actual) - parseFloat(line.budgeted)
-      : parseFloat(line.budgeted) - parseFloat(line.actual);
+  const budgeted = parseFloat(line.budgeted);
+  const actual = parseFloat(line.actual);
+  const remaining = isIncome ? actual - budgeted : budgeted - actual;
+  const remainingLabel = isIncome ? "diff" : remaining < 0 ? "over" : "left";
+  // The consumption bar mirrors the same alert classification as the
+  // badge, so a row flagged "Over"/"80%+" also reads red/amber at a
+  // glance, not just via the badge text.
+  const pct = budgeted > 0 ? Math.min(100, (actual / budgeted) * 100) : actual > 0 ? 100 : 0;
+  const fillClass =
+    alertLevel === "over" ? "progress-fill over" : alertLevel === "warning" ? "progress-fill warn" : "progress-fill";
 
   function commitAmountEdit(value: string) {
     setEditingAmount(null);
@@ -157,15 +164,15 @@ function BudgetRow({
   }
 
   return (
-    <tr
+    <div
       draggable
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
       onDragEnd={onDragEnd}
-      className={isDragging ? "budget-row-dragging" : undefined}
+      className={isDragging ? "cat-row budget-row-dragging" : "cat-row"}
     >
-      <td>
+      <div className="cat-row-name">
         <span className="drag-handle" title="Drag to reorder">
           ⠿
         </span>
@@ -190,17 +197,22 @@ function BudgetRow({
             {alertLevel === "over" ? "Over" : Math.abs(remaining) < 0.005 ? "100%" : "80%+"}
           </span>
         )}
-      </td>
-      <td>
-        <select value={line.budget_group} onChange={(e) => onSetBudget(line.category, line.budgeted, e.target.value)}>
-          {GROUP_ORDER.map((g) => (
-            <option key={g} value={g}>
-              {GROUP_LABELS[g]}
-            </option>
-          ))}
-        </select>
-      </td>
-      <td className="amount-col">
+      </div>
+      <select
+        className="cat-row-group"
+        value={line.budget_group}
+        onChange={(e) => onSetBudget(line.category, line.budgeted, e.target.value)}
+      >
+        {GROUP_ORDER.map((g) => (
+          <option key={g} value={g}>
+            {GROUP_LABELS[g]}
+          </option>
+        ))}
+      </select>
+      <div className="progress-track cat-row-bar">
+        <div className={fillClass} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="cat-amt">
         {editingAmount?.category === line.category ? (
           <input
             autoFocus
@@ -221,13 +233,14 @@ function BudgetRow({
           >
             {formatAmount(line.budgeted)}
           </span>
-        )}
-      </td>
-      <td className="amount-col">{formatAmount(line.actual)}</td>
-      <td className={remaining < 0 ? "amount-col report-over-budget" : "amount-col"}>
-        {formatAmount(remaining.toFixed(2))}
-      </td>
-      <td className="actions-col">
+        )}{" "}
+        budget
+      </span>
+      <span className="cat-amt">{formatAmount(line.actual)} actual</span>
+      <span className={remaining < 0 ? "cat-amt neg" : "cat-amt"}>
+        {formatAmount(remaining.toFixed(2))} {remainingLabel}
+      </span>
+      <span className="cat-row-actions">
         {confirmingDelete === line.category ? (
           <span className="row-delete-confirm">
             <button type="button" className="modal-secondary" onClick={() => setConfirmingDelete(null)}>
@@ -242,8 +255,8 @@ function BudgetRow({
             Delete
           </button>
         )}
-      </td>
-    </tr>
+      </span>
+    </div>
   );
 }
 
@@ -306,6 +319,16 @@ export function BudgetView({
     setDragCategory(null);
   }
 
+  // One summary per non-empty group — computed once and shared by both the
+  // top `.group-cards` row and the detailed table below it, so the two
+  // never drift out of sync.
+  const groupSummaries = GROUP_ORDER.map((group) => {
+    const groupLines = orderedCategories.map((c) => lineByCategory.get(c)!).filter((line) => line.budget_group === group);
+    const groupBudgeted = groupLines.reduce((s, b) => s + parseFloat(b.budgeted), 0);
+    const groupActual = groupLines.reduce((s, b) => s + parseFloat(b.actual), 0);
+    return { group, groupLines, groupBudgeted, groupActual };
+  }).filter((s) => s.groupLines.length > 0);
+
   return (
     <div className="budget-view">
       <div className="month-nav">
@@ -318,13 +341,51 @@ export function BudgetView({
         </button>
       </div>
 
-      {GROUP_ORDER.map((group) => {
-        const groupLines = orderedCategories
-          .map((c) => lineByCategory.get(c)!)
-          .filter((line) => line.budget_group === group);
-        if (groupLines.length === 0) return null;
-        const groupBudgeted = groupLines.reduce((s, b) => s + parseFloat(b.budgeted), 0);
-        const groupActual = groupLines.reduce((s, b) => s + parseFloat(b.actual), 0);
+      {groupSummaries.length > 0 && (
+        <div className="group-cards">
+          {groupSummaries.map(({ group, groupBudgeted, groupActual }) => {
+            const isIncome = group === "income";
+            const pct = groupBudgeted > 0 ? (groupActual / groupBudgeted) * 100 : 0;
+            // Expense groups: at/under budget is good, over is bad. Income
+            // is the mirror image — meeting or beating the target is good,
+            // falling short is what deserves a warning color.
+            const status = isIncome
+              ? pct >= 100
+                ? "ok"
+                : pct >= 80
+                  ? "warn"
+                  : "over"
+              : pct > 100
+                ? "over"
+                : pct >= 80
+                  ? "warn"
+                  : "ok";
+            const fillClass = status === "over" ? "progress-fill over" : status === "warn" ? "progress-fill warn" : "progress-fill";
+            const pctLabel =
+              status === "over"
+                ? isIncome
+                  ? `${pct.toFixed(0)}% received`
+                  : "Over budget"
+                : pct >= 99.5 && pct <= 100.5
+                  ? "On target"
+                  : `${pct.toFixed(0)}% ${isIncome ? "received" : "used"}`;
+            return (
+              <div className="group-card" key={group}>
+                <span className="group-card-title">{GROUP_LABELS[group]}</span>
+                <span className="group-card-amt">
+                  {formatAmount(groupActual.toFixed(2))} <span className="of">of {formatAmount(groupBudgeted.toFixed(2))}</span>
+                </span>
+                <div className="progress-track">
+                  <div className={fillClass} style={{ width: `${Math.min(pct, 100)}%` }}></div>
+                </div>
+                <span className={`group-card-pct ${status}`}>{pctLabel}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {groupSummaries.map(({ group, groupLines, groupBudgeted, groupActual }) => {
         return (
           <div key={group}>
             <h2 className="reports-section-title">
@@ -333,53 +394,41 @@ export function BudgetView({
                 {formatAmount(groupActual.toFixed(2))} of {formatAmount(groupBudgeted.toFixed(2))}
               </span>
             </h2>
-            <table className="ledger">
-              <thead>
-                <tr>
-                  <th>Category</th>
-                  <th>Group</th>
-                  <th className="amount-col">Monthly budget</th>
-                  <th className="amount-col">Actual</th>
-                  <th className="amount-col">Remaining</th>
-                  <th className="actions-col"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {groupLines.map((line) => (
-                  <BudgetRow
-                    key={line.category}
-                    line={line}
-                    alertLevel={alertByCategory.get(line.category)}
-                    editingAmount={editingAmount}
-                    setEditingAmount={setEditingAmount}
-                    onSetBudget={onSetBudget}
-                    confirmingDelete={confirmingDelete}
-                    setConfirmingDelete={setConfirmingDelete}
-                    onDeleteBudget={onDeleteBudget}
-                    onCategoryClick={onCategoryClick}
-                    isDragging={dragCategory === line.category}
-                    onDragStart={(e) => {
-                      // Native drag-and-drop requires a payload via
-                      // setData or the browser treats the drag as
-                      // invalid and shows "not-allowed" over every drop
-                      // target, regardless of what dragover/drop do.
-                      e.dataTransfer.effectAllowed = "move";
-                      e.dataTransfer.setData("text/plain", line.category);
-                      setDragCategory(line.category);
-                    }}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      e.dataTransfer.dropEffect = "move";
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      handleDrop(line.category);
-                    }}
-                    onDragEnd={() => setDragCategory(null)}
-                  />
-                ))}
-              </tbody>
-            </table>
+            <div className="cat-list">
+              {groupLines.map((line) => (
+                <BudgetRow
+                  key={line.category}
+                  line={line}
+                  alertLevel={alertByCategory.get(line.category)}
+                  editingAmount={editingAmount}
+                  setEditingAmount={setEditingAmount}
+                  onSetBudget={onSetBudget}
+                  confirmingDelete={confirmingDelete}
+                  setConfirmingDelete={setConfirmingDelete}
+                  onDeleteBudget={onDeleteBudget}
+                  onCategoryClick={onCategoryClick}
+                  isDragging={dragCategory === line.category}
+                  onDragStart={(e) => {
+                    // Native drag-and-drop requires a payload via
+                    // setData or the browser treats the drag as
+                    // invalid and shows "not-allowed" over every drop
+                    // target, regardless of what dragover/drop do.
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", line.category);
+                    setDragCategory(line.category);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    handleDrop(line.category);
+                  }}
+                  onDragEnd={() => setDragCategory(null)}
+                />
+              ))}
+            </div>
           </div>
         );
       })}
