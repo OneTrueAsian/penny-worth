@@ -140,6 +140,18 @@ That's Windows SmartScreen, and it appears because this installer isn't
 signed with a certificate Microsoft already recognizes — it doesn't mean
 anything is actually wrong. Click **"More info"**, then **"Run anyway."**
 
+**"Update now" found a newer version but couldn't open it — what do I do?**
+On versions 1.1.5 and 1.1.6 specifically, "Update now" downloads the new
+installer correctly but has a bug that blocks it from opening the file
+afterward — you'll see an error, and it falls back to opening the GitHub
+release page instead. That's expected on those two versions only, and
+there's no way for it to fix itself: Penny Worth has no silent
+auto-updater (a deliberate choice — that needs a signing certificate and
+CI infrastructure this project doesn't have), so a version's own copy of
+this logic can't be patched after it's installed. Just download and run
+the installer from the release page it opens, same as any manual update —
+"Update now" works correctly on 1.1.7 and every version after it.
+
 **Will I get a reminder before a bill is due?**
 If a recurring bill (Recurring tab) is due within 3 days, Penny Worth
 shows a native Windows notification — but only when you actually open the
