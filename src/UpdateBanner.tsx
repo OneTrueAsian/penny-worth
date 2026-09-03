@@ -70,11 +70,17 @@ function pickAsset(assets: ReleaseAsset[], platform: "windows" | "macos" | null)
  * `openPath` requires `opener:allow-open-path` in
  * `src-tauri/capabilities/default.json` — `opener:default` alone (the
  * plugin's own bundled default permission set) only covers `open_url` and
- * `reveal_item_in_dir`, not `open_path`, which the plugin treats as more
- * sensitive since it's "without any pre-configured scope." Missing that
- * permission doesn't crash anything (the catch block below falls back
- * gracefully), it just silently never actually launches the installer —
- * a real incident that shipped unnoticed until a live update check hit it. */
+ * `reveal_item_in_dir`, not `open_path`. And the permission string alone
+ * isn't enough either: the plugin's own docs describe it as enabling the
+ * command "without any pre-configured scope," meaning zero paths are
+ * actually allowed until one is granted separately — it must be the
+ * *object* form, with an `allow: [{ path: ... }]` scope matching wherever
+ * `download_asset` (`updater.rs`) actually saves the file
+ * (`std::env::temp_dir()`, i.e. `$TEMP`), not the bare permission string.
+ * Getting either of these wrong doesn't crash anything (the catch block
+ * below falls back gracefully) — it just silently/visibly never actually
+ * launches the installer. Both have already shipped unnoticed once each:
+ * the missing permission, then the missing scope on the fix for that. */
 export function UpdateBanner() {
   const [latest, setLatest] = useState<{ tag: string; version: string; url: string; asset: ReleaseAsset | null } | null>(
     null,
