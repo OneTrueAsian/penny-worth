@@ -284,14 +284,13 @@ export function AccountsView({
         </button>
       </div>
 
-      {expandedStat && (
-        <StatDetailPanel
-          title={ACCOUNT_STAT_LABELS[expandedStat]}
-          rows={accountBreakdowns[expandedStat]}
-          emptyMessage="No accounts contribute to this yet."
-          onClose={() => toggleStat(expandedStat)}
-        />
-      )}
+      <StatDetailPanel
+        isOpen={expandedStat !== null}
+        title={expandedStat ? ACCOUNT_STAT_LABELS[expandedStat] : null}
+        rows={expandedStat ? accountBreakdowns[expandedStat] : null}
+        emptyMessage="No accounts contribute to this yet."
+        onClose={() => expandedStat && toggleStat(expandedStat)}
+      />
 
       {GROUP_ORDER.map((group) => {
         const groupAccounts = accounts.filter((a) => groupOf(a.account_type) === group);

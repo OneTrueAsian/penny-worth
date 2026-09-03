@@ -1262,14 +1262,17 @@ pub fn bulk_correct_category(
 }
 
 /// Same as `delete_transaction`, applied to every id in one call — used by
-/// the ledger's multi-select bulk-delete action.
+/// the ledger's multi-select bulk-delete action. Echoes `ids` back on
+/// success so the frontend's undo toast can call `restore_transactions`
+/// with exactly what was deleted, without tracking that set itself.
 #[tauri::command]
-pub fn bulk_delete_transactions(ids: Vec<i64>, state: tauri::State<AppStateHandle>) -> Result<(), String> {
+pub fn bulk_delete_transactions(ids: Vec<i64>, state: tauri::State<AppStateHandle>) -> Result<Vec<i64>, String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
-    for id in ids {
-        state.store.delete_transaction(id).map_err(|e| e.to_string())?;
+    let now = chrono::Local::now().naive_local();
+    for &id in &ids {
+        state.store.delete_transaction(id, now).map_err(|e| e.to_string())?;
     }
-    Ok(())
+    Ok(ids)
 }
 
 /// Seeds a recurring item from each selected transaction — merchant,
@@ -1390,7 +1393,17 @@ pub fn update_transaction_account(
 #[tauri::command]
 pub fn delete_transaction(id: i64, state: tauri::State<AppStateHandle>) -> Result<(), String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
-    state.store.delete_transaction(id).map_err(|e| e.to_string())
+    let now = chrono::Local::now().naive_local();
+    state.store.delete_transaction(id, now).map_err(|e| e.to_string())
+}
+
+/// Undoes `delete_transaction`/`bulk_delete_transactions` — the Ledger's
+/// bulk-delete "Undo" toast calls this with exactly the ids it was told
+/// were deleted.
+#[tauri::command]
+pub fn restore_transactions(ids: Vec<i64>, state: tauri::State<AppStateHandle>) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    state.store.restore_transactions(&ids).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1584,6 +1597,36 @@ pub fn budget_actuals_for_month(
             budgeted: a.budgeted.to_string(),
             actual: a.actual.to_string(),
         })
+        .collect())
+}
+
+#[derive(Serialize)]
+pub struct BudgetTrendPointDto {
+    /// "YYYY-MM"
+    pub month: String,
+    pub actual: String,
+}
+
+/// One category's actual spend for each of the trailing `months` months
+/// ending at `year`/`month` — powers the Budget page's per-row sparkline.
+/// Fetched lazily per visible row rather than bulk-loaded for every
+/// category up front.
+#[tauri::command]
+pub fn budget_actuals_trend(
+    category: String,
+    year: i32,
+    month: u32,
+    months: u32,
+    state: tauri::State<AppStateHandle>,
+) -> Result<Vec<BudgetTrendPointDto>, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let trend = state
+        .store
+        .budget_actuals_trend(&category, year, month, months)
+        .map_err(|e| e.to_string())?;
+    Ok(trend
+        .into_iter()
+        .map(|(month, actual)| BudgetTrendPointDto { month, actual: actual.to_string() })
         .collect())
 }
 
@@ -2130,15 +2173,19 @@ pub async fn refresh_live_prices(state: tauri::State<'_, AppStateHandle>) -> Res
         .collect();
 
     let client = reqwest::Client::new();
+    let results = crate::live_price_provider::fetch_quotes(provider, &client, &api_key, &to_attempt).await;
+    // One HTTP request per symbol for a provider with no batching, one per
+    // up-to-`max_batch_size()`-symbol chunk for one that does (StockData.org
+    // today) — matches what `fetch_quotes` above actually sent, so
+    // `record_live_price_request`'s "one request actually sent" contract
+    // holds even though a batching provider prices several symbols per call.
+    let request_count = match provider.max_batch_size() {
+        None => to_attempt.len(),
+        Some(batch_size) => to_attempt.len().div_ceil(batch_size),
+    };
+
     let mut quotes = Vec::new();
-    for symbol in to_attempt {
-        let result = crate::live_price_provider::fetch_quote(provider, &client, &api_key, &symbol).await;
-        {
-            let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
-            // Recorded unconditionally for both providers — informational
-            // only for Finnhub, which has no limit to check it against.
-            state.store.record_live_price_request(today).map_err(|e| e.to_string())?;
-        }
+    for (symbol, result) in results {
         match result {
             Ok(Some(price)) => quotes.push((symbol, price)),
             Ok(None) => failed.push(FailedQuote { symbol, error: "no data returned for this symbol".to_string() }),
@@ -2149,6 +2196,12 @@ pub async fn refresh_live_prices(state: tauri::State<'_, AppStateHandle>) -> Res
     let mut updated = Vec::new();
     {
         let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+        for _ in 0..request_count {
+            // Recorded unconditionally for every provider — informational
+            // only for Finnhub (and, above its daily cap, StockData.org's
+            // request count), which have no limit to check it against.
+            state.store.record_live_price_request(today).map_err(|e| e.to_string())?;
+        }
         for (symbol, price) in quotes {
             state.store.update_holding_prices_for_symbol(&symbol, price).map_err(|e| e.to_string())?;
             updated.push(symbol);
@@ -2580,6 +2633,15 @@ pub fn cash_flow_forecast(days: i64, state: tauri::State<AppStateHandle>) -> Res
             balance: p.balance.to_string(),
         })
         .collect())
+}
+
+/// Average monthly spend over the trailing ~90 days — powers the
+/// Dashboard's runway stat ("liquid savings ÷ average monthly spend").
+#[tauri::command]
+pub fn average_monthly_spend(state: tauri::State<AppStateHandle>) -> Result<String, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let today = chrono::Local::now().date_naive();
+    state.store.average_monthly_spend(today).map(|d| d.to_string()).map_err(|e| e.to_string())
 }
 
 fn last_day_of_month(year: i32, month: u32) -> chrono::NaiveDate {

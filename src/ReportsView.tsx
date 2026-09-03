@@ -559,22 +559,21 @@ export function ReportsView({
         )}
       </div>
 
-      {expandedStat && (
-        <StatDetailPanel
-          title={REPORT_STAT_LABELS[expandedStat]}
-          rows={topLevelBreakdowns[expandedStat]}
-          emptyMessage={
-            expandedStat === "totalSaved"
-              ? "No savings buckets yet."
-              : expandedStat === "income"
-                ? "No income recorded yet."
-                : expandedStat === "byTag"
-                  ? "No tags used yet — add some from the Ledger."
-                  : "No spending attributed to a family member yet."
-          }
-          onClose={() => toggleStat(expandedStat)}
-        />
-      )}
+      <StatDetailPanel
+        isOpen={expandedStat !== null}
+        title={expandedStat ? REPORT_STAT_LABELS[expandedStat] : null}
+        rows={expandedStat ? topLevelBreakdowns[expandedStat] : null}
+        emptyMessage={
+          expandedStat === "totalSaved"
+            ? "No savings buckets yet."
+            : expandedStat === "income"
+              ? "No income recorded yet."
+              : expandedStat === "byTag"
+                ? "No tags used yet — add some from the Ledger."
+                : "No spending attributed to a family member yet."
+        }
+        onClose={() => expandedStat && toggleStat(expandedStat)}
+      />
 
       <PropertyAssetsSection
         assets={assets}

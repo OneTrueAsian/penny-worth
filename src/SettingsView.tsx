@@ -5,7 +5,7 @@ import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 const LIVE_PRICE_PROVIDERS: Record<
   LivePriceProviderId,
-  { label: string; signupUrl: string; keyPlaceholder: string; blurb: string; usageNote: string }
+  { label: string; signupUrl: string; keyPlaceholder: string; blurb: string; usageNote: string; refreshNote: string }
 > = {
   alpha_vantage: {
     label: "Alpha Vantage",
@@ -14,6 +14,7 @@ const LIVE_PRICE_PROVIDERS: Record<
     blurb:
       "Alpha Vantage's free tier is limited to 25 requests/day — plenty for a small portfolio checked a few times a day, tight for a large one refreshed constantly.",
     usageNote: "using your Alpha Vantage API key",
+    refreshNote: "one request per distinct symbol you hold",
   },
   finnhub: {
     label: "Finnhub",
@@ -22,6 +23,7 @@ const LIVE_PRICE_PROVIDERS: Record<
     blurb:
       "Finnhub's free tier allows 60 requests/minute — comfortably more than this app needs at once, so there's no daily cap to track.",
     usageNote: "using your Finnhub API key",
+    refreshNote: "one request per distinct symbol you hold",
   },
   twelve_data: {
     label: "Twelve Data",
@@ -29,6 +31,16 @@ const LIVE_PRICE_PROVIDERS: Record<
     keyPlaceholder: "Twelve Data API key",
     blurb: "Twelve Data's free tier is limited to 800 requests/day — plenty for a large portfolio checked often.",
     usageNote: "using your Twelve Data API key",
+    refreshNote: "one request per distinct symbol you hold",
+  },
+  stockdata_org: {
+    label: "StockData.org",
+    signupUrl: "https://www.stockdata.org/register",
+    keyPlaceholder: "StockData.org API key",
+    blurb:
+      "StockData.org's free tier is limited to 100 requests/day, but each request can price up to 3 symbols at once — a portfolio of 9 symbols costs 3 requests, not 9.",
+    usageNote: "using your StockData.org API key",
+    refreshNote: "up to 3 symbols priced per request",
   },
 };
 
@@ -170,9 +182,9 @@ function LivePricesSection({
       {settings?.enabled ? (
         <>
           <p className="modal-message-secondary">
-            Prices refresh automatically when the app opens, and every 2 hours while it stays open — one request
-            per distinct symbol you hold, {LIVE_PRICE_PROVIDERS[settings.provider].usageNote}. New holdings can also
-            auto-fill their starting price by symbol.
+            Prices refresh automatically when the app opens, and every 2 hours while it stays open —{" "}
+            {LIVE_PRICE_PROVIDERS[settings.provider].refreshNote}, {LIVE_PRICE_PROVIDERS[settings.provider].usageNote}.
+            New holdings can also auto-fill their starting price by symbol.
           </p>
           <p className="modal-message-secondary">
             Last refreshed: {settings.last_refreshed_at ?? "not yet — click Refresh now below"}

@@ -532,6 +532,7 @@ impl Store {
         self.migrate_add_member_id_to_assets_if_missing()?;
         self.migrate_add_live_price_request_tracking_if_missing()?;
         self.migrate_add_live_price_provider_if_missing()?;
+        self.migrate_add_deleted_at_if_missing()?;
         self.seed_categories_if_missing()
     }
 
@@ -733,7 +734,7 @@ impl Store {
                 .execute("INSERT OR IGNORE INTO categories (name) VALUES (?1)", params![name])?;
         }
         self.conn.execute_batch(
-            "INSERT OR IGNORE INTO categories (name) SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL;
+            "INSERT OR IGNORE INTO categories (name) SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL AND deleted_at IS NULL;
              INSERT OR IGNORE INTO categories (name) SELECT category FROM budgets;",
         )?;
         Ok(())
@@ -769,6 +770,37 @@ impl Store {
             "UPDATE transactions SET account_id = ?1 WHERE account_id IS NULL",
             params![fallback_id],
         )?;
+        Ok(())
+    }
+
+    /// Same pattern as `migrate_add_account_id_if_missing`: a database from
+    /// before soft-delete existed has no `deleted_at` column. `NULL`
+    /// (not-deleted) is already correct for every existing row, so — like
+    /// `confidence` below — no backfill beyond adding the column. Powers
+    /// the Ledger's bulk-delete "Undo": `delete_transaction`/
+    /// `bulk_delete_transactions` set this instead of actually removing
+    /// the row, `restore_transactions` clears it back to `NULL`, and every
+    /// production read of `transactions` filters `deleted_at IS NULL` (see
+    /// each method's own comment for why a given one does or doesn't).
+    fn migrate_add_deleted_at_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(transactions)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_deleted_at = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "deleted_at" {
+                has_deleted_at = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_deleted_at {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE transactions ADD COLUMN deleted_at TEXT", [])?;
         Ok(())
     }
 
@@ -1083,7 +1115,7 @@ impl Store {
         let transaction_amounts: Vec<String> = match since_date {
             Some(since) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT amount FROM transactions WHERE account_id = ?1 AND date > ?2 AND date <= ?3",
+                    "SELECT amount FROM transactions WHERE account_id = ?1 AND date > ?2 AND date <= ?3 AND deleted_at IS NULL",
                 )?;
                 let rows =
                     stmt.query_map(params![account_id, since.to_string(), as_of.to_string()], |row| row.get(0))?;
@@ -1092,7 +1124,7 @@ impl Store {
             None => {
                 let mut stmt = self
                     .conn
-                    .prepare("SELECT amount FROM transactions WHERE account_id = ?1 AND date <= ?2")?;
+                    .prepare("SELECT amount FROM transactions WHERE account_id = ?1 AND date <= ?2 AND deleted_at IS NULL")?;
                 let rows = stmt.query_map(params![account_id, as_of.to_string()], |row| row.get(0))?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             }
@@ -1407,12 +1439,18 @@ impl Store {
     /// can't be left behind with `transactions.account_id NOT NULL`
     /// pointing at nothing, so this cascades explicitly rather than
     /// erroring or orphaning rows (same reasoning as `delete_bucket`
-    /// cascading its contributions). Each transaction goes through
-    /// `delete_transaction` rather than a bare `DELETE`, so a debt-payment
-    /// link row (and, if this account holds the *source* side of one, the
-    /// paired transaction it generated on the debt account) is cleaned up
-    /// too — otherwise it trips a foreign key constraint or lingers
-    /// orphaned. Holdings and balance-reset snapshots for this account are
+    /// cascading its contributions).
+    ///
+    /// Each transaction goes through `hard_delete_transaction_row` — a real
+    /// `DELETE`, deliberately *not* `delete_transaction`'s soft-delete —
+    /// since foreign keys are enforced on this connection (`transactions
+    /// .account_id ... REFERENCES accounts(id)`) and a soft-deleted row
+    /// still physically exists and still points at this account, which
+    /// would trip that constraint the moment the `DELETE FROM accounts`
+    /// below runs. There's no "undo delete account" feature that would
+    /// ever need these back, unlike the Ledger's bulk-delete "Undo," so
+    /// there's nothing lost by not going through the soft-delete path
+    /// here. Holdings and balance-reset snapshots for this account are
     /// swept the same way. A recurring item pointing here just loses the
     /// link (falls back to "no linked account") rather than being deleted
     /// itself, since it doesn't stop existing just because the account
@@ -1426,7 +1464,7 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
         for tx_id in &tx_ids {
-            self.delete_transaction(*tx_id)?;
+            self.hard_delete_transaction_row(*tx_id)?;
         }
 
         self.conn
@@ -1531,7 +1569,7 @@ impl Store {
     pub fn labeled_history(&self) -> rusqlite::Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT description, category FROM transactions
-             WHERE category IS NOT NULL AND category_source IN ('rule', 'user')",
+             WHERE category IS NOT NULL AND category_source IN ('rule', 'user') AND deleted_at IS NULL",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1656,7 +1694,7 @@ impl Store {
         let mut result = Vec::with_capacity(txns.len());
         for tx in txns {
             let exists: bool = self.conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id = ?1 AND fingerprint = ?2)",
+                "SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id = ?1 AND fingerprint = ?2 AND deleted_at IS NULL)",
                 params![account_id, fingerprint(account_id, tx)],
                 |row| row.get(0),
             )?;
@@ -1733,7 +1771,7 @@ impl Store {
              LEFT JOIN accounts da ON da.id = dp.debt_account_id
              LEFT JOIN transaction_tags tt ON tt.transaction_id = t.id
              LEFT JOIN family_members fm ON fm.id = t.member_id
-             WHERE t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+             WHERE t.id NOT IN (SELECT generated_transaction_id FROM debt_payments) AND t.deleted_at IS NULL
              GROUP BY t.id
              ORDER BY t.id",
         )?;
@@ -1882,16 +1920,16 @@ impl Store {
         Ok(())
     }
 
-    /// Removes a transaction entirely. An unknown id is a harmless no-op —
-    /// `DELETE` naturally affects zero rows rather than erroring.
-    ///
-    /// If `id` is the source side of an applied debt payment (see
-    /// `apply_debt_payment`), the generated transaction it created on the
-    /// debt account is removed too — otherwise it would silently linger,
-    /// no longer backed by anything. If `id` is the *generated* side
-    /// instead (deleted directly from the debt account's own ledger), the
-    /// now-dangling link row is cleaned up the same way.
-    pub fn delete_transaction(&self, id: i64) -> rusqlite::Result<()> {
+    /// Actually removes one transaction row and everything that would
+    /// otherwise dangle or trip a foreign key once it's gone: its splits,
+    /// tags, and — if it's either side of an applied debt payment — the
+    /// link row and its generated twin transaction. This is the *old*
+    /// `delete_transaction` behavior verbatim, kept only for
+    /// `delete_account`'s cascade (see that method's doc comment for why
+    /// it can't use the new soft-delete `delete_transaction` instead). Not
+    /// used by anything a user can trigger without also deleting the
+    /// whole account.
+    fn hard_delete_transaction_row(&self, id: i64) -> rusqlite::Result<()> {
         let generated_transaction_id = match self.conn.query_row(
             "SELECT generated_transaction_id FROM debt_payments WHERE source_transaction_id = ?1",
             params![id],
@@ -1919,6 +1957,85 @@ impl Store {
         Ok(())
     }
 
+    /// Soft-deletes a transaction — sets `deleted_at` rather than actually
+    /// removing the row, so `restore_transactions` can bring it back later
+    /// (the Ledger's bulk-delete "Undo"). An unknown id is a harmless
+    /// no-op, same as the old hard-delete was. Deliberately leaves
+    /// `transaction_splits`/`transaction_tags`/`debt_payments` completely
+    /// untouched — that's what makes restore complete: nothing needs
+    /// separate "undelete the tags/splits too" logic, they were never
+    /// gone. Every production read of `transactions` filters
+    /// `deleted_at IS NULL` instead (see each method's own comment).
+    ///
+    /// `now` comes from the caller rather than reading the system clock in
+    /// here — `core` deliberately never touches it directly (chrono's
+    /// `clock` feature isn't even enabled for this crate), the same
+    /// "today/now is always a parameter" convention every other
+    /// date-based method in this file already follows (`cash_flow_forecast`,
+    /// `average_monthly_spend`, ...).
+    ///
+    /// If `id` is either side of an applied debt payment (see
+    /// `apply_debt_payment`) — the source transaction or the twin it
+    /// generated on the debt account — the other side is soft-deleted
+    /// too, symmetrically, so a debt payment doesn't half-disappear from
+    /// the Ledger while its balance-side bookkeeping twin lingers behind
+    /// (or vice versa). The `debt_payments` link row itself is left
+    /// alone; `restore_transactions` uses it the same way to bring both
+    /// sides back together.
+    pub fn delete_transaction(&self, id: i64, now: NaiveDateTime) -> rusqlite::Result<()> {
+        let now = now.to_string();
+        let other_side = self.debt_payment_partner(id)?;
+        self.conn.execute("UPDATE transactions SET deleted_at = ?1 WHERE id = ?2", params![now, id])?;
+        if let Some(other_id) = other_side {
+            self.conn.execute("UPDATE transactions SET deleted_at = ?1 WHERE id = ?2", params![now, other_id])?;
+        }
+        Ok(())
+    }
+
+    /// The other transaction id linked to `id` through `debt_payments`
+    /// (source -> generated, or generated -> source), if any — shared by
+    /// `delete_transaction` and `restore_transactions` so a debt payment's
+    /// two sides always move together.
+    fn debt_payment_partner(&self, id: i64) -> rusqlite::Result<Option<i64>> {
+        let as_source = match self.conn.query_row(
+            "SELECT generated_transaction_id FROM debt_payments WHERE source_transaction_id = ?1",
+            params![id],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(v) => Some(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e),
+        };
+        if as_source.is_some() {
+            return Ok(as_source);
+        }
+        match self.conn.query_row(
+            "SELECT source_transaction_id FROM debt_payments WHERE generated_transaction_id = ?1",
+            params![id],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Undoes `delete_transaction`/`bulk_delete_transactions` (the
+    /// Ledger's bulk-delete "Undo") — clears `deleted_at` for exactly
+    /// these ids, plus each one's debt-payment partner if it has one
+    /// (symmetric with `delete_transaction`'s own cascade). Tags, splits,
+    /// and the `debt_payments` link row were never touched by the delete,
+    /// so this alone is a complete restore.
+    pub fn restore_transactions(&self, ids: &[i64]) -> rusqlite::Result<()> {
+        for &id in ids {
+            self.conn.execute("UPDATE transactions SET deleted_at = NULL WHERE id = ?1", params![id])?;
+            if let Some(other_id) = self.debt_payment_partner(id)? {
+                self.conn.execute("UPDATE transactions SET deleted_at = NULL WHERE id = ?1", params![other_id])?;
+            }
+        }
+        Ok(())
+    }
+
     /// Adds a tag to a transaction (a no-op if it's already there, since
     /// tags have no ordering or count that a duplicate would affect).
     pub fn add_tag(&self, transaction_id: i64, tag: &str) -> rusqlite::Result<()> {
@@ -1940,9 +2057,16 @@ impl Store {
 
     /// Every distinct tag in use across any transaction, alphabetically —
     /// powers autocomplete when adding a new tag; there's no separate
-    /// master tag list to manage.
+    /// master tag list to manage. Joins back to `transactions` (rather
+    /// than reading `transaction_tags` alone) so a tag belonging only to
+    /// a soft-deleted transaction doesn't linger in autocomplete.
     pub fn list_all_tags(&self) -> rusqlite::Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT DISTINCT tag FROM transaction_tags ORDER BY tag COLLATE NOCASE")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT tt.tag FROM transaction_tags tt
+             JOIN transactions t ON t.id = tt.transaction_id
+             WHERE t.deleted_at IS NULL
+             ORDER BY tt.tag COLLATE NOCASE",
+        )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut result = Vec::new();
         for row in rows {
@@ -2388,7 +2512,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT amount FROM transactions
              WHERE category = 'Income'
-                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL",
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut total = Decimal::ZERO;
@@ -2423,11 +2548,13 @@ impl Store {
              WHERE category = ?1 AND substr(date, 1, 7) = ?2
                    AND id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
                    AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL
              UNION ALL
              SELECT ts.amount FROM transaction_splits ts
              JOIN transactions t ON t.id = ts.transaction_id
              WHERE ts.category = ?1 AND substr(t.date, 1, 7) = ?2
-                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND t.deleted_at IS NULL",
         )?;
         let mut result = Vec::with_capacity(budgets.len());
         for line in budgets {
@@ -2455,6 +2582,60 @@ impl Store {
         Ok(result)
     }
 
+    /// One category's actual spend for each of the trailing `months`
+    /// months ending at (and including) `year`/`month` — same
+    /// split-aware, debt-payment-exclusion-aware query as
+    /// `monthly_budget_actuals`, just parameterized by a fixed category
+    /// and looped over months instead of over every budgeted category.
+    /// Oldest month first. Doesn't consult `list_budgets` at all — a
+    /// month with $0 actual and no budget line still returns a `0.00`
+    /// point rather than being skipped, so a sparkline never has to
+    /// special-case a missing month.
+    pub fn budget_actuals_trend(
+        &self,
+        category: &str,
+        year: i32,
+        month: u32,
+        months: u32,
+    ) -> rusqlite::Result<Vec<(String, Decimal)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT amount FROM transactions
+             WHERE category = ?1 AND substr(date, 1, 7) = ?2
+                   AND id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL
+             UNION ALL
+             SELECT ts.amount FROM transaction_splits ts
+             JOIN transactions t ON t.id = ts.transaction_id
+             WHERE ts.category = ?1 AND substr(t.date, 1, 7) = ?2
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND t.deleted_at IS NULL",
+        )?;
+        let is_income = self
+            .list_budgets(&format!("{year:04}-{month:02}"))?
+            .into_iter()
+            .find(|b| b.category == category)
+            .map(|b| b.budget_group == "income")
+            .unwrap_or(false);
+
+        let mut result = Vec::with_capacity(months as usize);
+        for back in (0..months).rev() {
+            let month_key = month_key_back(year, month, back);
+            let rows = stmt.query_map(params![category, month_key], |row| row.get::<_, String>(0))?;
+            let mut spent = Decimal::ZERO;
+            for row in rows {
+                let amount = Decimal::from_str(&row?).expect("amount stored by this crate must be valid");
+                if is_income {
+                    spent += amount;
+                } else {
+                    spent -= amount;
+                }
+            }
+            result.push((month_key, spent));
+        }
+        Ok(result)
+    }
+
     /// Every line item behind one category's `monthly_budget_actuals`
     /// entry for a month — clicking a category on the Budget page drills
     /// into this. Same split-aware shape as `monthly_budget_actuals`: a
@@ -2477,6 +2658,7 @@ impl Store {
              WHERE t.category = ?1 AND substr(t.date, 1, 7) = ?2
                    AND t.id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
                    AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND t.deleted_at IS NULL
              UNION ALL
              SELECT t.id, t.date, t.description, ts.amount, a.name, 1, ts.note
              FROM transaction_splits ts
@@ -2484,6 +2666,7 @@ impl Store {
              JOIN accounts a ON a.id = t.account_id
              WHERE ts.category = ?1 AND substr(t.date, 1, 7) = ?2
                    AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND t.deleted_at IS NULL
              ORDER BY 2",
         )?;
         let rows = stmt.query_map(params![category, month_key], |row| {
@@ -2598,7 +2781,7 @@ impl Store {
 
         let mut stmt = self
             .conn
-            .prepare("SELECT id, date, description, amount, category FROM transactions ORDER BY id")?;
+            .prepare("SELECT id, date, description, amount, category FROM transactions WHERE deleted_at IS NULL ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -2931,7 +3114,7 @@ impl Store {
 
         let mut stmt = self
             .conn
-            .prepare("SELECT date, description, amount, category FROM transactions ORDER BY date")?;
+            .prepare("SELECT date, description, amount, category FROM transactions WHERE deleted_at IS NULL ORDER BY date")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -3528,7 +3711,7 @@ impl Store {
 
         let earliest_transaction_date: Option<NaiveDate> = self
             .conn
-            .query_row("SELECT MIN(date) FROM transactions", [], |row| row.get::<_, Option<String>>(0))?
+            .query_row("SELECT MIN(date) FROM transactions WHERE deleted_at IS NULL", [], |row| row.get::<_, Option<String>>(0))?
             .map(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").expect("date stored by this crate must be valid"));
 
         let daily_net = match earliest_transaction_date {
@@ -3556,6 +3739,55 @@ impl Store {
         Ok(points)
     }
 
+    /// Average monthly spend (money out only, as a positive number) over
+    /// the trailing ~90 days ending `today` — same window-sizing as
+    /// `cash_flow_forecast` just above (clamped to however much
+    /// transaction history actually exists, via the ledger's earliest
+    /// date, so a brand-new file isn't diluted by assumed-inactive days),
+    /// same income-vs-expense split as `monthly_totals` just below
+    /// (`amount < 0` counts as spend). Unlike `cash_flow_forecast`, this
+    /// reads transaction amounts directly rather than the balance delta
+    /// between two points, since a balance delta can't isolate spend from
+    /// income the way this needs to. Powers the Dashboard's runway stat
+    /// ("liquid savings ÷ average monthly spend"). With no transactions at
+    /// all, returns `Decimal::ZERO` rather than dividing by zero.
+    pub fn average_monthly_spend(&self, today: NaiveDate) -> rusqlite::Result<Decimal> {
+        const TRAILING_WINDOW_DAYS: i64 = 90;
+
+        let earliest_transaction_date: Option<NaiveDate> = self
+            .conn
+            .query_row("SELECT MIN(date) FROM transactions WHERE deleted_at IS NULL", [], |row| row.get::<_, Option<String>>(0))?
+            .map(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").expect("date stored by this crate must be valid"));
+
+        let Some(earliest) = earliest_transaction_date else {
+            return Ok(Decimal::ZERO);
+        };
+        let window_start = earliest.max(today - chrono::Duration::days(TRAILING_WINDOW_DAYS));
+        let days_elapsed = (today - window_start).num_days().max(1);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT amount FROM transactions
+             WHERE date >= ?1 AND date <= ?2
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL",
+        )?;
+        let rows = stmt.query_map(params![window_start.to_string(), today.to_string()], |row| row.get::<_, String>(0))?;
+        let mut expense = Decimal::ZERO;
+        for row in rows {
+            let amount = Decimal::from_str(&row?).expect("amount stored by this crate must be valid");
+            if amount < Decimal::ZERO {
+                expense -= amount;
+            }
+        }
+
+        // `expense * 30 / days_elapsed` rather than `expense / (days_elapsed
+        // / 30)` — the latter's intermediate division (e.g. 10/30) is a
+        // non-terminating decimal, which `Decimal` rounds, so dividing by
+        // that rounded value doesn't exactly invert back out (`300 /
+        // (10/30)` lands a hair off `900.00`, not on it).
+        Ok(expense * Decimal::from(30) / Decimal::from(days_elapsed))
+    }
+
     /// Total income (positive amounts) and total expense (as a positive
     /// "spent" number, from negative amounts) across *every* transaction
     /// in the given month — unlike `monthly_budget_actuals`, not scoped to
@@ -3567,7 +3799,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT amount FROM transactions
              WHERE substr(date, 1, 7) = ?1
-                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL",
         )?;
         let rows = stmt.query_map(params![month_key], |row| row.get::<_, String>(0))?;
 
@@ -3595,11 +3828,13 @@ impl Store {
              WHERE category IS NOT NULL AND date >= ?1 AND date <= ?2
                    AND id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
                    AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL
              UNION ALL
              SELECT ts.category, ts.amount FROM transaction_splits ts
              JOIN transactions t ON t.id = ts.transaction_id
              WHERE ts.category IS NOT NULL AND t.date >= ?1 AND t.date <= ?2
-                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND t.deleted_at IS NULL",
         )?;
         let rows = stmt.query_map(params![start_date.to_string(), end_date.to_string()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -3635,7 +3870,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT description, amount FROM transactions
              WHERE date >= ?1 AND date <= ?2
-                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)",
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL",
         )?;
         let rows = stmt.query_map(params![start_date.to_string(), end_date.to_string()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -3854,6 +4090,16 @@ fn add_months(d: NaiveDate, n: u32) -> NaiveDate {
     result
 }
 
+/// The "YYYY-MM" month key `back` whole months before `year`/`month` (0 =
+/// `year`/`month` itself) — plain integer month arithmetic since callers
+/// only ever need the key string, not a real calendar date.
+fn month_key_back(year: i32, month: u32, back: u32) -> String {
+    let total = i64::from(year) * 12 + i64::from(month) - 1 - i64::from(back);
+    let y = total.div_euclid(12);
+    let m = total.rem_euclid(12) + 1;
+    format!("{y:04}-{m:02}")
+}
+
 /// Adds one year, clamping Feb 29 -> Feb 28 in a non-leap target year.
 fn add_one_year(d: NaiveDate) -> NaiveDate {
     let y = d.year() + 1;
@@ -3875,6 +4121,13 @@ mod tests {
             amount: amount.parse().unwrap(),
             category: None,
         }
+    }
+
+    /// A fixed, arbitrary "now" for tests exercising `delete_transaction`/
+    /// `delete_account` — `core` never reads the system clock itself (see
+    /// `delete_transaction`'s doc comment), so every caller supplies one.
+    fn test_now() -> NaiveDateTime {
+        NaiveDateTime::parse_from_str("2026-08-20 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
     }
 
     /// Most tests don't care about accounts — just need *an* account id to
@@ -5365,7 +5618,7 @@ mod tests {
             .unwrap();
         let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
 
-        store.delete_transaction(ids[0]).unwrap();
+        store.delete_transaction(ids[0], test_now()).unwrap();
 
         let remaining = store.all_transactions().unwrap();
         assert_eq!(remaining.len(), 1);
@@ -5375,7 +5628,50 @@ mod tests {
     #[test]
     fn delete_transaction_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
-        store.delete_transaction(999).unwrap();
+        store.delete_transaction(999, test_now()).unwrap();
+    }
+
+    #[test]
+    fn restoring_a_deleted_transaction_brings_back_its_tags_too() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.save_transactions(account, &[tx("2026-08-05", "Target", "-100.00")]).unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.add_tag(id, "reimbursable").unwrap();
+
+        store.delete_transaction(id, test_now()).unwrap();
+        assert_eq!(store.list_all_tags().unwrap(), Vec::<String>::new(), "a deleted transaction's tags don't leak into autocomplete");
+
+        store.restore_transactions(&[id]).unwrap();
+
+        assert_eq!(store.list_all_tags().unwrap(), vec!["reimbursable".to_string()]);
+    }
+
+    #[test]
+    fn restore_transactions_on_an_unknown_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.restore_transactions(&[999]).unwrap();
+    }
+
+    #[test]
+    fn restore_transactions_restores_every_id_given_at_once() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[tx("2026-08-05", "Target", "-50.00"), tx("2026-08-06", "Costco", "-75.00")],
+            )
+            .unwrap();
+        let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
+        for &id in &ids {
+            store.delete_transaction(id, test_now()).unwrap();
+        }
+        assert!(store.all_transactions().unwrap().is_empty());
+
+        store.restore_transactions(&ids).unwrap();
+
+        assert_eq!(store.all_transactions().unwrap().len(), 2);
     }
 
     // Applying a payment to a debt.
@@ -5481,7 +5777,11 @@ mod tests {
     }
 
     #[test]
-    fn deleting_the_source_transaction_also_removes_its_generated_debt_payment() {
+    fn deleting_the_source_transaction_also_soft_deletes_its_generated_debt_payment() {
+        // Soft-delete: both rows physically survive (so restoring the
+        // source brings its debt-payment twin back too — see
+        // `delete_transaction`'s own doc comment) but neither is visible
+        // through the app's own filtered read.
         let store = Store::open_in_memory().unwrap();
         let checking = test_account(&store);
         let loan = store.get_or_create_account("Car Loan", AccountType::Loan).unwrap();
@@ -5495,9 +5795,14 @@ mod tests {
             .unwrap();
         assert_eq!(raw_transaction_count(&store), 2);
 
-        store.delete_transaction(source_id).unwrap();
+        store.delete_transaction(source_id, test_now()).unwrap();
 
-        assert_eq!(raw_transaction_count(&store), 0);
+        assert_eq!(raw_transaction_count(&store), 2, "both rows must physically survive a soft delete");
+        assert!(store.all_transactions().unwrap().is_empty(), "but neither should be visible");
+
+        store.restore_transactions(&[source_id]).unwrap();
+
+        assert_eq!(store.all_transactions().unwrap().len(), 1, "restoring the source brings both back");
     }
 
     #[test]
@@ -5632,7 +5937,11 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_transaction_deletes_its_splits() {
+    fn deleting_a_transaction_leaves_its_splits_intact_for_restore() {
+        // Soft-delete: splits are deliberately *not* removed, so
+        // `restore_transactions` brings a split transaction back exactly
+        // as it was, not with its splits lost — see `delete_transaction`'s
+        // own doc comment for why.
         let store = Store::open_in_memory().unwrap();
         let account = test_account(&store);
         store
@@ -5643,9 +5952,15 @@ mod tests {
             .set_transaction_splits(id, &[("Groceries".to_string(), "-100.00".parse().unwrap(), None)])
             .unwrap();
 
-        store.delete_transaction(id).unwrap();
+        store.delete_transaction(id, test_now()).unwrap();
 
-        assert_eq!(store.list_transaction_splits(id).unwrap().len(), 0);
+        assert_eq!(store.list_transaction_splits(id).unwrap().len(), 1, "splits must survive a soft delete");
+        assert!(store.all_transactions().unwrap().is_empty(), "but the transaction itself must not be listed");
+
+        store.restore_transactions(&[id]).unwrap();
+
+        assert_eq!(store.list_transaction_splits(id).unwrap().len(), 1, "and still be there after restore");
+        assert_eq!(store.all_transactions().unwrap().len(), 1, "with the transaction visible again");
     }
 
     #[test]
@@ -5782,7 +6097,7 @@ mod tests {
         let id = store.all_transactions().unwrap()[0].id;
         store.add_tag(id, "reimbursable").unwrap();
 
-        store.delete_transaction(id).unwrap();
+        store.delete_transaction(id, test_now()).unwrap();
 
         assert_eq!(store.list_all_tags().unwrap(), Vec::<String>::new());
     }
@@ -6447,6 +6762,70 @@ mod tests {
         let actuals = store.monthly_budget_actuals(2026, 8).unwrap();
 
         assert_eq!(actuals[0].actual, "1200.00".parse().unwrap());
+    }
+
+    #[test]
+    fn month_key_back_walks_backward_across_a_year_boundary() {
+        assert_eq!(month_key_back(2026, 8, 0), "2026-08");
+        assert_eq!(month_key_back(2026, 8, 1), "2026-07");
+        assert_eq!(month_key_back(2026, 8, 8), "2025-12");
+        assert_eq!(month_key_back(2026, 1, 1), "2025-12");
+    }
+
+    #[test]
+    fn budget_actuals_trend_returns_one_point_per_month_oldest_first() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Groceries", "0000-01", "400.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-06-05", "Grocers", "-100.00"),
+                    tx("2026-07-05", "Grocers", "-150.00"),
+                    tx("2026-08-05", "Grocers", "-200.00"),
+                ],
+            )
+            .unwrap();
+        for t in store.all_transactions().unwrap() {
+            store.set_category(t.id, "Groceries", CategorySource::User, None).unwrap();
+        }
+
+        let trend = store.budget_actuals_trend("Groceries", 2026, 8, 3).unwrap();
+
+        assert_eq!(
+            trend,
+            vec![
+                ("2026-06".to_string(), "100.00".parse().unwrap()),
+                ("2026-07".to_string(), "150.00".parse().unwrap()),
+                ("2026-08".to_string(), "200.00".parse().unwrap()),
+            ]
+        );
+    }
+
+    #[test]
+    fn budget_actuals_trend_reports_zero_not_a_missing_point_for_a_month_with_no_spend() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_budget("Pet Care", "0000-01", "50.00".parse().unwrap(), "flexible").unwrap();
+
+        let trend = store.budget_actuals_trend("Pet Care", 2026, 8, 4).unwrap();
+
+        assert_eq!(trend.len(), 4);
+        assert!(trend.iter().all(|(_, amount)| *amount == Decimal::ZERO));
+    }
+
+    #[test]
+    fn budget_actuals_trend_reports_a_positive_actual_for_an_income_category() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Paycheck", "0000-01", "5000.00".parse().unwrap(), "income").unwrap();
+        store.save_transactions(account, &[tx("2026-08-05", "Employer Inc", "1200.00")]).unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.set_category(id, "Paycheck", CategorySource::User, None).unwrap();
+
+        let trend = store.budget_actuals_trend("Paycheck", 2026, 8, 1).unwrap();
+
+        assert_eq!(trend, vec![("2026-08".to_string(), "1200.00".parse().unwrap())]);
     }
 
     // Transactions for a category in a month (Budget page drill-down).
@@ -7983,6 +8362,52 @@ mod tests {
         let points = store.cash_flow_forecast("2026-08-20".parse().unwrap(), 5).unwrap();
 
         assert_eq!(points[0].balance, "1000.00".parse().unwrap(), "investment balance must not count");
+    }
+
+    #[test]
+    fn average_monthly_spend_is_zero_with_no_transaction_history() {
+        let store = Store::open_in_memory().unwrap();
+
+        let avg = store.average_monthly_spend("2026-08-20".parse().unwrap()).unwrap();
+
+        assert_eq!(avg, Decimal::ZERO);
+    }
+
+    #[test]
+    fn average_monthly_spend_divides_trailing_window_spend_by_months_in_that_window() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        // 30 days of history, $900 spent, $500 deposited — spend only,
+        // income must not offset it.
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-07-21", "Rent", "-900.00"),
+                    tx("2026-07-25", "Payroll Deposit", "500.00"),
+                ],
+            )
+            .unwrap();
+
+        let avg = store.average_monthly_spend("2026-08-20".parse().unwrap()).unwrap();
+
+        // Window clamps to the 30 days of actual history (earliest tx to
+        // today), not the full 90-day cap — 900 spent / (30/30) months.
+        assert_eq!(avg, "900.00".parse().unwrap());
+    }
+
+    #[test]
+    fn average_monthly_spend_clamps_the_window_to_available_history_not_a_blind_90_days() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        // Only 10 days of history — the window must clamp to that, not
+        // divide by a full 90/30 = 3 months' worth.
+        store.save_transactions(account, &[tx("2026-08-10", "Rent", "-300.00")]).unwrap();
+
+        let avg = store.average_monthly_spend("2026-08-20".parse().unwrap()).unwrap();
+
+        // 300 spent over a 10-day window == 1/3 month -> 900/month average.
+        assert_eq!(avg, "900.00".parse().unwrap());
     }
 
     // Cash flow aggregates.

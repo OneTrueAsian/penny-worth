@@ -61,7 +61,12 @@ function NewBucketForm({
   }
 
   if (!open) {
-    return <button onClick={() => setOpen(true)}>New bucket…</button>;
+    return (
+      <button type="button" className="add-tile" onClick={() => setOpen(true)}>
+        <span className="add-tile-plus" aria-hidden="true">+</span>
+        New bucket…
+      </button>
+    );
   }
 
   return (
@@ -87,12 +92,14 @@ function NewBucketForm({
           ))}
         </select>
       )}
-      <button type="submit" disabled={!name.trim()}>
-        Create
-      </button>
-      <button type="button" className="modal-secondary" onClick={() => setOpen(false)}>
-        Cancel
-      </button>
+      <div className="bucket-new-form-actions">
+        <button type="submit" disabled={!name.trim()}>
+          Create
+        </button>
+        <button type="button" className="modal-secondary" onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
     </form>
   );
 }
@@ -157,6 +164,9 @@ export function BucketsView({
 
   return (
     <div className="buckets-view">
+      {buckets.length === 0 && (
+        <p className="empty-state">No savings buckets yet — create one to start tracking a goal.</p>
+      )}
       <div className="buckets-grid">
         {buckets.map((b) => {
           const saved = parseFloat(b.saved_amount);
@@ -205,11 +215,8 @@ export function BucketsView({
             </div>
           );
         })}
+        <NewBucketForm accounts={accounts} familyMembers={familyMembers} onCreate={onCreateBucket} />
       </div>
-      {buckets.length === 0 && (
-        <p className="empty-state">No savings buckets yet — create one to start tracking a goal.</p>
-      )}
-      <NewBucketForm accounts={accounts} familyMembers={familyMembers} onCreate={onCreateBucket} />
     </div>
   );
 }

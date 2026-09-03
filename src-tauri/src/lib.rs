@@ -5,6 +5,7 @@ mod finnhub;
 mod live_price_provider;
 mod live_prices;
 mod profiles;
+mod stockdata;
 mod twelve_data;
 mod updater;
 
@@ -125,6 +126,7 @@ pub fn run() {
             commands::update_transaction_amount,
             commands::update_transaction_account,
             commands::delete_transaction,
+            commands::restore_transactions,
             commands::apply_debt_payment,
             commands::unapply_debt_payment,
             commands::get_transaction_splits,
@@ -144,6 +146,7 @@ pub fn run() {
             commands::delete_budget,
             commands::get_report,
             commands::budget_actuals_for_month,
+            commands::budget_actuals_trend,
             commands::transactions_for_category,
             commands::budget_alerts_for_month,
             commands::dashboard_insights,
@@ -175,6 +178,7 @@ pub fn run() {
             commands::month_expense_detail,
             commands::year_over_year_cash_flow,
             commands::cash_flow_forecast,
+            commands::average_monthly_spend,
             commands::net_worth_history,
             commands::spending_this_month,
             commands::check_monthly_rollover,

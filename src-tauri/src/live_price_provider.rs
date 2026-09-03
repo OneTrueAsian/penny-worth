@@ -10,6 +10,7 @@ pub enum LivePriceProvider {
     AlphaVantage,
     Finnhub,
     TwelveData,
+    StockData,
 }
 
 impl LivePriceProvider {
@@ -22,6 +23,7 @@ impl LivePriceProvider {
             LivePriceProvider::AlphaVantage => "alpha_vantage",
             LivePriceProvider::Finnhub => "finnhub",
             LivePriceProvider::TwelveData => "twelve_data",
+            LivePriceProvider::StockData => "stockdata_org",
         }
     }
 
@@ -30,6 +32,7 @@ impl LivePriceProvider {
             "alpha_vantage" => Some(LivePriceProvider::AlphaVantage),
             "finnhub" => Some(LivePriceProvider::Finnhub),
             "twelve_data" => Some(LivePriceProvider::TwelveData),
+            "stockdata_org" => Some(LivePriceProvider::StockData),
             _ => None,
         }
     }
@@ -40,6 +43,7 @@ impl LivePriceProvider {
             LivePriceProvider::AlphaVantage => "Alpha Vantage",
             LivePriceProvider::Finnhub => "Finnhub",
             LivePriceProvider::TwelveData => "Twelve Data",
+            LivePriceProvider::StockData => "StockData.org",
         }
     }
 
@@ -54,11 +58,28 @@ impl LivePriceProvider {
             LivePriceProvider::AlphaVantage => Some(crate::live_prices::ALPHA_VANTAGE_DAILY_LIMIT),
             LivePriceProvider::Finnhub => None,
             LivePriceProvider::TwelveData => Some(crate::twelve_data::TWELVE_DATA_DAILY_LIMIT),
+            LivePriceProvider::StockData => Some(crate::stockdata::STOCKDATA_DAILY_LIMIT),
+        }
+    }
+
+    /// How many symbols this provider can price in a single request —
+    /// `None` means "no batching, one request per symbol" (every provider
+    /// except StockData.org today). `refresh_live_prices` (commands.rs)
+    /// uses this to compute how many requests a refresh actually costs for
+    /// quota-recording purposes, separately from `fetch_quotes` below
+    /// actually doing the chunking.
+    pub fn max_batch_size(self) -> Option<usize> {
+        match self {
+            LivePriceProvider::StockData => Some(crate::stockdata::MAX_SYMBOLS_PER_REQUEST),
+            _ => None,
         }
     }
 }
 
-/// Dispatches to whichever provider's own `fetch_quote`.
+/// Dispatches to whichever provider's own single-symbol `fetch_quote` —
+/// used by `fetch_live_quote`'s New Holding autofill, which is inherently
+/// one-symbol-at-a-time regardless of what any provider's batch endpoint
+/// can do.
 pub async fn fetch_quote(
     provider: LivePriceProvider,
     client: &reqwest::Client,
@@ -69,6 +90,57 @@ pub async fn fetch_quote(
         LivePriceProvider::AlphaVantage => crate::live_prices::fetch_quote(client, api_key, symbol).await,
         LivePriceProvider::Finnhub => crate::finnhub::fetch_quote(client, api_key, symbol).await,
         LivePriceProvider::TwelveData => crate::twelve_data::fetch_quote(client, api_key, symbol).await,
+        LivePriceProvider::StockData => crate::stockdata::fetch_quote(client, api_key, symbol).await,
+    }
+}
+
+/// Prices every symbol in `symbols`, using `fetch_quote` in a plain loop
+/// for a provider with no batching (`max_batch_size() == None` — zero
+/// behavior change from before this function existed, for the three
+/// original providers), or chunking into `max_batch_size()`-sized groups
+/// and calling StockData.org's batch endpoint for one that has it. Always
+/// returns exactly one entry per input symbol, in order — a failure
+/// fetching one chunk fails every symbol in that chunk (unavoidable: they
+/// shared one HTTP request), but never touches symbols in other chunks.
+///
+/// Deliberately hardcodes the `Some(n)` branch to `stockdata::fetch_quotes_batch`
+/// rather than a second per-provider dispatch table, since StockData.org
+/// is the only batching provider that exists right now — worth
+/// generalizing only if/when a second one shows up.
+pub async fn fetch_quotes(
+    provider: LivePriceProvider,
+    client: &reqwest::Client,
+    api_key: &str,
+    symbols: &[String],
+) -> Vec<(String, Result<Option<Decimal>, String>)> {
+    match provider.max_batch_size() {
+        None => {
+            let mut results = Vec::with_capacity(symbols.len());
+            for symbol in symbols {
+                let result = fetch_quote(provider, client, api_key, symbol).await;
+                results.push((symbol.clone(), result));
+            }
+            results
+        }
+        Some(batch_size) => {
+            let mut results = Vec::with_capacity(symbols.len());
+            for chunk in symbols.chunks(batch_size) {
+                match crate::stockdata::fetch_quotes_batch(client, api_key, chunk).await {
+                    Ok(mut quotes) => {
+                        for symbol in chunk {
+                            let price = quotes.remove(symbol).flatten();
+                            results.push((symbol.clone(), Ok(price)));
+                        }
+                    }
+                    Err(error) => {
+                        for symbol in chunk {
+                            results.push((symbol.clone(), Err(error.clone())));
+                        }
+                    }
+                }
+            }
+            results
+        }
     }
 }
 
@@ -76,8 +148,12 @@ pub async fn fetch_quote(
 mod tests {
     use super::*;
 
-    const ALL: [LivePriceProvider; 3] =
-        [LivePriceProvider::AlphaVantage, LivePriceProvider::Finnhub, LivePriceProvider::TwelveData];
+    const ALL: [LivePriceProvider; 4] = [
+        LivePriceProvider::AlphaVantage,
+        LivePriceProvider::Finnhub,
+        LivePriceProvider::TwelveData,
+        LivePriceProvider::StockData,
+    ];
 
     #[test]
     fn as_str_and_parse_round_trip_for_every_provider() {
@@ -102,5 +178,14 @@ mod tests {
         assert_eq!(LivePriceProvider::AlphaVantage.daily_limit(), Some(25));
         assert_eq!(LivePriceProvider::Finnhub.daily_limit(), None);
         assert_eq!(LivePriceProvider::TwelveData.daily_limit(), Some(800));
+        assert_eq!(LivePriceProvider::StockData.daily_limit(), Some(100));
+    }
+
+    #[test]
+    fn max_batch_size_is_only_set_for_stockdata() {
+        assert_eq!(LivePriceProvider::AlphaVantage.max_batch_size(), None);
+        assert_eq!(LivePriceProvider::Finnhub.max_batch_size(), None);
+        assert_eq!(LivePriceProvider::TwelveData.max_batch_size(), None);
+        assert_eq!(LivePriceProvider::StockData.max_batch_size(), Some(3));
     }
 }

@@ -31,7 +31,7 @@ export type Profile = {
   is_active: boolean;
 };
 
-export type LivePriceProviderId = "alpha_vantage" | "finnhub" | "twelve_data";
+export type LivePriceProviderId = "alpha_vantage" | "finnhub" | "twelve_data" | "stockdata_org";
 
 export type LivePriceSettings = {
   enabled: boolean;

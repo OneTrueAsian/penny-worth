@@ -2,6 +2,7 @@ import { DragEvent, FormEvent, useEffect, useState } from "react";
 import type { BudgetAlert, ReportBudgetLine } from "./types";
 import { formatAmount } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { Sparkline } from "./charts";
 
 const GROUP_ORDER = ["income", "fixed", "flexible", "nonmonthly"] as const;
 type Group = (typeof GROUP_ORDER)[number];
@@ -122,6 +123,7 @@ function BudgetRow({
   setConfirmingDelete,
   onDeleteBudget,
   onCategoryClick,
+  onFetchTrend,
   isDragging,
   onDragStart,
   onDragOver,
@@ -137,6 +139,7 @@ function BudgetRow({
   setConfirmingDelete: (c: string | null) => void;
   onDeleteBudget: (category: string) => void;
   onCategoryClick: (category: string) => void;
+  onFetchTrend: (category: string) => Promise<{ month: string; actual: string }[]>;
   isDragging: boolean;
   onDragStart: (e: DragEvent) => void;
   onDragOver: (e: DragEvent) => void;
@@ -164,6 +167,22 @@ function BudgetRow({
     onSetBudget(line.category, value.trim(), line.budget_group);
   }
 
+  // Flexible Spending only — this is the group most likely to actually
+  // drift month to month (Fixed/Income are close to flat by definition),
+  // and fetched lazily per row rather than bulk-loaded for every category
+  // up front.
+  const [trend, setTrend] = useState<number[] | null>(null);
+  useEffect(() => {
+    if (line.budget_group !== "flexible") return;
+    let cancelled = false;
+    onFetchTrend(line.category).then((points) => {
+      if (!cancelled) setTrend(points.map((p) => parseFloat(p.actual)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [line.category, line.budget_group, onFetchTrend]);
+
   return (
     <div
       draggable
@@ -177,12 +196,15 @@ function BudgetRow({
         <span className="drag-handle" title="Drag to reorder">
           ⠿
         </span>
-        <span
-          className="category-link"
-          title={`See every transaction under ${line.category} this month`}
-          onClick={() => onCategoryClick(line.category)}
-        >
-          {line.category}
+        <span className="cat-row-name-stack">
+          <span
+            className="category-link"
+            title={`See every transaction under ${line.category} this month`}
+            onClick={() => onCategoryClick(line.category)}
+          >
+            {line.category}
+          </span>
+          {trend && <Sparkline points={trend} width={40} height={12} color="var(--info)" />}
         </span>
         {alertLevel && (
           <span
@@ -271,6 +293,7 @@ export function BudgetView({
   onSetBudget,
   onDeleteBudget,
   onCategoryClick,
+  onFetchTrend,
 }: {
   categories: string[];
   budgetActuals: ReportBudgetLine[];
@@ -281,6 +304,7 @@ export function BudgetView({
   onSetBudget: (category: string, monthlyAmount: string, budgetGroup: string) => void;
   onDeleteBudget: (category: string) => void;
   onCategoryClick: (category: string) => void;
+  onFetchTrend: (category: string) => Promise<{ month: string; actual: string }[]>;
 }) {
   const alertByCategory = new Map(budgetAlerts.map((a) => [a.category, a.level]));
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -409,6 +433,7 @@ export function BudgetView({
                   setConfirmingDelete={setConfirmingDelete}
                   onDeleteBudget={onDeleteBudget}
                   onCategoryClick={onCategoryClick}
+                  onFetchTrend={onFetchTrend}
                   isDragging={dragCategory === line.category}
                   onDragStart={(e) => {
                     // Native drag-and-drop requires a payload via

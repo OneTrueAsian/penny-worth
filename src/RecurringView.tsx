@@ -5,6 +5,74 @@ import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 export const CADENCE_OPTIONS = ["weekly", "biweekly", "monthly", "annual"];
 
+/** One calendar month forward, clamping the day-of-month into range (Jan
+ * 31 + 1 month -> Feb 28/29, not Mar 3) — same reasoning as the backend's
+ * `add_one_month` (core/src/store.rs), reimplemented here since cadence
+ * projection is deliberately client-side and self-contained (see
+ * `projectOccurrencesInMonth`'s doc comment). */
+function addOneMonthClamped(d: Date): Date {
+  const day = d.getDate();
+  const daysInNextMonth = new Date(d.getFullYear(), d.getMonth() + 2, 0).getDate();
+  return new Date(d.getFullYear(), d.getMonth() + 1, Math.min(day, daysInNextMonth));
+}
+
+/** One year forward, clamping Feb 29 -> Feb 28 in a non-leap target year. */
+function addOneYearClamped(d: Date): Date {
+  const targetYear = d.getFullYear() + 1;
+  const daysInTargetMonth = new Date(targetYear, d.getMonth() + 1, 0).getDate();
+  return new Date(targetYear, d.getMonth(), Math.min(d.getDate(), daysInTargetMonth));
+}
+
+function stepDate(d: Date, cadence: string): Date {
+  switch (cadence) {
+    case "weekly":
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7);
+    case "biweekly":
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 14);
+    case "monthly":
+      return addOneMonthClamped(d);
+    case "annual":
+      return addOneYearClamped(d);
+    default:
+      // Unrecognized cadence string (`Recurring.cadence` is plain
+      // `string`, not a literal union — see types.ts) — fall back to
+      // monthly rather than looping forever or crashing.
+      return addOneMonthClamped(d);
+  }
+}
+
+function toIsoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Every date `item` actually lands on within `year`/`month` (1-12),
+ * walking forward from `anchor_date` by cadence step — pure and
+ * self-contained (no backend round-trip) since `next_date` alone only
+ * carries the *next single* occurrence, not every occurrence in an
+ * arbitrary displayed month. Usually one date for monthly/annual items,
+ * possibly several for weekly/biweekly ones. Capped at 2000 steps as a
+ * safety net against a runaway loop; a real anchor/cadence pair never
+ * comes close (a 10-year-old weekly item is ~520 steps to "now"). */
+export function projectOccurrencesInMonth(item: { anchor_date: string; cadence: string }, year: number, month: number): string[] {
+  const [ay, am, ad] = item.anchor_date.split("-").map(Number);
+  let current = new Date(ay, am - 1, ad);
+  const targetStart = new Date(year, month - 1, 1);
+  const targetEnd = new Date(year, month, 0);
+  if (current > targetEnd) return [];
+
+  const occurrences: string[] = [];
+  let steps = 0;
+  while (current <= targetEnd && steps < 2000) {
+    if (current >= targetStart) occurrences.push(toIsoDate(current));
+    current = stepDate(current, item.cadence);
+    steps++;
+  }
+  return occurrences;
+}
+
 function SuggestedRecurringSection({
   candidates,
   onAdd,
@@ -322,6 +390,51 @@ export function RecurringView({
       return s + parseFloat(r.amount) * multiplier;
     }, 0);
 
+  // Not persisted across sessions (unlike theme/nav-order) — not worth
+  // remembering, matching the original design call.
+  const [view, setView] = useState<"list" | "calendar">("list");
+  const now = new Date();
+  const [calendarYear, setCalendarYear] = useState(now.getFullYear());
+  const [calendarMonth, setCalendarMonth] = useState(now.getMonth() + 1); // 1-12
+
+  const calendarLabel = new Date(calendarYear, calendarMonth - 1, 1).toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
+  function prevCalendarMonth() {
+    if (calendarMonth === 1) {
+      setCalendarYear((y) => y - 1);
+      setCalendarMonth(12);
+    } else {
+      setCalendarMonth((m) => m - 1);
+    }
+  }
+  function nextCalendarMonth() {
+    if (calendarMonth === 12) {
+      setCalendarYear((y) => y + 1);
+      setCalendarMonth(1);
+    } else {
+      setCalendarMonth((m) => m + 1);
+    }
+  }
+
+  // date (ISO string) -> every recurring item landing on it this month.
+  const occurrencesByDate = new Map<string, Recurring[]>();
+  for (const item of recurring) {
+    for (const date of projectOccurrencesInMonth(item, calendarYear, calendarMonth)) {
+      const existing = occurrencesByDate.get(date);
+      if (existing) existing.push(item);
+      else occurrencesByDate.set(date, [item]);
+    }
+  }
+
+  const firstOfMonth = new Date(calendarYear, calendarMonth - 1, 1);
+  const daysInCalendarMonth = new Date(calendarYear, calendarMonth, 0).getDate();
+  const calendarCells: (string | null)[] = [];
+  for (let i = 0; i < firstOfMonth.getDay(); i++) calendarCells.push(null);
+  for (let d = 1; d <= daysInCalendarMonth; d++) calendarCells.push(toIsoDate(new Date(calendarYear, calendarMonth - 1, d)));
+  while (calendarCells.length % 7 !== 0) calendarCells.push(null);
+
   return (
     <div className="buckets-view">
       <div className="stats">
@@ -341,6 +454,64 @@ export function RecurringView({
 
       <SuggestedRecurringSection candidates={candidates} onAdd={onAddCandidate} onDismiss={onDismissCandidate} />
 
+      <div className="view-toggle" role="group" aria-label="List or calendar view">
+        <button type="button" className={view === "list" ? "view-toggle-active" : ""} onClick={() => setView("list")}>
+          List
+        </button>
+        <button
+          type="button"
+          className={view === "calendar" ? "view-toggle-active" : ""}
+          onClick={() => setView("calendar")}
+        >
+          Calendar
+        </button>
+      </div>
+
+      {view === "calendar" && (
+        <div className="card">
+          <div className="month-nav">
+            <button type="button" className="modal-secondary" onClick={prevCalendarMonth} aria-label="Previous month">
+              ‹
+            </button>
+            <span className="month-label">{calendarLabel}</span>
+            <button type="button" className="modal-secondary" onClick={nextCalendarMonth} aria-label="Next month">
+              ›
+            </button>
+          </div>
+          <div className="cal-grid">
+            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
+              <div key={label} className="cal-weekday">
+                {label}
+              </div>
+            ))}
+            {calendarCells.map((date, i) => {
+              if (!date) return <div key={i} className="cal-day cal-day-empty" />;
+              const items = occurrencesByDate.get(date) ?? [];
+              return (
+                <div key={date} className={date === todayIso ? "cal-day cal-day-today" : "cal-day"}>
+                  <span className="cal-day-num">{Number(date.slice(-2))}</span>
+                  {items.map((item, j) => (
+                    <div
+                      key={`${item.id}-${j}`}
+                      // `isDueSoon` assumes today-or-later by construction
+                      // (see its own comment) — true for `r.next_date` in
+                      // the list view, but the calendar can show *past*
+                      // days in the current month too, which must never
+                      // read as "coming up soon."
+                      className={date >= todayIso && isDueSoon(date) ? "cal-item cal-item-due-soon" : "cal-item"}
+                      title={`${item.merchant} — ${formatAmount(item.amount)}`}
+                    >
+                      {item.merchant}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {view === "list" && (
       <table className="ledger">
         <thead>
           <tr>
@@ -414,6 +585,7 @@ export function RecurringView({
           )}
         </tbody>
       </table>
+      )}
 
       <NewRecurringForm accounts={accounts} familyMembers={familyMembers} onCreate={onCreate} />
     </div>

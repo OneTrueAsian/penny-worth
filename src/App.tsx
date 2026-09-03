@@ -38,6 +38,7 @@ import { UpdateBanner } from "./UpdateBanner";
 import { NavIcon } from "./icons";
 import { formatAmount } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { useDelayedVisibility } from "./useDelayedVisibility";
 import type {
   Account,
   AnomalyFlag,
@@ -203,6 +204,46 @@ const PINNED_NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
 
 const THEME_STORAGE_KEY = "meadow-theme";
 const NAV_ORDER_STORAGE_KEY = "meadow-nav-order";
+const SAVED_FILTERS_STORAGE_KEY = "meadow-saved-ledger-filters";
+
+/** A named snapshot of the Ledger's filter bar — a per-viewer shortcut,
+ * same localStorage tier as theme/nav order. `filterAccountIds`/
+ * `filterMemberIds` are stored as plain arrays (`Set` doesn't survive
+ * `JSON.stringify`) and rehydrated back to `Set`s on apply — see
+ * `applySavedFilter`. A saved account/category/tag that's since been
+ * deleted just matches nothing once applied, the same as typing a filter
+ * that happens to match zero rows — nothing here needs it to still exist. */
+type SavedLedgerFilter = {
+  name: string;
+  searchText: string;
+  filterCategory: string;
+  filterAccountIds: number[] | "all";
+  filterMemberIds: number[] | "all";
+  filterFrom: string;
+  filterTo: string;
+  filterTag: string;
+};
+
+function loadSavedFilters(): SavedLedgerFilter[] {
+  try {
+    const stored = localStorage.getItem(SAVED_FILTERS_STORAGE_KEY);
+    if (stored) {
+      const parsed: unknown = JSON.parse(stored);
+      if (Array.isArray(parsed)) return parsed as SavedLedgerFilter[];
+    }
+  } catch {
+    // corrupt/unavailable storage — fall back to no saved filters
+  }
+  return [];
+}
+
+function saveSavedFilters(filters: SavedLedgerFilter[]) {
+  try {
+    localStorage.setItem(SAVED_FILTERS_STORAGE_KEY, JSON.stringify(filters));
+  } catch {
+    // per-viewer preference only — fine to skip if storage is unavailable
+  }
+}
 
 /** Reads the sidebar's saved custom order — a per-viewer UI preference,
  * same as theme, so it lives in localStorage rather than the database.
@@ -233,7 +274,23 @@ function loadNavOrder(): Tab[] {
  * `.status-*` rules), with its own dismiss button since errors stay up
  * longer than the auto-dismiss timer and a raw error string is worth being
  * able to clear once read. */
-function StatusBanner({ text, kind, onDismiss }: { text: string; kind: StatusKind; onDismiss: () => void }) {
+function StatusBanner({
+  text,
+  kind,
+  action,
+  onDismiss,
+}: {
+  text: string;
+  kind: StatusKind;
+  /** An optional extra button (e.g. "Undo") next to the dismiss ×, as a
+   * sibling — not nested inside it, so it's independently clickable/
+   * focusable. Used by the Ledger's bulk-delete undo toast, which is its
+   * own independent piece of state from `status` (see `undoToast` below)
+   * precisely so a routine confirmation elsewhere can't clobber an active
+   * undo window — both just render through this one shared component. */
+  action?: { label: string; onClick: () => void };
+  onDismiss: () => void;
+}) {
   return (
     <p className={`status status-${kind}`} role={kind === "error" ? "alert" : "status"}>
       <svg className="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -242,6 +299,11 @@ function StatusBanner({ text, kind, onDismiss }: { text: string; kind: StatusKin
         {kind === "info" && <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>}
       </svg>
       <span className="status-text">{text}</span>
+      {action && (
+        <button type="button" className="status-action" onClick={action.onClick}>
+          {action.label}
+        </button>
+      )}
       <button type="button" className="status-dismiss" onClick={onDismiss} aria-label="Dismiss message">
         ×
       </button>
@@ -281,6 +343,48 @@ function App({
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
   const [filterTag, setFilterTag] = useState("all");
+  const [savedFilters, setSavedFilters] = useState<SavedLedgerFilter[]>(loadSavedFilters);
+  const [savingFilter, setSavingFilter] = useState(false);
+  const [newFilterName, setNewFilterName] = useState("");
+
+  function saveCurrentFilter() {
+    const name = newFilterName.trim();
+    if (!name) return;
+    const snapshot: SavedLedgerFilter = {
+      name,
+      searchText,
+      filterCategory,
+      filterAccountIds: filterAccountIds === "all" ? "all" : Array.from(filterAccountIds),
+      filterMemberIds: filterMemberIds === "all" ? "all" : Array.from(filterMemberIds),
+      filterFrom,
+      filterTo,
+      filterTag,
+    };
+    // Saving under a name that's already in use replaces it, rather than
+    // accumulating duplicates.
+    const next = [...savedFilters.filter((f) => f.name !== name), snapshot];
+    setSavedFilters(next);
+    saveSavedFilters(next);
+    setNewFilterName("");
+    setSavingFilter(false);
+  }
+
+  function applySavedFilter(filter: SavedLedgerFilter) {
+    setSearchText(filter.searchText);
+    setFilterCategory(filter.filterCategory);
+    setFilterAccountIds(filter.filterAccountIds === "all" ? "all" : new Set(filter.filterAccountIds));
+    setFilterMemberIds(filter.filterMemberIds === "all" ? "all" : new Set(filter.filterMemberIds));
+    setFilterFrom(filter.filterFrom);
+    setFilterTo(filter.filterTo);
+    setFilterTag(filter.filterTag);
+  }
+
+  function deleteSavedFilter(name: string) {
+    const next = savedFilters.filter((f) => f.name !== name);
+    setSavedFilters(next);
+    saveSavedFilters(next);
+  }
+
   const [sortColumn, setSortColumn] = useState<LedgerSortColumn>("date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -556,6 +660,7 @@ function App({
   const [pendingExistingDbPath, setPendingExistingDbPath] = useState<string | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
+  const { shouldRender: moreMenuShouldRender, closing: moreMenuClosing } = useDelayedVisibility(moreMenuOpen);
 
   // Closes the Ledger toolbar's "More" menu on an outside click — same
   // pattern as MoreFiltersPopover/AccountFilterDropdown.
@@ -583,6 +688,15 @@ function App({
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmingBulkDelete, setConfirmingBulkDelete] = useState(false);
   useAutoCancelDelete(confirmingBulkDelete, () => setConfirmingBulkDelete(false));
+  // Its own independent state from `status` (not a `setStatus(...)` call)
+  // so a routine message elsewhere can never clobber an active undo
+  // window — see `StatusBanner`'s own comment on the `action` prop.
+  const [undoToast, setUndoToast] = useState<{ text: string; ids: number[] } | null>(null);
+  useEffect(() => {
+    if (!undoToast) return;
+    const timer = setTimeout(() => setUndoToast(null), 10000);
+    return () => clearTimeout(timer);
+  }, [undoToast]);
   const [pageSize, setPageSize] = useState(50);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -874,19 +988,22 @@ function App({
   const [spendingThisMonth, setSpendingThisMonth] = useState<CategoryAmount[]>([]);
   const [dashboardBudgetAlerts, setDashboardBudgetAlerts] = useState<BudgetAlert[]>([]);
   const [dashboardInsights, setDashboardInsights] = useState<Insight[]>([]);
+  const [avgMonthlySpend, setAvgMonthlySpend] = useState("0");
 
   const refreshDashboard = useCallback(async () => {
     const today = new Date();
-    const [nw, spend, alerts, insights] = await Promise.all([
+    const [nw, spend, alerts, insights, avgSpend] = await Promise.all([
       invoke<NetWorthPoint[]>("net_worth_history", { months: 6 }),
       invoke<CategoryAmount[]>("spending_this_month"),
       invoke<BudgetAlert[]>("budget_alerts_for_month", { year: today.getFullYear(), month: today.getMonth() + 1 }),
       invoke<Insight[]>("dashboard_insights"),
+      invoke<string>("average_monthly_spend"),
     ]);
     setNetWorthHistory(nw);
     setSpendingThisMonth(spend);
     setDashboardBudgetAlerts(alerts);
     setDashboardInsights(insights);
+    setAvgMonthlySpend(avgSpend);
   }, []);
 
   useEffect(() => {
@@ -959,6 +1076,25 @@ function App({
     setBudgetMonthActuals(actuals);
     setBudgetAlerts(alerts);
   }, []);
+
+  // Memoized so `BudgetRow`'s fetch-on-mount effect (keyed on this
+  // function's identity, see BudgetView.tsx) only refires when the viewed
+  // month actually changes — not on every unrelated App re-render.
+  const handleFetchBudgetTrend = useCallback(
+    async (category: string): Promise<{ month: string; actual: string }[]> => {
+      try {
+        return await invoke<{ month: string; actual: string }[]>("budget_actuals_trend", {
+          category,
+          year: budgetYear,
+          month: budgetMonthNum,
+          months: 4,
+        });
+      } catch {
+        return []; // decorative sparkline only — swallow errors rather than interrupting the row
+      }
+    },
+    [budgetYear, budgetMonthNum],
+  );
 
   useEffect(() => {
     checkMonthlyRollover()
@@ -2035,9 +2171,23 @@ function App({
     setConfirmingBulkDelete(false);
     const ids = Array.from(selectedIds);
     try {
-      await invoke("bulk_delete_transactions", { ids });
+      const deletedIds = await invoke<number[]>("bulk_delete_transactions", { ids });
       setSelectedIds(new Set());
       await refresh();
+      setUndoToast({ text: `Deleted ${deletedIds.length} transaction(s).`, ids: deletedIds });
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleUndoBulkDelete() {
+    if (!undoToast) return;
+    const ids = undoToast.ids;
+    setUndoToast(null);
+    try {
+      await invoke("restore_transactions", { ids });
+      await refresh();
+      setStatus(`Restored ${ids.length} transaction(s).`, "success");
     } catch (e) {
       setStatus(String(e));
     }
@@ -2205,8 +2355,8 @@ function App({
                 >
                   ⋯
                 </button>
-                {moreMenuOpen && (
-                  <div className="more-menu-panel">
+                {moreMenuShouldRender && (
+                  <div className={moreMenuClosing ? "more-menu-panel more-menu-panel-closing" : "more-menu-panel"}>
                     <button
                       type="button"
                       className="more-menu-item"
@@ -2261,6 +2411,14 @@ function App({
 
       <UpdateBanner />
       {status && <StatusBanner text={status.text} kind={status.kind} onDismiss={() => setStatusState(null)} />}
+      {undoToast && (
+        <StatusBanner
+          text={undoToast.text}
+          kind="info"
+          action={{ label: "Undo", onClick: handleUndoBulkDelete }}
+          onDismiss={() => setUndoToast(null)}
+        />
+      )}
 
       {activeTab === "dashboard" && (
         <DashboardView
@@ -2272,6 +2430,7 @@ function App({
           transactions={transactions}
           budgetAlerts={dashboardBudgetAlerts}
           insights={dashboardInsights}
+          avgMonthlySpend={avgMonthlySpend}
           assetsTotal={assets.reduce((s, a) => s + parseFloat(a.value), 0)}
           onOpenLedger={() => setActiveTab("ledger")}
           onOpenRecurring={() => setActiveTab("recurring")}
@@ -2468,6 +2627,59 @@ function App({
               <option key={tag} value={tag} />
             ))}
           </datalist>
+        </div>
+      )}
+
+      {activeTab === "ledger" && (
+        <div className="saved-filter-bar">
+          {savedFilters.map((f) => (
+            <span key={f.name} className="saved-filter-chip">
+              <button type="button" onClick={() => applySavedFilter(f)} title={`Apply saved filter "${f.name}"`}>
+                {f.name}
+              </button>
+              <button
+                type="button"
+                className="saved-filter-chip-remove"
+                onClick={() => deleteSavedFilter(f.name)}
+                aria-label={`Remove saved filter ${f.name}`}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          {savingFilter ? (
+            <form
+              className="saved-filter-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveCurrentFilter();
+              }}
+            >
+              <input
+                autoFocus
+                value={newFilterName}
+                onChange={(e) => setNewFilterName(e.target.value)}
+                placeholder='e.g. "Uncategorized this month"'
+              />
+              <button type="submit" className="btn-sm" disabled={!newFilterName.trim()}>
+                Save
+              </button>
+              <button
+                type="button"
+                className="modal-secondary btn-sm"
+                onClick={() => {
+                  setSavingFilter(false);
+                  setNewFilterName("");
+                }}
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <button type="button" className="modal-secondary btn-sm" onClick={() => setSavingFilter(true)}>
+              + Save current filter…
+            </button>
+          )}
         </div>
       )}
 
@@ -2875,6 +3087,7 @@ function App({
           onSetBudget={handleSetBudget}
           onDeleteBudget={handleDeleteBudget}
           onCategoryClick={handleCategoryClick}
+          onFetchTrend={handleFetchBudgetTrend}
         />
       )}
 
@@ -3277,6 +3490,7 @@ function App({
           categories={categoryOptions}
           familyMembers={familyMembers}
           defaultAccountId={selectedAccountId}
+          budgetActuals={report?.budget_actuals ?? []}
           onCancel={() => setNewTransactionOpen(false)}
           onSubmit={handleCreateManualTransaction}
         />

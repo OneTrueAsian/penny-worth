@@ -1,8 +1,21 @@
 import { useState } from "react";
 import type { Account, BudgetAlert, CategoryAmount, Insight, NetWorthPoint, Recurring, Report, Transaction } from "./types";
-import { DonutChart, LineChart, Sparkline, fmtMoneyShort } from "./charts";
+import { DonutChart, LineChart, ProgressRing, Sparkline, fmtMoneyShort } from "./charts";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
+
+const CHECKLIST_DISMISSED_KEY = "meadow-checklist-dismissed";
+
+/** Same try/parse/catch-fallback shape as `loadNavOrder`/`theme` in
+ * App.tsx — a per-viewer UI preference, not app data, so it lives in
+ * localStorage rather than the database. */
+function loadChecklistDismissed(): boolean {
+  try {
+    return localStorage.getItem(CHECKLIST_DISMISSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 const CATEGORY_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9"];
 const GROUP_ORDER = ["income", "fixed", "flexible", "nonmonthly"] as const;
@@ -50,6 +63,7 @@ export function DashboardView({
   transactions,
   budgetAlerts,
   insights,
+  avgMonthlySpend,
   assetsTotal,
   onOpenLedger,
   onOpenRecurring,
@@ -63,6 +77,10 @@ export function DashboardView({
   transactions: Transaction[];
   budgetAlerts: BudgetAlert[];
   insights: Insight[];
+  /** Average of actual spend (money out only) over the trailing ~90 days,
+   * as a decimal string straight from the backend — powers the runway
+   * stat below ("liquid savings ÷ average monthly spend"). */
+  avgMonthlySpend: string;
   /** Total value of manually-tracked assets (Property & Valuables, see the
    * Reports tab) — folded into the *current* Net Worth figure shown here,
    * but deliberately not part of `netWorthHistory`'s trend line (an asset
@@ -79,6 +97,23 @@ export function DashboardView({
 }) {
   const [expandedStat, setExpandedStat] = useState<StatKey | null>(null);
   const [showBudgetAlerts, setShowBudgetAlerts] = useState(false);
+  const [checklistDismissed, setChecklistDismissed] = useState(loadChecklistDismissed);
+
+  function dismissChecklist() {
+    setChecklistDismissed(true);
+    try {
+      localStorage.setItem(CHECKLIST_DISMISSED_KEY, "1");
+    } catch {
+      // per-viewer preference only — fine to skip if storage is unavailable
+    }
+  }
+
+  const checklistSteps = [
+    { done: accounts.length > 0, label: "Add an account", detail: "Checking, savings, credit card — whatever you track.", onClick: onOpenLedger },
+    { done: transactions.length > 0, label: "Import or add transactions", detail: "Import a CSV from your bank, or add one by hand.", onClick: onOpenLedger },
+    { done: (report?.budget_actuals.length ?? 0) > 0, label: "Set up your budget", detail: "Give at least one category a monthly amount.", onClick: onOpenBudget },
+  ];
+  const showChecklist = !checklistDismissed && checklistSteps.some((s) => !s.done);
   const overCount = budgetAlerts.filter((a) => a.level === "over").length;
   const warningCount = budgetAlerts.filter((a) => a.level === "warning").length;
 
@@ -99,6 +134,15 @@ export function DashboardView({
   const cash = cashAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
   const debt = debtAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
   const investments = investmentAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
+
+  // "Months of expenses covered by liquid savings" — null when there's no
+  // spend history to divide by yet (a brand-new file), rather than a
+  // misleading Infinity/0. Ring visualization caps at 6 months (a common
+  // emergency-fund benchmark) = a full ring; the number itself is never
+  // clamped, so "12.4 months" still reads correctly past that point.
+  const avgSpendNum = parseFloat(avgMonthlySpend);
+  const monthsOfRunway = avgSpendNum > 0 ? cash / avgSpendNum : null;
+  const runwayPct = monthsOfRunway !== null ? Math.min(100, Math.max(0, (monthsOfRunway / 6) * 100)) : 0;
 
   // Per-stat sparklines/deltas, straight off the same trailing-months
   // series the big Net worth trend chart uses — real history, not a
@@ -150,6 +194,29 @@ export function DashboardView({
 
   return (
     <div className="reports-view">
+      {showChecklist && (
+        <div className="card checklist-card">
+          <div className="card-head">
+            <span className="reports-section-title">Get started</span>
+            <button type="button" className="status-dismiss" onClick={dismissChecklist} aria-label="Dismiss checklist">
+              ×
+            </button>
+          </div>
+          <ul className="checklist-list">
+            {checklistSteps.map((step) => (
+              <li key={step.label} className={step.done ? "checklist-step checklist-step-done" : "checklist-step"}>
+                <button type="button" className="checklist-step-btn" onClick={step.onClick} disabled={step.done}>
+                  <span className="checklist-step-check" aria-hidden="true">{step.done ? "✓" : ""}</span>
+                  <span className="checklist-step-text">
+                    <span className="checklist-step-label">{step.label}</span>
+                    <span className="checklist-step-detail">{step.detail}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="stats">
         <button
           type="button"
@@ -225,13 +292,27 @@ export function DashboardView({
         </button>
       </div>
 
-      {expandedStat && (
-        <StatDetailPanel
-          title={STAT_LABELS[expandedStat]}
-          rows={breakdowns[expandedStat]}
-          emptyMessage="No accounts contribute to this yet."
-          onClose={() => setExpandedStat(null)}
-        />
+      <StatDetailPanel
+        isOpen={expandedStat !== null}
+        title={expandedStat ? STAT_LABELS[expandedStat] : null}
+        rows={expandedStat ? breakdowns[expandedStat] : null}
+        emptyMessage="No accounts contribute to this yet."
+        onClose={() => setExpandedStat(null)}
+      />
+
+      {monthsOfRunway !== null && (
+        <div className="card runway-card">
+          <ProgressRing pct={runwayPct} size={64} stroke={7} />
+          <div>
+            <p className="runway-headline">
+              <span className="stat-value">{monthsOfRunway.toFixed(1)}</span> months of expenses covered
+            </p>
+            <p className="modal-message-secondary">
+              {fmtMoneyShort(cash)} in liquid savings ÷ {fmtMoneyShort(avgSpendNum)}/mo average spend (trailing 90
+              days).
+            </p>
+          </div>
+        </div>
       )}
 
       {budgetAlerts.length > 0 && (
@@ -241,14 +322,17 @@ export function DashboardView({
           {warningCount > 0 && `${warningCount} approaching ${warningCount === 1 ? "its" : "their"} limit`}
         </button>
       )}
-      {showBudgetAlerts && (
-        <StatDetailPanel
-          title="this month's budget alerts"
-          rows={budgetAlerts.map((a) => ({ name: a.category, amount: parseFloat(a.budgeted) - parseFloat(a.actual) }))}
-          emptyMessage="Nothing to flag."
-          onClose={() => setShowBudgetAlerts(false)}
-        />
-      )}
+      <StatDetailPanel
+        isOpen={showBudgetAlerts}
+        title={showBudgetAlerts ? "this month's budget alerts" : null}
+        rows={
+          showBudgetAlerts
+            ? budgetAlerts.map((a) => ({ name: a.category, amount: parseFloat(a.budgeted) - parseFloat(a.actual) }))
+            : null
+        }
+        emptyMessage="Nothing to flag."
+        onClose={() => setShowBudgetAlerts(false)}
+      />
 
       {insights.length > 0 && (
         <div className="card">

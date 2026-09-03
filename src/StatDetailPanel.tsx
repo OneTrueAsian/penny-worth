@@ -1,30 +1,49 @@
+import { useRef } from "react";
 import { formatAmount } from "./format";
+import { useDelayedVisibility } from "./useDelayedVisibility";
 
 /** Shared "what makes up this number" breakdown panel — a list of named
  * amounts, largest-magnitude first, shown below whichever clickable stat
- * card triggered it. Used by the Dashboard's KPI cards and the Reports
- * page's account/bucket/income totals. */
+ * card triggered it. Used by the Dashboard's KPI cards and the Reports/
+ * Accounts pages' own stat totals.
+ *
+ * Always mounted by its caller (not `{expandedStat && <StatDetailPanel/>}`)
+ * so it can play a real close transition instead of vanishing the instant
+ * `isOpen` flips false — `title`/`rows` go `null` on close, but the panel
+ * keeps rendering its *last* content through the closing animation rather
+ * than going blank first. */
 export function StatDetailPanel({
   title,
   rows,
   emptyMessage,
+  isOpen,
   onClose,
 }: {
-  title: string;
-  rows: { name: string; amount: number }[];
+  title: string | null;
+  rows: { name: string; amount: number }[] | null;
   emptyMessage?: string;
+  isOpen: boolean;
   onClose: () => void;
 }) {
+  const { shouldRender, closing } = useDelayedVisibility(isOpen);
+  const lastContent = useRef<{ title: string; rows: { name: string; amount: number }[] } | null>(null);
+  if (title !== null && rows !== null) {
+    lastContent.current = { title, rows };
+  }
+
+  if (!shouldRender || !lastContent.current) return null;
+  const { title: shownTitle, rows: shownRows } = lastContent.current;
+
   return (
-    <div className="card stat-detail-panel">
+    <div className={closing ? "card stat-detail-panel stat-detail-panel-closing" : "card stat-detail-panel"}>
       <div className="card-head">
-        <span className="reports-section-title">What makes up {title}</span>
+        <span className="reports-section-title">What makes up {shownTitle}</span>
         <button type="button" className="modal-secondary" onClick={onClose}>
           Close
         </button>
       </div>
-      {rows.length > 0 ? (
-        rows
+      {shownRows.length > 0 ? (
+        shownRows
           .slice()
           .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
           .map((row) => (

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import { formatAmount } from "./format";
-import type { Account, CategoryTransaction, FamilyMember, MonthExpenseDetail } from "./types";
+import type { Account, CategoryTransaction, FamilyMember, MonthExpenseDetail, ReportBudgetLine } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 /** Shared shell: a dimmed overlay behind a centered panel. Clicking the
@@ -272,6 +272,7 @@ export function NewTransactionDialog({
   categories,
   familyMembers,
   defaultAccountId,
+  budgetActuals,
   onCancel,
   onSubmit,
 }: {
@@ -279,6 +280,14 @@ export function NewTransactionDialog({
   categories: string[];
   familyMembers: FamilyMember[];
   defaultAccountId: number | null;
+  /** Current calendar month's budget-vs-actual (from `report`, which
+   * `get_report` always computes for *today's* month regardless of what
+   * the Budget page happens to be scrolled to) — reused here rather than
+   * a new fetch, to show "$602 of $700 used — $98 left" live as the user
+   * picks a category. Deliberately not `budgetMonthActuals` (the Budget
+   * page's own state): that one only populates after the Budget tab has
+   * been visited, which this dialog is opened without needing to. */
+  budgetActuals: ReportBudgetLine[];
   onCancel: () => void;
   onSubmit: (
     accountId: number,
@@ -297,13 +306,20 @@ export function NewTransactionDialog({
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("");
   const [memberId, setMemberId] = useState("");
+  const [submitAttempted, setSubmitAttempted] = useState(false);
 
-  const valid = accountId !== "" && description.trim() !== "" && amount.trim() !== "" && date !== "";
+  const amountTrimmed = amount.trim();
+  const amountIsNumeric = amountTrimmed !== "" && !isNaN(parseFloat(amountTrimmed));
+  const amountError = amountTrimmed === "" ? "Enter an amount." : !amountIsNumeric ? "That doesn't look like a number." : null;
+  const valid = accountId !== "" && description.trim() !== "" && amountIsNumeric && date !== "";
+
+  const budgetImpact = budgetActuals.find((b) => b.category === category);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    setSubmitAttempted(true);
     if (!valid) return;
-    onSubmit(Number(accountId), date, description.trim(), amount.trim(), category || null, memberId ? Number(memberId) : null);
+    onSubmit(Number(accountId), date, description.trim(), amountTrimmed, category || null, memberId ? Number(memberId) : null);
   }
 
   return (
@@ -331,11 +347,19 @@ export function NewTransactionDialog({
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder='e.g. "Coffee shop"'
+            aria-invalid={submitAttempted && description.trim() === ""}
           />
+          {submitAttempted && description.trim() === "" && <span className="field-error">Enter a description.</span>}
         </label>
         <label className="modal-field">
           <span>Amount</span>
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Negative = money out" />
+          <input
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder="Negative = money out"
+            aria-invalid={submitAttempted && amountError !== null}
+          />
+          {submitAttempted && amountError && <span className="field-error">{amountError}</span>}
         </label>
         <label className="modal-field">
           <span>Category</span>
@@ -347,6 +371,18 @@ export function NewTransactionDialog({
               </option>
             ))}
           </select>
+          {budgetImpact &&
+            (() => {
+              const budgeted = parseFloat(budgetImpact.budgeted);
+              const actual = parseFloat(budgetImpact.actual);
+              const remaining = budgeted - actual;
+              return (
+                <span className={remaining < 0 ? "field-hint report-over-budget" : "field-hint"}>
+                  {formatAmount(budgetImpact.actual)} of {formatAmount(budgetImpact.budgeted)} used this month —{" "}
+                  {remaining < 0 ? `${formatAmount((-remaining).toFixed(2))} over budget` : `${formatAmount(remaining.toFixed(2))} left`}
+                </span>
+              );
+            })()}
         </label>
         {familyMembers.length > 0 && (
           <label className="modal-field">
@@ -365,7 +401,7 @@ export function NewTransactionDialog({
           <button type="button" className="modal-secondary" onClick={onCancel}>
             Cancel
           </button>
-          <button type="submit" disabled={!valid || accounts.length === 0}>
+          <button type="submit" disabled={accounts.length === 0}>
             Add transaction
           </button>
         </div>

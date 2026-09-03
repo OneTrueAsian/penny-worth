@@ -56,4 +56,15 @@ export const CHANGELOG: Record<string, string[]> = {
     "Every dialog can now be closed with Escape, and the sidebar's drag-to-reorder now also works from the keyboard — focus a tab and press Alt+↑/↓.",
     "Fixed the sidebar's group labels (\"OVERVIEW\", \"MONEY\", …) getting clipped instead of hiding when the window is narrow.",
   ],
+  "1.1.9": [
+    "A first-run checklist on the Dashboard walks new setups through adding an account, a transaction, and a budget, then gets out of the way.",
+    "The Dashboard now shows a runway stat — how many months your liquid savings would cover at your recent average spend.",
+    "Add Transaction now shows a live \"$X of $Y used\" line for the selected category's budget, and actually flags a non-numeric amount before you can save it.",
+    "Flexible Spending categories on the Budget page now show a small trend sparkline of the last few months' actual spend.",
+    "Recurring has a new Calendar view alongside the list, laying bills out on an actual month grid.",
+    "Buckets' \"+ New bucket\" is now an in-grid tile instead of a separate button below the grid.",
+    "The Ledger can save named filter combinations as chips for one-click reuse, and bulk-deleting transactions now shows an \"Undo\" toast instead of deleting immediately.",
+    "Modals, the \"More\" menu, and expandable stat panels now animate open and closed; respects your OS's reduced-motion setting.",
+    "StockData.org is now available as a live stock-price provider in Settings (100 requests/day, batches of up to 3 symbols per request).",
+  ],
 };
