@@ -3,6 +3,7 @@ import type { Account, Asset, Bucket, DebtPayoffPlan, FamilyMember, Report, Tran
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 import { groupOf, netWorthContribution } from "./accountGroups";
+import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 const ASSET_TYPE_OPTIONS = ["real_estate", "vehicle", "other"];
 const ASSET_TYPE_LABELS: Record<string, string> = {
@@ -109,6 +110,7 @@ function PropertyAssetsSection({
 }) {
   const [editing, setEditing] = useState<{ id: number; value: string } | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
+  useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
 
   const total = assets.reduce((s, a) => s + parseFloat(a.value), 0);
 
@@ -185,7 +187,7 @@ function PropertyAssetsSection({
                     <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
                       Cancel
                     </button>
-                    <button type="button" onClick={() => onDelete(a.id)}>
+                    <button type="button" className="btn-danger" onClick={() => onDelete(a.id)}>
                       Delete
                     </button>
                   </span>

@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Backup, LivePriceProviderId, LivePriceSettings, Profile } from "./types";
+import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 const LIVE_PRICE_PROVIDERS: Record<
   LivePriceProviderId,
@@ -272,6 +273,7 @@ function ProfilesSection({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
 
   function handleCreateSubmit(e: FormEvent) {
     e.preventDefault();
@@ -340,7 +342,7 @@ function ProfilesSection({
                     <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
                       Cancel
                     </button>
-                    <button type="button" onClick={() => onDeleteProfile(p.id)}>
+                    <button type="button" className="btn-danger" onClick={() => onDeleteProfile(p.id)}>
                       Delete
                     </button>
                   </span>

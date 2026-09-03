@@ -1,6 +1,7 @@
 import { DragEvent, FormEvent, useEffect, useState } from "react";
 import type { BudgetAlert, ReportBudgetLine } from "./types";
 import { formatAmount } from "./format";
+import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 const GROUP_ORDER = ["income", "fixed", "flexible", "nonmonthly"] as const;
 type Group = (typeof GROUP_ORDER)[number];
@@ -246,7 +247,7 @@ function BudgetRow({
             <button type="button" className="modal-secondary" onClick={() => setConfirmingDelete(null)}>
               Cancel
             </button>
-            <button type="button" onClick={() => onDeleteBudget(line.category)}>
+            <button type="button" className="btn-danger" onClick={() => onDeleteBudget(line.category)}>
               Delete
             </button>
           </span>
@@ -283,6 +284,7 @@ export function BudgetView({
 }) {
   const alertByCategory = new Map(budgetAlerts.map((a) => [a.category, a.level]));
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  useAutoCancelDelete(confirmingDelete, () => setConfirmingDelete(null));
   const [editingAmount, setEditingAmount] = useState<{ category: string; value: string } | null>(null);
   const [categoryOrder, setCategoryOrder] = useState<string[]>(loadCategoryOrder);
   const [dragCategory, setDragCategory] = useState<string | null>(null);

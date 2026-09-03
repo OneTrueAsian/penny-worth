@@ -37,6 +37,7 @@ import { MoreFiltersPopover } from "./MoreFiltersPopover";
 import { UpdateBanner } from "./UpdateBanner";
 import { NavIcon } from "./icons";
 import { formatAmount } from "./format";
+import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import type {
   Account,
   AnomalyFlag,
@@ -152,6 +153,8 @@ const NAV_GROUP_LABELS: Record<NavGroup, string> = {
 
 type Theme = "light" | "dark" | "system";
 
+type StatusKind = "success" | "error" | "info";
+
 type LedgerSortColumn = "date" | "description" | "amount" | "account" | "category" | "source";
 
 function compareTransactionsBy(a: Transaction, b: Transaction, column: LedgerSortColumn): number {
@@ -222,6 +225,28 @@ function loadNavOrder(): Tab[] {
     // corrupt/unavailable storage — fall back to the default order
   }
   return known;
+}
+
+/** The one status line shared by every success confirmation, error, and
+ * in-progress message in the app (~90+ call sites) — styled by `kind` so an
+ * error doesn't look identical to a routine confirmation (see App.css's
+ * `.status-*` rules), with its own dismiss button since errors stay up
+ * longer than the auto-dismiss timer and a raw error string is worth being
+ * able to clear once read. */
+function StatusBanner({ text, kind, onDismiss }: { text: string; kind: StatusKind; onDismiss: () => void }) {
+  return (
+    <p className={`status status-${kind}`} role={kind === "error" ? "alert" : "status"}>
+      <svg className="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {kind === "success" && <path d="M20 6 9 17l-5-5" />}
+        {kind === "error" && <><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16h.01" /></>}
+        {kind === "info" && <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>}
+      </svg>
+      <span className="status-text">{text}</span>
+      <button type="button" className="status-dismiss" onClick={onDismiss} aria-label="Dismiss message">
+        ×
+      </button>
+    </p>
+  );
 }
 
 function App({
@@ -310,7 +335,7 @@ function App({
     try {
       await invoke("create_backup_now");
       await refreshBackups();
-      setStatus("Backup created.");
+      setStatus("Backup created.", "success");
     } catch (e) {
       setStatus(String(e));
     }
@@ -410,7 +435,7 @@ function App({
       if (summary.failed.length > 0) {
         message += ` — ${summary.failed.map((f) => `${f.symbol}: ${f.error}`).join("; ")}`;
       }
-      setStatus(message);
+      setStatus(message, summary.failed.length > 0 ? "error" : "success");
     } catch (e) {
       setStatus(String(e));
     }
@@ -427,15 +452,24 @@ function App({
   const [report, setReport] = useState<Report | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [status, setStatus] = useState<string>(initialStatus);
+  const [status, setStatusState] = useState<{ text: string; kind: StatusKind } | null>(
+    initialStatus ? { text: initialStatus, kind: "success" } : null,
+  );
+  // Wraps the raw state setter so ~90 existing `setStatus(String(e))` catch
+  // blocks stay one-line error reports (kind defaults to "error" there) while
+  // confirmations/in-progress messages opt into "success"/"info" explicitly —
+  // see the `.status-*` rules in App.css for what each kind looks like.
+  function setStatus(text: string, kind: StatusKind = "error") {
+    setStatusState(text ? { text, kind } : null);
+  }
 
-  // Auto-dismiss the status banner after 10s so it doesn't sit there
-  // stale forever — resets the clock every time a new message replaces
-  // it, and the cleanup fn correctly avoids scheduling a new timer for
-  // the "" that this same timeout just set.
+  // Auto-dismiss the status banner so it doesn't sit there stale forever —
+  // resets the clock every time a new message replaces it. Errors stay up
+  // longer than a routine confirmation since they're more likely to need
+  // actually reading (a raw error string), not just glancing at.
   useEffect(() => {
     if (!status) return;
-    const timer = setTimeout(() => setStatus(""), 10000);
+    const timer = setTimeout(() => setStatusState(null), status.kind === "error" ? 20000 : 10000);
     return () => clearTimeout(timer);
   }, [status]);
 
@@ -537,6 +571,7 @@ function App({
   }, [moreMenuOpen]);
   const [editingAmount, setEditingAmount] = useState<{ id: number; value: string } | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
+  useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
   const [applyingDebtId, setApplyingDebtId] = useState<number | null>(null);
   const [applyDebtForm, setApplyDebtForm] = useState<{ accountId: string; amount: string }>({
     accountId: "",
@@ -547,6 +582,7 @@ function App({
   const [reviewIds, setReviewIds] = useState<Set<number> | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmingBulkDelete, setConfirmingBulkDelete] = useState(false);
+  useAutoCancelDelete(confirmingBulkDelete, () => setConfirmingBulkDelete(false));
   const [pageSize, setPageSize] = useState(50);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -651,6 +687,30 @@ function App({
     setDragNavTab(null);
   }
 
+  /** The keyboard equivalent of dragging a nav item — mouse-only
+   * drag-and-drop has no keyboard path otherwise. Swaps `id` with its
+   * neighbor *within its own group* (skipping over any other group's items
+   * that sit between them in the flat stored order), matching drag's own
+   * same-group-only reordering — see `NAV_ITEMS`'s doc comment. */
+  function moveNavItem(id: Tab, direction: -1 | 1) {
+    setNavOrder((prev) => {
+      const group = NAV_ITEMS.find((n) => n.id === id)?.group;
+      const sameGroupIds = prev.filter((navId) => NAV_ITEMS.find((n) => n.id === navId)?.group === group);
+      const swapWith = sameGroupIds[sameGroupIds.indexOf(id) + direction];
+      if (swapWith === undefined) return prev; // already at that edge of its group
+      const next = [...prev];
+      const i = next.indexOf(id);
+      const j = next.indexOf(swapWith);
+      [next[i], next[j]] = [next[j], next[i]];
+      try {
+        localStorage.setItem(NAV_ORDER_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // per-viewer preference only — fine to skip if storage is unavailable
+      }
+      return next;
+    });
+  }
+
   function askNewAccount(): Promise<NewAccountResult | null> {
     return new Promise((resolve) => setDialog({ kind: "newAccount", resolve }));
   }
@@ -689,7 +749,7 @@ function App({
     const rolled = await invoke<RolledAccount[]>("check_monthly_rollover");
     if (rolled.length > 0) {
       const names = rolled.map((r) => r.account_name).join(", ");
-      setStatus(`Rolled forward this month's starting balance for ${rolled.length} account(s): ${names}.`);
+      setStatus(`Rolled forward this month's starting balance for ${rolled.length} account(s): ${names}.`, "success");
     }
   }, []);
 
@@ -1076,7 +1136,7 @@ function App({
     try {
       const removed = await invoke<number>("delete_account", { id: accountId });
       await refresh();
-      setStatus(`Deleted account and ${removed} transaction(s).`);
+      setStatus(`Deleted account and ${removed} transaction(s).`, "success");
     } catch (e) {
       setStatus(String(e));
     }
@@ -1385,7 +1445,7 @@ function App({
     const invertAmounts = await askConfirmInvert();
 
     setBusy(true);
-    setStatus("Reading file…");
+    setStatus("Reading file…", "info");
     try {
       const preview = await invoke<ImportPreview>("preview_import", {
         path,
@@ -1455,7 +1515,7 @@ function App({
   async function confirmPendingImport() {
     if (!pendingImport) return;
     setBusy(true);
-    setStatus("Importing…");
+    setStatus("Importing…", "info");
     const totalRows = pendingImport.preview.rows.length;
     const includedCount = includedIndices.size;
     try {
@@ -1472,6 +1532,7 @@ function App({
         `Imported ${summary.inserted} transaction(s)` +
           (skipped ? ` — ${skipped} excluded` : "") +
           (summary.row_errors ? ` — ${summary.row_errors} row(s) couldn't be read` : ""),
+        summary.row_errors ? "error" : "success",
       );
     } catch (e) {
       setStatus(String(e));
@@ -1485,7 +1546,7 @@ function App({
     setPendingImport(null);
     setIncludedIndices(new Set());
     setAccountOverrides(new Map());
-    setStatus("Import cancelled.");
+    setStatus("Import cancelled.", "info");
   }
 
   async function handleCategoryChange(id: number, value: string) {
@@ -1528,7 +1589,7 @@ function App({
       await invoke("create_manual_transaction", { accountId, date, description, amount, category, memberId });
       await refresh();
       setNewTransactionOpen(false);
-      setStatus(`Added "${description}".`);
+      setStatus(`Added "${description}".`, "success");
     } catch (e) {
       setStatus(String(e));
     }
@@ -1572,16 +1633,16 @@ function App({
 
   async function handleRecategorize() {
     setBusy(true);
-    setStatus("Categorizing…");
+    setStatus("Categorizing…", "info");
     try {
       const ids = await invoke<number[]>("recategorize_uncategorized");
       await refresh();
       if (ids.length > 0) {
         setReviewIds(new Set(ids));
-        setStatus(`Categorized ${ids.length} transaction(s) — review below and fix any mistakes.`);
+        setStatus(`Categorized ${ids.length} transaction(s) — review below and fix any mistakes.`, "success");
       } else {
         setReviewIds(null);
-        setStatus("Nothing new to categorize.");
+        setStatus("Nothing new to categorize.", "info");
       }
     } catch (e) {
       setStatus(String(e));
@@ -1655,7 +1716,7 @@ function App({
     if (!path) return;
     try {
       await invoke("write_text_file", { path, content: buildSetupTemplate() });
-      setStatus(`Setup template saved to ${path} — fill it in, then use "Import setup data…".`);
+      setStatus(`Setup template saved to ${path} — fill it in, then use "Import setup data…".`, "success");
     } catch (e) {
       setStatus(String(e));
     }
@@ -1677,6 +1738,7 @@ function App({
           preview.row_errors > 0
             ? `Nothing importable found — ${preview.row_errors} row(s) had errors.`
             : "Nothing importable found in that file — is it a filled-in setup template?",
+          preview.row_errors > 0 ? "error" : "info",
         );
         return;
       }
@@ -1736,7 +1798,7 @@ function App({
       let message = `Setup import done: ${parts.join(", ")}.`;
       if (summary.skipped.length > 0) message += ` Skipped: ${summary.skipped.join("; ")}.`;
       if (summary.row_errors > 0) message += ` ${summary.row_errors} row(s) had errors and were ignored.`;
-      setStatus(message);
+      setStatus(message, summary.row_errors > 0 ? "error" : "success");
     } catch (e) {
       setStatus(String(e));
     } finally {
@@ -1761,7 +1823,7 @@ function App({
     const csv = `Accounts\r\n${accountsCsv}\r\n${report?.month_label ?? ""}'s Budget\r\n${budgetCsv}`;
     try {
       await invoke("write_text_file", { path, content: csv });
-      setStatus(`Exported reports to ${path}.`);
+      setStatus(`Exported reports to ${path}.`, "success");
     } catch (e) {
       setStatus(String(e));
     }
@@ -1786,7 +1848,7 @@ function App({
     );
     try {
       await invoke("write_text_file", { path, content: csv });
-      setStatus(`Exported ${sortedTransactions.length} transaction(s) to ${path}.`);
+      setStatus(`Exported ${sortedTransactions.length} transaction(s) to ${path}.`, "success");
     } catch (e) {
       setStatus(String(e));
     }
@@ -1987,7 +2049,7 @@ function App({
       const created = await invoke<number>("bulk_create_recurring_from_transactions", { ids, cadence });
       setSelectedIds(new Set());
       await refreshRecurring();
-      setStatus(`Added ${created} transaction(s) to Recurring — adjust the cadence per item there if needed.`);
+      setStatus(`Added ${created} transaction(s) to Recurring — adjust the cadence per item there if needed.`, "success");
     } catch (e) {
       setStatus(String(e));
     }
@@ -2029,6 +2091,19 @@ function App({
                           : "nav-item"
                     }
                     onClick={() => setActiveTab(item.id)}
+                    onKeyDown={(e) => {
+                      // Alt+Up/Down: keyboard equivalent of dragging this
+                      // item — see `moveNavItem`'s doc comment.
+                      if (e.altKey && e.key === "ArrowUp") {
+                        e.preventDefault();
+                        moveNavItem(item.id, -1);
+                      } else if (e.altKey && e.key === "ArrowDown") {
+                        e.preventDefault();
+                        moveNavItem(item.id, 1);
+                      }
+                    }}
+                    aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                    title="Drag to reorder, or focus and press Alt+↑/↓"
                     onDragStart={(e) => {
                       // Native drag-and-drop requires a payload via setData or
                       // the browser treats the drag as invalid and shows
@@ -2125,6 +2200,8 @@ function App({
                   disabled={busy || pendingImport !== null}
                   aria-label="More actions"
                   title="More actions"
+                  aria-haspopup="true"
+                  aria-expanded={moreMenuOpen}
                 >
                   ⋯
                 </button>
@@ -2183,7 +2260,7 @@ function App({
         <div className="page">
 
       <UpdateBanner />
-      {status && <p className="status">{status}</p>}
+      {status && <StatusBanner text={status.text} kind={status.kind} onDismiss={() => setStatusState(null)} />}
 
       {activeTab === "dashboard" && (
         <DashboardView
@@ -2363,6 +2440,7 @@ function App({
           <input
             type="search"
             placeholder="Search description…"
+            aria-label="Search description"
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
           />
@@ -2435,7 +2513,7 @@ function App({
               <button type="button" className="modal-secondary" onClick={() => setConfirmingBulkDelete(false)}>
                 Cancel
               </button>
-              <button type="button" onClick={handleBulkDelete}>
+              <button type="button" className="btn-danger" onClick={handleBulkDelete}>
                 Delete {selectedIds.size}
               </button>
             </span>
@@ -2659,7 +2737,7 @@ function App({
                     <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
                       Cancel
                     </button>
-                    <button type="button" onClick={() => handleDeleteTransaction(t.id)}>
+                    <button type="button" className="btn-danger" onClick={() => handleDeleteTransaction(t.id)}>
                       Delete
                     </button>
                   </span>

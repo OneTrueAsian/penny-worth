@@ -531,6 +531,23 @@ button:disabled {
   border-color: var(--border-strong);
 }
 
+/* The confirming half of a two-step delete — deliberately not the app's
+   accent teal (reads as a positive/confirm action, not a destructive one)
+   and not just a relabeled default button, so a fast double-click aimed at
+   the original "Delete" can't as easily land on this one by looking the
+   same. */
+.btn-danger {
+  background-color: var(--negative);
+  border-color: var(--negative);
+  color: #2a0f06;
+}
+
+.btn-danger:hover {
+  background-color: var(--negative);
+  border-color: var(--negative);
+  filter: brightness(0.92);
+}
+
 /* ------------------------------ Stats/cards ------------------------------ */
 
 .buckets-view,
@@ -1452,9 +1469,61 @@ button:disabled {
 }
 
 .status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   font-size: 13px;
-  color: var(--info);
   margin: 0 0 14px 0;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+}
+
+.status-success {
+  color: var(--accent-soft-text);
+  background: var(--accent-soft);
+  border-color: var(--positive);
+}
+
+.status-error {
+  color: var(--negative);
+  background: var(--negative-soft);
+  border-color: var(--negative);
+}
+
+.status-info {
+  color: var(--info);
+  background: var(--info-soft);
+  border-color: var(--info);
+}
+
+.status-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.status-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.status-dismiss {
+  flex: none;
+  border: none;
+  background: none;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 5px;
+}
+
+.status-dismiss:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.18);
 }
 
 /* ------------------------------- Tables ------------------------------- */
@@ -2241,6 +2310,14 @@ button:disabled {
   border: 1px solid var(--border);
 }
 
+/* The panel itself is only ever focused programmatically on open (as a
+   landing spot for keyboard/AT users when the dialog has no autoFocus
+   field of its own) — never via Tab — so it doesn't need a focus ring the
+   way a real control does. */
+.modal-panel:focus {
+  outline: none;
+}
+
 .modal-panel-wide {
   /* Content-heavy dialogs vary a lot in how much room they actually need
      (a short list vs. a 5-column ledger table) — sizing from a generous
@@ -2435,7 +2512,8 @@ button:disabled {
   }
 
   .brand-word,
-  .nav-item span.nav-text {
+  .nav-item span.nav-text,
+  .nav-group-label {
     display: none;
   }
 

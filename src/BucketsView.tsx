@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import type { Account, Bucket, FamilyMember } from "./types";
 import { ProgressRing } from "./charts";
 import { formatAmount } from "./format";
+import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 /** Today's date in the viewer's local timezone as "YYYY-MM-DD" — deliberately
  * not `toISOString()`, which reads UTC and can land on the wrong day for
@@ -152,6 +153,7 @@ export function BucketsView({
   onDeleteBucket: (id: number) => void;
 }) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
+  useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
 
   return (
     <div className="buckets-view">
@@ -176,7 +178,7 @@ export function BucketsView({
                         <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
                           Cancel
                         </button>
-                        <button type="button" onClick={() => onDeleteBucket(b.id)}>
+                        <button type="button" className="btn-danger" onClick={() => onDeleteBucket(b.id)}>
                           Delete
                         </button>
                       </span>

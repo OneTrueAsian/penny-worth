@@ -49,4 +49,11 @@ export const CHANGELOG: Record<string, string[]> = {
     "Fixed a debt payment applied to a credit card, loan, or mortgage still inflating Budget, Cash Flow, and category totals in a few more places the 1.1.6 fix missed.",
     "Smaller fixes: splitting a transaction now shows the split editor under the row you clicked instead of at the bottom of the table, the Dashboard's Upcoming Bills rows line up in two proper columns, and Budget's category dropdowns line up in a straight column.",
   ],
+  "1.1.8": [
+    "Success, error, and in-progress messages now look different from each other — color, icon, and a dismiss button — instead of one identical line for everything; errors stay up longer since they're more worth actually reading.",
+    "Delete confirmations across the app (accounts, transactions, budget lines, recurring items, holdings, buckets, categories, family members, and profiles) now auto-cancel if left alone for a few seconds, and use a clearly different-colored button instead of a same-looking relabeled one.",
+    "Dashboard's budget alerts now show the most-over-budget category first, instead of in whatever order categories happen to be listed.",
+    "Every dialog can now be closed with Escape, and the sidebar's drag-to-reorder now also works from the keyboard — focus a tab and press Alt+↑/↓.",
+    "Fixed the sidebar's group labels (\"OVERVIEW\", \"MONEY\", …) getting clipped instead of hiding when the window is narrow.",
+  ],
 };

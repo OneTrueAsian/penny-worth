@@ -48,7 +48,13 @@ export function MoreFiltersPopover({
 
   return (
     <div className="account-filter" ref={rootRef}>
-      <button type="button" className="account-filter-toggle" onClick={() => setOpen((v) => !v)}>
+      <button
+        type="button"
+        className="account-filter-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
         {label}
         <span className="account-filter-caret">▾</span>
       </button>

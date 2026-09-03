@@ -3,6 +3,7 @@ import type { Account, Holding } from "./types";
 import { DonutChart, LineChart, fmtMoneyShort } from "./charts";
 import { formatAmount } from "./format";
 import { projectGoal } from "./projections";
+import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 const CLASS_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9"];
 
@@ -247,6 +248,7 @@ export function InvestmentsView({
   onFetchQuote: (symbol: string) => Promise<string | null>;
 }) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
+  useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
   const [editingPrice, setEditingPrice] = useState<{ id: number; value: string } | null>(null);
 
   const totalValue = holdings.reduce((s, h) => s + parseFloat(h.value), 0);
@@ -377,7 +379,7 @@ export function InvestmentsView({
                           <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
                             Cancel
                           </button>
-                          <button type="button" onClick={() => onDelete(h.id)}>
+                          <button type="button" className="btn-danger" onClick={() => onDelete(h.id)}>
                             Delete
                           </button>
                         </span>

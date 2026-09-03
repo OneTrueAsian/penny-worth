@@ -34,7 +34,13 @@ export function ProfileSwitcher({
 
   return (
     <div className="profile-switcher" ref={rootRef}>
-      <button type="button" className="profile-switcher-toggle" onClick={() => setOpen((v) => !v)}>
+      <button
+        type="button"
+        className="profile-switcher-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
         <NavIcon name="profile" />
         <span className="profile-switcher-name">{current?.name ?? "Profile"}</span>
         <span className="account-filter-caret">▾</span>

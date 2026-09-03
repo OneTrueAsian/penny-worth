@@ -1,9 +1,13 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import { formatAmount } from "./format";
 import type { Account, CategoryTransaction, FamilyMember, MonthExpenseDetail } from "./types";
+import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 /** Shared shell: a dimmed overlay behind a centered panel. Clicking the
- * overlay (not the panel) cancels, matching how a native dialog behaves. */
+ * overlay (not the panel) cancels, matching how a native dialog behaves —
+ * Escape does too, and focus moves onto the panel on open, since every
+ * dialog in the app goes through this one component (fixing it here fixes
+ * all of them, rather than needing this in each of the ~20 dialogs below). */
 function ModalShell({
   title,
   onCancel,
@@ -17,10 +21,38 @@ function ModalShell({
    * a plain form does — pass `wide` rather than growing every modal. */
   wide?: boolean;
 }) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Several dialogs have their own `autoFocus` input, which — being a
+    // descendant — mounts and claims focus before this effect runs; only
+    // take focus here if nothing inside the panel already has it, so this
+    // doesn't yank focus away from that input back onto the inert panel.
+    if (!panelRef.current?.contains(document.activeElement)) {
+      panelRef.current?.focus();
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onCancel();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onCancel]);
+
   return (
     <div className="modal-overlay" onClick={onCancel}>
-      <div className={wide ? "modal-panel modal-panel-wide" : "modal-panel"} onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">{title}</h2>
+      <div
+        ref={panelRef}
+        className={wide ? "modal-panel modal-panel-wide" : "modal-panel"}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
+        <h2 className="modal-title" id={titleId}>
+          {title}
+        </h2>
         {children}
       </div>
     </div>
@@ -358,6 +390,7 @@ export function ManageCategoriesDialog({
   const [editing, setEditing] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  useAutoCancelDelete(confirmingDelete, () => setConfirmingDelete(null));
   const [newCategoryName, setNewCategoryName] = useState("");
 
   function startEditing(name: string) {
@@ -423,7 +456,7 @@ export function ManageCategoriesDialog({
                   <button type="button" className="modal-secondary" onClick={() => setConfirmingDelete(null)}>
                     Cancel
                   </button>
-                  <button type="button" onClick={() => onDelete(name)}>
+                  <button type="button" className="btn-danger" onClick={() => onDelete(name)}>
                     Delete
                   </button>
                 </span>
@@ -480,6 +513,7 @@ export function ManageFamilyMembersDialog({
   const [editing, setEditing] = useState<number | null>(null);
   const [draftName, setDraftName] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState<number | null>(null);
+  useAutoCancelDelete(confirmingDelete, () => setConfirmingDelete(null));
   const [newMemberName, setNewMemberName] = useState("");
 
   function startEditing(member: FamilyMember) {
@@ -548,7 +582,7 @@ export function ManageFamilyMembersDialog({
                   <button type="button" className="modal-secondary" onClick={() => setConfirmingDelete(null)}>
                     Cancel
                   </button>
-                  <button type="button" onClick={() => onDelete(member.id)}>
+                  <button type="button" className="btn-danger" onClick={() => onDelete(member.id)}>
                     Delete
                   </button>
                 </span>

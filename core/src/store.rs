@@ -2551,6 +2551,15 @@ impl Store {
                 level: level.to_string(),
             });
         }
+        // Most-severe first — "over" budget outranks "warning" regardless of
+        // percent, then furthest-over/closest-to-over within the same level
+        // — so a dashboard or list rendering these in order surfaces what
+        // actually needs attention first, not whatever order the underlying
+        // category list happens to iterate in.
+        result.sort_by(|a, b| {
+            let rank = |level: &str| if level == "over" { 0 } else { 1 };
+            rank(&a.level).cmp(&rank(&b.level)).then(b.pct.cmp(&a.pct))
+        });
         Ok(result)
     }
 
@@ -6614,6 +6623,44 @@ mod tests {
         let alerts = store.budget_alerts_for_month(2026, 8).unwrap();
 
         assert!(alerts.is_empty(), "exceeding an income budget should never alert, got {alerts:?}");
+    }
+
+    #[test]
+    fn budget_alerts_for_month_sorts_most_severe_first() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        // A "warning" (85%), a mildly-"over" (110%), and a badly-"over"
+        // (200%) category — inserted in an order that doesn't already
+        // match the expected output, so a passing test can't be an
+        // accident of insertion order.
+        store.set_budget("Warning Cat", "0000-01", "100.00".parse().unwrap(), "flexible").unwrap();
+        store.set_budget("Mild Over", "0000-01", "100.00".parse().unwrap(), "flexible").unwrap();
+        store.set_budget("Bad Over", "0000-01", "100.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-08-01", "Warning Merchant", "-85.00"),
+                    tx("2026-08-02", "Mild Over Merchant", "-110.00"),
+                    tx("2026-08-03", "Bad Over Merchant", "-200.00"),
+                ],
+            )
+            .unwrap();
+        for t in store.all_transactions().unwrap() {
+            let category = if t.transaction.description.contains("Warning") {
+                "Warning Cat"
+            } else if t.transaction.description.contains("Mild") {
+                "Mild Over"
+            } else {
+                "Bad Over"
+            };
+            store.set_category(t.id, category, CategorySource::User, None).unwrap();
+        }
+
+        let alerts = store.budget_alerts_for_month(2026, 8).unwrap();
+
+        let names: Vec<&str> = alerts.iter().map(|a| a.category.as_str()).collect();
+        assert_eq!(names, vec!["Bad Over", "Mild Over", "Warning Cat"], "got {alerts:?}");
     }
 
     #[test]

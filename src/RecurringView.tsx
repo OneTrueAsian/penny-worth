@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import type { Account, FamilyMember, Recurring, RecurringCandidate } from "./types";
 import { formatAmount } from "./format";
+import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 export const CADENCE_OPTIONS = ["weekly", "biweekly", "monthly", "annual"];
 
@@ -293,6 +294,7 @@ export function RecurringView({
   onDismissCandidate: (candidate: RecurringCandidate) => void;
 }) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
+  useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
   const [editingId, setEditingId] = useState<number | null>(null);
 
   // `recurring` already arrives sorted by next-due date — see
@@ -385,7 +387,7 @@ export function RecurringView({
                       <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
                         Cancel
                       </button>
-                      <button type="button" onClick={() => onDelete(r.id)}>
+                      <button type="button" className="btn-danger" onClick={() => onDelete(r.id)}>
                         Delete
                       </button>
                     </span>

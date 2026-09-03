@@ -3,6 +3,7 @@ import type { Account, FamilyMember } from "./types";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 import { GROUP_LABELS, GROUP_ORDER, groupOf, netWorthContribution } from "./accountGroups";
+import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 const ACCOUNT_TYPE_OPTIONS = ["checking", "savings", "credit", "loan", "investment", "other"];
 
@@ -169,7 +170,7 @@ function AccountCard({
             <button type="button" className="modal-secondary btn-sm" onClick={() => setConfirmingDeleteId(null)}>
               Cancel
             </button>
-            <button type="button" className="btn-sm" onClick={() => onDeleteAccount(a.id)}>
+            <button type="button" className="btn-sm btn-danger" onClick={() => onDeleteAccount(a.id)}>
               Delete
             </button>
           </span>
@@ -209,6 +210,7 @@ export function AccountsView({
 }) {
   const [editing, setEditing] = useState<{ id: number; value: string } | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
+  useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
   const [editingDetails, setEditingDetails] = useState<{ id: number; institution: string; mask: string } | null>(
     null,
   );
