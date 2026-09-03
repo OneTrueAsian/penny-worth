@@ -48,4 +48,44 @@ mod tests {
         assert_eq!(sanitize_filename("Penny.Worth_1.1.4_x64-setup.exe"), "Penny.Worth_1.1.4_x64-setup.exe");
         assert_eq!(sanitize_filename("C:\\Windows\\evil.exe"), "CWindowsevil.exe");
     }
+
+    /// `UpdateBanner.tsx`'s "Update now" hands the file this module
+    /// downloads to `openPath`, which the opener plugin will silently
+    /// reject unless `capabilities/default.json` grants `open_path` an
+    /// actual scope — the plugin's own docs describe the bare
+    /// `opener:allow-open-path` permission string as enabling the command
+    /// "without any pre-configured scope," meaning zero paths, not "every
+    /// path." This shipped broken twice with nothing to catch it until a
+    /// live update check hit it: once with the permission missing
+    /// entirely, once with it present but scopeless (the object form is
+    /// required, with a non-empty `allow` list) — this is the missing net,
+    /// so a third regression of either kind fails a test instead of
+    /// quietly reaching a real user again.
+    #[test]
+    fn open_path_permission_grants_a_non_empty_scope() {
+        let raw = include_str!("../capabilities/default.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(raw).expect("capabilities/default.json must be valid JSON");
+        let permissions = parsed["permissions"]
+            .as_array()
+            .expect("capabilities/default.json must have a permissions array");
+
+        let entry = permissions
+            .iter()
+            .find(|p| {
+                p.as_str() == Some("opener:allow-open-path") || p["identifier"] == "opener:allow-open-path"
+            })
+            .expect("capabilities/default.json is missing the opener:allow-open-path permission entirely");
+
+        let scope = entry["allow"].as_array().unwrap_or_else(|| {
+            panic!(
+                "opener:allow-open-path must be the object form with a non-empty `allow` scope, not just \
+                 the bare permission string -- see this test's own doc comment, or UpdateBanner.tsx's, for why"
+            )
+        });
+        assert!(
+            !scope.is_empty() && scope.iter().any(|e| e["path"].is_string()),
+            "opener:allow-open-path's scope must include at least one {{ \"path\": ... }} entry"
+        );
+    }
 }
