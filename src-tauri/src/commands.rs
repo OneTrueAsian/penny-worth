@@ -172,8 +172,12 @@ pub fn create_profile(
 
     let profile_dir = profile.db_path.parent().ok_or_else(|| "invalid profile path".to_string())?;
     std::fs::create_dir_all(profile_dir).map_err(|e| e.to_string())?;
-    *state = AppState::open(&profile.db_path)?;
+    // Config written before the live-state swap (matching
+    // `relocate_data_file`/`restore_backup`) — if this fails, the app stays
+    // live on the old profile instead of silently drifting out of sync with
+    // `config.json`.
     crate::config::write_db_location_config(&paths.config_path, &profile.db_path).map_err(|e| e.to_string())?;
+    *state = AppState::open(&profile.db_path)?;
     *paths.db_path.lock().map_err(|_| "db path poisoned".to_string())? = profile.db_path.clone();
 
     // Best-effort, matching `setup()`'s own treatment — a profile left
@@ -217,8 +221,10 @@ pub fn switch_profile(
         ));
     }
 
-    *state = AppState::open(&target.db_path)?;
+    // Config written before the live-state swap — see `create_profile`'s
+    // comment on the same ordering.
     crate::config::write_db_location_config(&paths.config_path, &target.db_path).map_err(|e| e.to_string())?;
+    *state = AppState::open(&target.db_path)?;
     *paths.db_path.lock().map_err(|_| "db path poisoned".to_string())? = target.db_path.clone();
 
     let backups_dir = crate::backups::backups_dir_for(&target.db_path);
@@ -264,8 +270,11 @@ pub fn add_existing_profile(
         chrono::Local::now().naive_local(),
     )?;
 
-    *state = new_state;
+    // Config written before the live-state swap — see `create_profile`'s
+    // comment on the same ordering. `new_state` was already proven openable
+    // above, so this reordering costs nothing: the swap itself can't fail.
     crate::config::write_db_location_config(&paths.config_path, &picked_path).map_err(|e| e.to_string())?;
+    *state = new_state;
     *paths.db_path.lock().map_err(|_| "db path poisoned".to_string())? = picked_path.clone();
 
     // Best-effort, matching `create_profile`'s/`switch_profile`'s own
@@ -474,6 +483,8 @@ pub struct HoldingDto {
     pub asset_class: Option<String>,
     pub value: String,
     pub gain_loss: String,
+    pub prev_close: Option<String>,
+    pub day_gain_loss: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1948,6 +1959,15 @@ pub fn create_holding(
     let shares = parse_amount(&shares)?;
     let price = parse_amount(&price)?;
     let cost_basis = parse_amount(&cost_basis)?;
+    if shares <= Decimal::ZERO {
+        return Err("Shares must be greater than zero.".to_string());
+    }
+    if price <= Decimal::ZERO {
+        return Err("Price must be greater than zero.".to_string());
+    }
+    if cost_basis < Decimal::ZERO {
+        return Err("Cost basis can't be negative.".to_string());
+    }
     state
         .store
         .create_holding(account_id, &symbol, &name, shares, price, cost_basis, asset_class.as_deref())
@@ -1957,7 +1977,8 @@ pub fn create_holding(
 #[tauri::command]
 pub fn list_holdings(state: tauri::State<AppStateHandle>) -> Result<Vec<HoldingDto>, String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
-    let holdings = state.store.list_holdings().map_err(|e| e.to_string())?;
+    let today = chrono::Local::now().date_naive();
+    let holdings = state.store.list_holdings(today).map_err(|e| e.to_string())?;
     Ok(holdings
         .into_iter()
         .map(|h| HoldingDto {
@@ -1972,6 +1993,8 @@ pub fn list_holdings(state: tauri::State<AppStateHandle>) -> Result<Vec<HoldingD
             asset_class: h.asset_class,
             value: h.value.to_string(),
             gain_loss: h.gain_loss.to_string(),
+            prev_close: h.prev_close.map(|d| d.to_string()),
+            day_gain_loss: h.day_gain_loss.map(|d| d.to_string()),
         })
         .collect())
 }
@@ -1980,7 +2003,11 @@ pub fn list_holdings(state: tauri::State<AppStateHandle>) -> Result<Vec<HoldingD
 pub fn update_holding_price(id: i64, price: String, state: tauri::State<AppStateHandle>) -> Result<(), String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
     let price = parse_amount(&price)?;
-    state.store.update_holding_price(id, price).map_err(|e| e.to_string())
+    if price <= Decimal::ZERO {
+        return Err("Price must be greater than zero.".to_string());
+    }
+    let today = chrono::Local::now().date_naive();
+    state.store.update_holding_price(id, price, today).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2203,7 +2230,7 @@ pub async fn refresh_live_prices(state: tauri::State<'_, AppStateHandle>) -> Res
             state.store.record_live_price_request(today).map_err(|e| e.to_string())?;
         }
         for (symbol, price) in quotes {
-            state.store.update_holding_prices_for_symbol(&symbol, price).map_err(|e| e.to_string())?;
+            state.store.update_holding_prices_for_symbol(&symbol, price, today).map_err(|e| e.to_string())?;
             updated.push(symbol);
         }
         // Only bump "last refreshed" if a request actually went out — a
@@ -2243,6 +2270,9 @@ pub fn create_asset(
 ) -> Result<i64, String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
     let value = parse_amount(&value)?;
+    if value < Decimal::ZERO {
+        return Err("Value can't be negative.".to_string());
+    }
     let valued_on = parse_date(&valued_on)?;
     state
         .store
@@ -2278,6 +2308,9 @@ pub fn update_asset_value(
 ) -> Result<(), String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
     let value = parse_amount(&value)?;
+    if value < Decimal::ZERO {
+        return Err("Value can't be negative.".to_string());
+    }
     let valued_on = parse_date(&valued_on)?;
     state.store.update_asset_value(id, value, valued_on).map_err(|e| e.to_string())
 }

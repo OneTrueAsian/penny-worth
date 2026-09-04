@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
 import type { Account } from "./types";
 import { GROUP_LABELS, GROUP_ORDER, groupOf } from "./accountGroups";
+import { usePopover } from "./usePopover";
 
 /** `"all"` means no filter is applied (every account shown) — kept as a
  * distinct sentinel rather than always expanding it to a concrete set of
@@ -25,19 +25,7 @@ export function AccountFilterDropdown({
   value: AccountFilterValue;
   onChange: (next: AccountFilterValue) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function handleClickOutside(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [open]);
+  const { open, setOpen, rootRef, triggerRef } = usePopover();
 
   function toggleAccount(accountId: number) {
     const next = new Set(value === "all" ? accounts.map((a) => a.id) : value);
@@ -71,6 +59,7 @@ export function AccountFilterDropdown({
   return (
     <div className="account-filter" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className="account-filter-toggle"
         onClick={() => setOpen((v) => !v)}
@@ -94,15 +83,20 @@ export function AccountFilterDropdown({
             const groupAccounts = accounts.filter((a) => groupOf(a.account_type) === group);
             if (groupAccounts.length === 0) return null;
             const everyChecked = groupAccounts.every((a) => isSelected(value, a.id));
+            const noneChecked = groupAccounts.every((a) => !isSelected(value, a.id));
             return (
               <div key={group} className="account-filter-group">
-                <button
-                  type="button"
-                  className="account-filter-group-label"
-                  onClick={() => toggleGroup(groupAccounts, everyChecked)}
-                >
+                <label className="account-filter-group-label">
+                  <input
+                    type="checkbox"
+                    checked={everyChecked}
+                    ref={(el) => {
+                      if (el) el.indeterminate = !everyChecked && !noneChecked;
+                    }}
+                    onChange={() => toggleGroup(groupAccounts, everyChecked)}
+                  />
                   {GROUP_LABELS[group]}
-                </button>
+                </label>
                 {groupAccounts.map((a) => (
                   <label key={a.id} className="account-filter-option">
                     <input type="checkbox" checked={isSelected(value, a.id)} onChange={() => toggleAccount(a.id)} />

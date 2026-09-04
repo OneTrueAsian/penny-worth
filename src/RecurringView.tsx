@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import type { Account, FamilyMember, Recurring, RecurringCandidate } from "./types";
-import { formatAmount } from "./format";
+import { formatAmount, toLocalIsoDate } from "./format";
+import { fmtMoneyShort } from "./charts";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 export const CADENCE_OPTIONS = ["weekly", "biweekly", "monthly", "annual"];
@@ -41,13 +42,6 @@ function stepDate(d: Date, cadence: string): Date {
   }
 }
 
-function toIsoDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
 /** Every date `item` actually lands on within `year`/`month` (1-12),
  * walking forward from `anchor_date` by cadence step — pure and
  * self-contained (no backend round-trip) since `next_date` alone only
@@ -66,7 +60,7 @@ export function projectOccurrencesInMonth(item: { anchor_date: string; cadence: 
   const occurrences: string[] = [];
   let steps = 0;
   while (current <= targetEnd && steps < 2000) {
-    if (current >= targetStart) occurrences.push(toIsoDate(current));
+    if (current >= targetStart) occurrences.push(toLocalIsoDate(current));
     current = stepDate(current, item.cadence);
     steps++;
   }
@@ -374,7 +368,7 @@ export function RecurringView({
   // `next_date` is always today-or-later (see `next_occurrence`'s doc
   // comment — a cadence auto-rolls a lapsed anchor forward), so there's no
   // "overdue" state to detect here, only "coming up soon."
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = toLocalIsoDate();
   function isDueSoon(nextDate: string): boolean {
     const daysUntil = (new Date(nextDate).getTime() - new Date(todayIso).getTime()) / (1000 * 60 * 60 * 24);
     return daysUntil <= 3;
@@ -432,7 +426,7 @@ export function RecurringView({
   const daysInCalendarMonth = new Date(calendarYear, calendarMonth, 0).getDate();
   const calendarCells: (string | null)[] = [];
   for (let i = 0; i < firstOfMonth.getDay(); i++) calendarCells.push(null);
-  for (let d = 1; d <= daysInCalendarMonth; d++) calendarCells.push(toIsoDate(new Date(calendarYear, calendarMonth - 1, d)));
+  for (let d = 1; d <= daysInCalendarMonth; d++) calendarCells.push(toLocalIsoDate(new Date(calendarYear, calendarMonth - 1, d)));
   while (calendarCells.length % 7 !== 0) calendarCells.push(null);
 
   return (
@@ -501,7 +495,8 @@ export function RecurringView({
                       className={date >= todayIso && isDueSoon(date) ? "cal-item cal-item-due-soon" : "cal-item"}
                       title={`${item.merchant} — ${formatAmount(item.amount)}`}
                     >
-                      {item.merchant}
+                      <span className="cal-item-merchant">{item.merchant}</span>
+                      <span className="cal-item-amount">{fmtMoneyShort(parseFloat(item.amount))}</span>
                     </div>
                   ))}
                 </div>

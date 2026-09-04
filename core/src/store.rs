@@ -293,6 +293,16 @@ pub struct StoredHolding {
     pub asset_class: Option<String>,
     pub value: Decimal,
     pub gain_loss: Decimal,
+    /// The price this holding was last known at before the calendar day
+    /// its price was most recently updated on — i.e. today's baseline, once
+    /// at least one price update has landed today. `None` until a price
+    /// update actually happens (a holding just created today, or one never
+    /// repriced since, has no "today" to measure movement across yet).
+    pub prev_close: Option<Decimal>,
+    /// `(price - prev_close) * shares` — how much this holding has moved
+    /// since `prev_close`, computed fresh like `gain_loss`. `None` exactly
+    /// when `prev_close` is `None`.
+    pub day_gain_loss: Option<Decimal>,
 }
 
 /// Opt-in live-price configuration (see `Store::get_live_price_settings`).
@@ -458,7 +468,9 @@ impl Store {
                 shares TEXT NOT NULL,
                 price TEXT NOT NULL,
                 cost_basis TEXT NOT NULL,
-                asset_class TEXT
+                asset_class TEXT,
+                prev_close TEXT,
+                prev_close_date TEXT
             );
             CREATE TABLE IF NOT EXISTS assets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -533,6 +545,7 @@ impl Store {
         self.migrate_add_live_price_request_tracking_if_missing()?;
         self.migrate_add_live_price_provider_if_missing()?;
         self.migrate_add_deleted_at_if_missing()?;
+        self.migrate_add_holdings_prev_close_if_missing()?;
         self.seed_categories_if_missing()
     }
 
@@ -801,6 +814,34 @@ impl Store {
         }
 
         self.conn.execute("ALTER TABLE transactions ADD COLUMN deleted_at TEXT", [])?;
+        Ok(())
+    }
+
+    /// Same pattern again: a database from before the day-gain/loss stat
+    /// existed has no `prev_close`/`prev_close_date` columns on `holdings`.
+    /// `NULL` for both is already correct for every existing row — it just
+    /// means "no day-change data yet," resolved the same way a holding
+    /// created today and never repriced is (see `list_holdings`).
+    fn migrate_add_holdings_prev_close_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(holdings)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_prev_close = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "prev_close" {
+                has_prev_close = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_prev_close {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE holdings ADD COLUMN prev_close TEXT", [])?;
+        self.conn.execute("ALTER TABLE holdings ADD COLUMN prev_close_date TEXT", [])?;
         Ok(())
     }
 
@@ -1291,6 +1332,12 @@ impl Store {
                 }
                 Err(e) => return Err(e),
             };
+            if row.shares <= Decimal::ZERO || row.price <= Decimal::ZERO || row.cost_basis < Decimal::ZERO {
+                outcome
+                    .skipped
+                    .push(format!("{}: shares/price must be positive and cost basis can't be negative", row.symbol));
+                continue;
+            }
             let name = row.name.as_deref().unwrap_or(&row.symbol);
             self.create_holding(account_id, &row.symbol, name, row.shares, row.price, row.cost_basis, row.asset_class.as_deref())?;
             outcome.holdings_created += 1;
@@ -3242,9 +3289,17 @@ impl Store {
     /// Every holding, each with `value` (`shares * price`) and `gain_loss`
     /// (`value - cost_basis`) computed fresh — never stored, so an
     /// updated price is always immediately reflected in both.
-    pub fn list_holdings(&self) -> rusqlite::Result<Vec<StoredHolding>> {
+    ///
+    /// `today` gates `prev_close`/`day_gain_loss`: a row only reports them
+    /// when its `prev_close_date` is actually `today` — i.e. its price was
+    /// updated at least once today. A holding last repriced days or weeks
+    /// ago still has a `prev_close` sitting in the column (from whenever
+    /// that update happened), but surfacing it as "today's" change would
+    /// misrepresent a stale multi-day-old baseline as today's move, so it's
+    /// treated the same as never having been priced today: `None`.
+    pub fn list_holdings(&self, today: NaiveDate) -> rusqlite::Result<Vec<StoredHolding>> {
         let mut stmt = self.conn.prepare(
-            "SELECT h.id, h.account_id, a.name, h.symbol, h.name, h.shares, h.price, h.cost_basis, h.asset_class
+            "SELECT h.id, h.account_id, a.name, h.symbol, h.name, h.shares, h.price, h.cost_basis, h.asset_class, h.prev_close, h.prev_close_date
              FROM holdings h
              JOIN accounts a ON a.id = h.account_id
              ORDER BY a.name, h.symbol",
@@ -3260,15 +3315,23 @@ impl Store {
                 row.get::<_, String>(6)?,
                 row.get::<_, String>(7)?,
                 row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
             ))
         })?;
 
+        let today_str = today.to_string();
         let mut result = Vec::new();
         for row in rows {
-            let (id, account_id, account_name, symbol, name, shares, price, cost_basis, asset_class) = row?;
+            let (id, account_id, account_name, symbol, name, shares, price, cost_basis, asset_class, prev_close, prev_close_date) = row?;
             let shares = Decimal::from_str(&shares).expect("shares stored by this crate must be valid");
             let price = Decimal::from_str(&price).expect("price stored by this crate must be valid");
             let cost_basis = Decimal::from_str(&cost_basis).expect("cost_basis stored by this crate must be valid");
+            let prev_close = if prev_close_date.as_deref() == Some(today_str.as_str()) {
+                prev_close.map(|s| Decimal::from_str(&s).expect("prev_close stored by this crate must be valid"))
+            } else {
+                None
+            };
             let value = shares * price;
             result.push(StoredHolding {
                 id,
@@ -3282,16 +3345,27 @@ impl Store {
                 asset_class,
                 value,
                 gain_loss: value - cost_basis,
+                prev_close,
+                day_gain_loss: prev_close.map(|pc| (price - pc) * shares),
             });
         }
         Ok(result)
     }
 
     /// Updates a holding's price (the only field expected to change often).
-    /// An unknown id is a harmless no-op.
-    pub fn update_holding_price(&self, id: i64, price: Decimal) -> rusqlite::Result<()> {
-        self.conn
-            .execute("UPDATE holdings SET price = ?1 WHERE id = ?2", params![price.to_string(), id])?;
+    /// `today` drives the same day-boundary snapshot as
+    /// `update_holding_prices_for_symbol` below — see its doc comment for
+    /// the mechanics. An unknown id is a harmless no-op.
+    pub fn update_holding_price(&self, id: i64, price: Decimal, today: NaiveDate) -> rusqlite::Result<()> {
+        let today = today.to_string();
+        self.conn.execute(
+            "UPDATE holdings
+             SET prev_close = CASE WHEN prev_close_date IS NULL OR prev_close_date <> ?1 THEN price ELSE prev_close END,
+                 prev_close_date = ?1,
+                 price = ?2
+             WHERE id = ?3",
+            params![today, price.to_string(), id],
+        )?;
         Ok(())
     }
 
@@ -3314,9 +3388,28 @@ impl Store {
     /// (a symbol can appear in more than one account) — the counterpart to
     /// `update_holding_price`, which targets a single holding by id. Returns
     /// how many rows were touched; an unknown symbol is a harmless no-op.
-    pub fn update_holding_prices_for_symbol(&self, symbol: &str, price: Decimal) -> rusqlite::Result<usize> {
-        self.conn
-            .execute("UPDATE holdings SET price = ?1 WHERE symbol = ?2", params![price.to_string(), symbol])
+    ///
+    /// **Day-gain/loss snapshot**: `prev_close` is only overwritten (to the
+    /// row's *pre-update* `price`) when `prev_close_date` isn't already
+    /// `today` — the first price update of the calendar day pins today's
+    /// baseline, and every later update the same day updates `price`
+    /// without disturbing that baseline, so `list_holdings`'s
+    /// `day_gain_loss` reflects the full day's movement rather than just
+    /// the latest refresh's delta. The `CASE` runs against each row's old
+    /// `price`/`prev_close_date` — SQLite (like standard SQL `UPDATE`)
+    /// evaluates every `SET` expression against the pre-update row, so
+    /// referencing `price` here and assigning it below in the same
+    /// statement is safe, not a read-after-write bug.
+    pub fn update_holding_prices_for_symbol(&self, symbol: &str, price: Decimal, today: NaiveDate) -> rusqlite::Result<usize> {
+        let today = today.to_string();
+        self.conn.execute(
+            "UPDATE holdings
+             SET prev_close = CASE WHEN prev_close_date IS NULL OR prev_close_date <> ?1 THEN price ELSE prev_close END,
+                 prev_close_date = ?1,
+                 price = ?2
+             WHERE symbol = ?3",
+            params![today, price.to_string(), symbol],
+        )
     }
 
     /// The opt-in live-price feature's current state. No row exists in
@@ -4883,7 +4976,7 @@ mod tests {
 
         store.delete_account(brokerage).unwrap();
 
-        assert!(store.list_holdings().unwrap().is_empty());
+        assert!(store.list_holdings(test_now().date()).unwrap().is_empty());
     }
 
     #[test]
@@ -6249,7 +6342,7 @@ mod tests {
 
         assert_eq!(outcome.holdings_created, 1);
         assert!(outcome.skipped.is_empty());
-        let holdings = store.list_holdings().unwrap();
+        let holdings = store.list_holdings(test_now().date()).unwrap();
         assert_eq!(holdings.len(), 1);
         assert_eq!(holdings[0].symbol, "AAPL");
         assert_eq!(holdings[0].name, "Apple Inc.");
@@ -6273,7 +6366,27 @@ mod tests {
         assert_eq!(outcome.skipped.len(), 1);
         assert!(outcome.skipped[0].contains("No Such Account"));
         assert!(outcome.skipped[0].contains("AAPL"));
-        assert!(store.list_holdings().unwrap().is_empty());
+        assert!(store.list_holdings(test_now().date()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_holdings_row_with_non_positive_shares_or_price_is_skipped_not_created() {
+        let store = Store::open_in_memory().unwrap();
+        let data = setup_data(
+            "Accounts\nName,Type,Starting Balance,Institution,Mask\nBrokerage,investment,,,\n\
+             \n\
+             Holdings\nAccount,Symbol,Name,Shares,Price,Cost Basis,Asset Class\n\
+             Brokerage,NEG,,-10,100.00,1000.00,\n\
+             Brokerage,ZERO,,0,100.00,1000.00,\n",
+        );
+
+        let outcome = store.apply_setup_import(&data, "2026-08").unwrap();
+
+        assert_eq!(outcome.holdings_created, 0);
+        assert_eq!(outcome.skipped.len(), 2);
+        assert!(outcome.skipped[0].contains("NEG"));
+        assert!(outcome.skipped[1].contains("ZERO"));
+        assert!(store.list_holdings(test_now().date()).unwrap().is_empty());
     }
 
     #[test]
@@ -6288,7 +6401,7 @@ mod tests {
 
         store.apply_setup_import(&data, "2026-08").unwrap();
 
-        let holdings = store.list_holdings().unwrap();
+        let holdings = store.list_holdings(test_now().date()).unwrap();
         assert_eq!(holdings[0].name, "VTI");
     }
 
@@ -7680,7 +7793,7 @@ mod tests {
             )
             .unwrap();
 
-        let holdings = store.list_holdings().unwrap();
+        let holdings = store.list_holdings(test_now().date()).unwrap();
         assert_eq!(holdings.len(), 1);
         assert_eq!(holdings[0].id, id);
         assert_eq!(holdings[0].account_name, "Individual Brokerage");
@@ -7704,7 +7817,7 @@ mod tests {
             )
             .unwrap();
 
-        let holdings = store.list_holdings().unwrap();
+        let holdings = store.list_holdings(test_now().date()).unwrap();
         assert_eq!(holdings[0].value, "480.00".parse().unwrap());
         assert_eq!(holdings[0].gain_loss, "-140.00".parse().unwrap());
     }
@@ -7725,9 +7838,9 @@ mod tests {
             )
             .unwrap();
 
-        store.update_holding_price(id, "552.10".parse().unwrap()).unwrap();
+        store.update_holding_price(id, "552.10".parse().unwrap(), test_now().date()).unwrap();
 
-        let holdings = store.list_holdings().unwrap();
+        let holdings = store.list_holdings(test_now().date()).unwrap();
         assert_eq!(holdings[0].price, "552.10".parse().unwrap());
         assert_eq!(holdings[0].value, "1987.56".parse().unwrap());
     }
@@ -7735,7 +7848,94 @@ mod tests {
     #[test]
     fn update_holding_price_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
-        store.update_holding_price(999, "100.00".parse().unwrap()).unwrap();
+        store.update_holding_price(999, "100.00".parse().unwrap(), test_now().date()).unwrap();
+    }
+
+    #[test]
+    fn update_holding_price_snapshots_prev_close_from_the_pre_update_price() {
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Individual Brokerage", AccountType::Investment).unwrap();
+        let id = store
+            .create_holding(brokerage, "VOO", "Vanguard S&P 500 ETF", "3.6".parse().unwrap(), "500.00".parse().unwrap(), "1780.00".parse().unwrap(), None)
+            .unwrap();
+
+        store.update_holding_price(id, "552.10".parse().unwrap(), test_now().date()).unwrap();
+
+        let holdings = store.list_holdings(test_now().date()).unwrap();
+        assert_eq!(holdings[0].prev_close, Some("500.00".parse().unwrap()));
+        assert_eq!(holdings[0].day_gain_loss, Some("187.56".parse().unwrap())); // 3.6 * (552.10 - 500.00)
+    }
+
+    #[test]
+    fn update_holding_price_does_not_move_prev_close_on_a_second_update_the_same_day() {
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Individual Brokerage", AccountType::Investment).unwrap();
+        let id = store
+            .create_holding(brokerage, "VOO", "Vanguard S&P 500 ETF", "1".parse().unwrap(), "500.00".parse().unwrap(), "500.00".parse().unwrap(), None)
+            .unwrap();
+
+        store.update_holding_price(id, "510.00".parse().unwrap(), test_now().date()).unwrap();
+        store.update_holding_price(id, "520.00".parse().unwrap(), test_now().date()).unwrap();
+
+        let holdings = store.list_holdings(test_now().date()).unwrap();
+        // prev_close stays pinned to the price from before the *first*
+        // update of the day, so day_gain_loss reflects the whole day's
+        // move (500 -> 520), not just the second update's delta (510 -> 520).
+        assert_eq!(holdings[0].prev_close, Some("500.00".parse().unwrap()));
+        assert_eq!(holdings[0].day_gain_loss, Some("20.00".parse().unwrap()));
+    }
+
+    #[test]
+    fn update_holding_price_re_snapshots_prev_close_on_a_later_calendar_day() {
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Individual Brokerage", AccountType::Investment).unwrap();
+        let id = store
+            .create_holding(brokerage, "VOO", "Vanguard S&P 500 ETF", "1".parse().unwrap(), "500.00".parse().unwrap(), "500.00".parse().unwrap(), None)
+            .unwrap();
+        store.update_holding_price(id, "510.00".parse().unwrap(), test_now().date()).unwrap();
+
+        let next_day = test_now().date() + chrono::Duration::days(1);
+        store.update_holding_price(id, "515.00".parse().unwrap(), next_day).unwrap();
+
+        let holdings = store.list_holdings(next_day).unwrap();
+        assert_eq!(holdings[0].prev_close, Some("510.00".parse().unwrap()));
+        assert_eq!(holdings[0].day_gain_loss, Some("5.00".parse().unwrap()));
+    }
+
+    #[test]
+    fn list_holdings_day_gain_loss_goes_stale_once_today_moves_past_the_last_update() {
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Individual Brokerage", AccountType::Investment).unwrap();
+        let id = store
+            .create_holding(brokerage, "VOO", "Vanguard S&P 500 ETF", "1".parse().unwrap(), "500.00".parse().unwrap(), "500.00".parse().unwrap(), None)
+            .unwrap();
+        store.update_holding_price(id, "510.00".parse().unwrap(), test_now().date()).unwrap();
+
+        // A day-gain figure computed as of the update's own day is real...
+        let holdings = store.list_holdings(test_now().date()).unwrap();
+        assert_eq!(holdings[0].day_gain_loss, Some("10.00".parse().unwrap()));
+
+        // ...but asking as of a *later* day must not keep reporting that
+        // same stale delta as if it were still "today's" move — the row's
+        // price hasn't actually been touched since, so there's no real
+        // day-change to report for the later day.
+        let next_day = test_now().date() + chrono::Duration::days(1);
+        let holdings = store.list_holdings(next_day).unwrap();
+        assert_eq!(holdings[0].prev_close, None);
+        assert_eq!(holdings[0].day_gain_loss, None);
+    }
+
+    #[test]
+    fn list_holdings_day_gain_loss_is_none_until_a_price_update_happens() {
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Individual Brokerage", AccountType::Investment).unwrap();
+        store
+            .create_holding(brokerage, "VOO", "Vanguard S&P 500 ETF", "1".parse().unwrap(), "500.00".parse().unwrap(), "500.00".parse().unwrap(), None)
+            .unwrap();
+
+        let holdings = store.list_holdings(test_now().date()).unwrap();
+        assert_eq!(holdings[0].prev_close, None);
+        assert_eq!(holdings[0].day_gain_loss, None);
     }
 
     #[test]
@@ -7748,7 +7948,7 @@ mod tests {
 
         store.delete_holding(id).unwrap();
 
-        assert_eq!(store.list_holdings().unwrap().len(), 0);
+        assert_eq!(store.list_holdings(test_now().date()).unwrap().len(), 0);
     }
 
     #[test]
@@ -7792,15 +7992,17 @@ mod tests {
             .create_holding(brokerage, "MSFT", "Microsoft Corp.", "1".parse().unwrap(), "300".parse().unwrap(), "300".parse().unwrap(), None)
             .unwrap();
 
-        let updated = store.update_holding_prices_for_symbol("AAPL", "250".parse().unwrap()).unwrap();
+        let updated = store.update_holding_prices_for_symbol("AAPL", "250".parse().unwrap(), test_now().date()).unwrap();
 
         assert_eq!(updated, 2);
-        let holdings = store.list_holdings().unwrap();
+        let holdings = store.list_holdings(test_now().date()).unwrap();
         for h in &holdings {
             if h.symbol == "AAPL" {
                 assert_eq!(h.price, "250".parse().unwrap());
+                assert_eq!(h.prev_close, Some("200".parse().unwrap()));
             } else {
                 assert_eq!(h.price, "300".parse().unwrap());
+                assert_eq!(h.prev_close, None);
             }
         }
     }
@@ -7808,7 +8010,7 @@ mod tests {
     #[test]
     fn update_holding_prices_for_symbol_on_unknown_symbol_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
-        let updated = store.update_holding_prices_for_symbol("NOSUCH", "1".parse().unwrap()).unwrap();
+        let updated = store.update_holding_prices_for_symbol("NOSUCH", "1".parse().unwrap(), test_now().date()).unwrap();
         assert_eq!(updated, 0);
     }
 

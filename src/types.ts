@@ -166,6 +166,8 @@ export type Holding = {
   asset_class: string | null;
   value: string;
   gain_loss: string;
+  prev_close: string | null;
+  day_gain_loss: string | null;
 };
 
 export type MonthTotal = {

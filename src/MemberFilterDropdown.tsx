@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
 import type { FamilyMember } from "./types";
+import { usePopover } from "./usePopover";
 
 /** `"all"` means no filter is applied (every member shown, including
  * unassigned rows) — kept as a distinct sentinel rather than always
@@ -25,19 +25,7 @@ export function MemberFilterDropdown({
   value: MemberFilterValue;
   onChange: (next: MemberFilterValue) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function handleClickOutside(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [open]);
+  const { open, setOpen, rootRef, triggerRef } = usePopover();
 
   function toggleMember(memberId: number) {
     const next = new Set(value === "all" ? members.map((m) => m.id) : value);
@@ -64,6 +52,7 @@ export function MemberFilterDropdown({
   return (
     <div className="account-filter" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className="account-filter-toggle"
         onClick={() => setOpen((v) => !v)}

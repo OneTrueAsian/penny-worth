@@ -1,7 +1,7 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import type { Account, Holding } from "./types";
 import { DonutChart, LineChart, fmtMoneyShort } from "./charts";
-import { formatAmount } from "./format";
+import { formatAmount, isValidDecimalString } from "./format";
 import { projectGoal } from "./projections";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
@@ -107,6 +107,37 @@ function NewHoldingForm({
   const [costBasis, setCostBasis] = useState("");
   const [assetClass, setAssetClass] = useState("");
   const [open, setOpen] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+
+  const sharesTrimmed = shares.trim();
+  const priceTrimmed = price.trim();
+  const costBasisTrimmed = costBasis.trim();
+
+  const sharesError =
+    sharesTrimmed === ""
+      ? "Enter a number of shares."
+      : !isValidDecimalString(sharesTrimmed)
+        ? "That doesn't look like a number."
+        : parseFloat(sharesTrimmed) <= 0
+          ? "Shares must be greater than zero."
+          : null;
+  const priceError =
+    priceTrimmed === ""
+      ? "Enter a price."
+      : !isValidDecimalString(priceTrimmed)
+        ? "That doesn't look like a number."
+        : parseFloat(priceTrimmed) <= 0
+          ? "Price must be greater than zero."
+          : null;
+  const costBasisError =
+    costBasisTrimmed === ""
+      ? "Enter a cost basis."
+      : !isValidDecimalString(costBasisTrimmed)
+        ? "That doesn't look like a number."
+        : parseFloat(costBasisTrimmed) < 0
+          ? "Cost basis can't be negative."
+          : null;
+  const valid = accountId !== "" && symbol.trim() !== "" && !sharesError && !priceError && !costBasisError;
 
   async function handleSymbolBlur() {
     const trimmed = symbol.trim();
@@ -124,14 +155,15 @@ function NewHoldingForm({
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!accountId || !symbol.trim() || !shares.trim() || !price.trim() || !costBasis.trim()) return;
+    setSubmitAttempted(true);
+    if (!valid) return;
     onCreate(
       Number(accountId),
       symbol.trim().toUpperCase(),
       name.trim() || symbol.trim().toUpperCase(),
-      shares.trim(),
-      price.trim(),
-      costBasis.trim(),
+      sharesTrimmed,
+      priceTrimmed,
+      costBasisTrimmed,
       assetClass.trim() || null,
     );
     setSymbol("");
@@ -141,6 +173,7 @@ function NewHoldingForm({
     setPriceTouched(false);
     setCostBasis("");
     setAssetClass("");
+    setSubmitAttempted(false);
     setOpen(false);
   }
 
@@ -183,7 +216,13 @@ function NewHoldingForm({
       </label>
       <label className="labeled-field">
         <span className="labeled-field-label">Shares</span>
-        <input value={shares} onChange={(e) => setShares(e.target.value)} placeholder="0" />
+        <input
+          value={shares}
+          onChange={(e) => setShares(e.target.value)}
+          placeholder="0"
+          aria-invalid={submitAttempted && sharesError !== null}
+        />
+        {submitAttempted && sharesError && <span className="field-error">{sharesError}</span>}
       </label>
       <label className="labeled-field">
         <span className="labeled-field-label">Price</span>
@@ -194,11 +233,19 @@ function NewHoldingForm({
             setPrice(e.target.value);
           }}
           placeholder={fetchingPrice ? "Fetching live price…" : "0.00"}
+          aria-invalid={submitAttempted && priceError !== null}
         />
+        {submitAttempted && priceError && <span className="field-error">{priceError}</span>}
       </label>
       <label className="labeled-field">
         <span className="labeled-field-label">Cost basis ($)</span>
-        <input value={costBasis} onChange={(e) => setCostBasis(e.target.value)} placeholder="0.00" />
+        <input
+          value={costBasis}
+          onChange={(e) => setCostBasis(e.target.value)}
+          placeholder="0.00"
+          aria-invalid={submitAttempted && costBasisError !== null}
+        />
+        {submitAttempted && costBasisError && <span className="field-error">{costBasisError}</span>}
       </label>
       <label className="labeled-field">
         <span className="labeled-field-label">Asset class (optional)</span>
@@ -208,11 +255,7 @@ function NewHoldingForm({
           placeholder="e.g. US Stocks"
         />
       </label>
-      <button
-        type="submit"
-        style={{ alignSelf: "flex-end" }}
-        disabled={!accountId || !symbol.trim() || !shares.trim() || !price.trim() || !costBasis.trim()}
-      >
+      <button type="submit" style={{ alignSelf: "flex-end" }} disabled={!accountId || !symbol.trim()}>
         Save
       </button>
       <button type="button" className="modal-secondary" style={{ alignSelf: "flex-end" }} onClick={() => setOpen(false)}>
@@ -251,9 +294,24 @@ export function InvestmentsView({
   useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
   const [editingPrice, setEditingPrice] = useState<{ id: number; value: string } | null>(null);
 
-  const totalValue = holdings.reduce((s, h) => s + parseFloat(h.value), 0);
-  const totalCost = holdings.reduce((s, h) => s + parseFloat(h.cost_basis), 0);
-  const totalGain = totalValue - totalCost;
+  const { totalValue, totalCost, totalGain, holdingsWithDayCount, totalDayGain, totalDayGainPct } = useMemo(() => {
+    const totalValue = holdings.reduce((s, h) => s + parseFloat(h.value), 0);
+    const totalCost = holdings.reduce((s, h) => s + parseFloat(h.cost_basis), 0);
+    const holdingsWithDayData = holdings.filter((h) => h.day_gain_loss !== null);
+    const totalDayGain = holdingsWithDayData.reduce((s, h) => s + parseFloat(h.day_gain_loss as string), 0);
+    const totalDayPrevValue = holdingsWithDayData.reduce(
+      (s, h) => s + parseFloat(h.shares) * parseFloat(h.prev_close as string),
+      0,
+    );
+    return {
+      totalValue,
+      totalCost,
+      totalGain: totalValue - totalCost,
+      holdingsWithDayCount: holdingsWithDayData.length,
+      totalDayGain,
+      totalDayGainPct: totalDayPrevValue !== 0 ? (totalDayGain / totalDayPrevValue) * 100 : null,
+    };
+  }, [holdings]);
 
   const byClass = new Map<string, number>();
   for (const h of holdings) {
@@ -296,6 +354,27 @@ export function InvestmentsView({
           </span>
           <span className="stat-label">Total gain/loss</span>
         </div>
+        <div className="stat">
+          {holdingsWithDayCount > 0 ? (
+            <span className={totalDayGain < 0 ? "stat-value report-over-budget" : "stat-value"}>
+              {totalDayGain > 0 ? "+" : ""}
+              {formatAmount(totalDayGain.toFixed(2))}
+            </span>
+          ) : (
+            <span className="stat-value stat-value-muted">—</span>
+          )}
+          <span className="stat-label">Today's gain/loss</span>
+          {holdingsWithDayCount > 0 && totalDayGainPct !== null && (
+            <span className={totalDayGainPct >= 0 ? "stat-delta up" : "stat-delta down"}>
+              {totalDayGainPct >= 0 ? "▲" : "▼"} {Math.abs(totalDayGainPct).toFixed(2)}%
+            </span>
+          )}
+          {holdingsWithDayCount > 0 && holdingsWithDayCount < holdings.length && (
+            <span className="stat-delta">
+              {holdingsWithDayCount} of {holdings.length} priced today
+            </span>
+          )}
+        </div>
       </div>
 
       {donutData.length > 0 && (
@@ -331,6 +410,7 @@ export function InvestmentsView({
                 <th>Holding</th>
                 <th className="amount-col">Shares</th>
                 <th className="amount-col">Price</th>
+                <th className="amount-col">Today</th>
                 <th className="amount-col">Value</th>
                 <th className="amount-col">Gain/Loss</th>
                 <th className="actions-col"></th>
@@ -339,6 +419,9 @@ export function InvestmentsView({
             <tbody>
               {accountHoldings.map((h) => {
                 const gain = parseFloat(h.gain_loss);
+                const dayGain = h.day_gain_loss !== null ? parseFloat(h.day_gain_loss) : null;
+                const dayPrevValue = h.prev_close !== null ? parseFloat(h.shares) * parseFloat(h.prev_close) : 0;
+                const dayGainPct = dayGain !== null && dayPrevValue !== 0 ? (dayGain / dayPrevValue) * 100 : null;
                 return (
                   <tr key={h.id}>
                     <td>
@@ -367,6 +450,24 @@ export function InvestmentsView({
                         >
                           {formatAmount(h.price)}
                         </span>
+                      )}
+                    </td>
+                    <td className={dayGain !== null && dayGain < 0 ? "amount-col report-over-budget" : "amount-col"}>
+                      {dayGain !== null ? (
+                        <>
+                          {dayGain > 0 ? "+" : ""}
+                          {formatAmount(h.day_gain_loss as string)}
+                          {dayGainPct !== null && (
+                            <>
+                              <br />
+                              <span className={dayGainPct >= 0 ? "stat-delta up" : "stat-delta down"}>
+                                {dayGainPct >= 0 ? "▲" : "▼"} {Math.abs(dayGainPct).toFixed(2)}%
+                              </span>
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <span className="account-col">—</span>
                       )}
                     </td>
                     <td className="amount-col">{formatAmount(h.value)}</td>

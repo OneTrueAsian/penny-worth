@@ -1,22 +1,12 @@
 import { FormEvent, useState } from "react";
 import type { Account, Bucket, FamilyMember } from "./types";
 import { ProgressRing } from "./charts";
-import { formatAmount } from "./format";
+import { formatAmount, toLocalIsoDate } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
-
-/** Today's date in the viewer's local timezone as "YYYY-MM-DD" — deliberately
- * not `toISOString()`, which reads UTC and can land on the wrong day for
- * anyone west of it. */
-function todayLocal(): string {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${now.getFullYear()}-${month}-${day}`;
-}
 
 function daysLeft(targetDate: string): number {
   const target = new Date(targetDate + "T00:00:00");
-  const today = new Date(todayLocal() + "T00:00:00");
+  const today = new Date(toLocalIsoDate() + "T00:00:00");
   return Math.max(0, Math.round((target.getTime() - today.getTime()) / 86400000));
 }
 
@@ -111,7 +101,7 @@ function ContributionForm({
   bucketId: number;
   onAddContribution: (bucketId: number, date: string, amount: string, note: string | null) => void;
 }) {
-  const today = todayLocal();
+  const today = toLocalIsoDate();
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
 

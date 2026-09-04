@@ -4,6 +4,18 @@ import { formatAmount } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { Sparkline } from "./charts";
 
+/** A one-line description of a sparkline's trend, for the `<title>` WCAG
+ * 1.1.1 requires on non-decorative non-text content — this is what a
+ * screen reader announces in place of the line chart. States the actual
+ * direction over the whole window, not just first-vs-last, since a
+ * sparkline's whole point is showing shape a single number can't. */
+function describeTrend(category: string, points: number[]): string {
+  const first = points[0];
+  const last = points[points.length - 1];
+  const direction = last > first ? "trending up" : last < first ? "trending down" : "flat";
+  return `${category} spending over the last ${points.length} months: ${direction}, from ${formatAmount(first)} to ${formatAmount(last)}`;
+}
+
 const GROUP_ORDER = ["income", "fixed", "flexible", "nonmonthly"] as const;
 type Group = (typeof GROUP_ORDER)[number];
 const GROUP_LABELS: Record<Group, string> = {
@@ -204,7 +216,15 @@ function BudgetRow({
           >
             {line.category}
           </span>
-          {trend && <Sparkline points={trend} width={40} height={12} color="var(--info)" />}
+          {trend && (
+            <Sparkline
+              points={trend}
+              width={40}
+              height={12}
+              color="var(--info)"
+              title={describeTrend(line.category, trend)}
+            />
+          )}
         </span>
         {alertLevel && (
           <span

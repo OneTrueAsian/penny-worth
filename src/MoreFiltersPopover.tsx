@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { usePopover } from "./usePopover";
 
 /** Collapses the Ledger's less-frequently-used filters (date range, tag)
  * behind one toggle — same toggle-button/click-outside/panel shape as
@@ -23,19 +23,7 @@ export function MoreFiltersPopover({
   allTags: string[];
   onSetTag: (v: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function handleClickOutside(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [open]);
+  const { open, setOpen, rootRef, triggerRef } = usePopover();
 
   const activeCount = [filterFrom !== "", filterTo !== "", filterTag !== "all"].filter(Boolean).length;
   const label = activeCount === 0 ? "More filters" : `${activeCount} filter${activeCount === 1 ? "" : "s"} active`;
@@ -49,6 +37,7 @@ export function MoreFiltersPopover({
   return (
     <div className="account-filter" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className="account-filter-toggle"
         onClick={() => setOpen((v) => !v)}

@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import type { Account, Asset, Bucket, DebtPayoffPlan, FamilyMember, Report, Transaction } from "./types";
 import { StatDetailPanel } from "./StatDetailPanel";
-import { formatAmount } from "./format";
+import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
 import { groupOf, netWorthContribution } from "./accountGroups";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
@@ -11,10 +11,6 @@ const ASSET_TYPE_LABELS: Record<string, string> = {
   vehicle: "Vehicle",
   other: "Other",
 };
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 function NewAssetForm({
   familyMembers,
@@ -36,15 +32,29 @@ function NewAssetForm({
   const [notes, setNotes] = useState("");
   const [memberId, setMemberId] = useState("");
   const [open, setOpen] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+
+  const valueTrimmed = value.trim();
+  const valueError =
+    valueTrimmed === ""
+      ? "Enter a value."
+      : !isValidDecimalString(valueTrimmed)
+        ? "That doesn't look like a number."
+        : parseFloat(valueTrimmed) < 0
+          ? "Value can't be negative."
+          : null;
+  const valid = name.trim() !== "" && !valueError;
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !value.trim()) return;
-    onCreate(name.trim(), assetType, value.trim(), todayIso(), notes.trim() || null, memberId ? Number(memberId) : null);
+    setSubmitAttempted(true);
+    if (!valid) return;
+    onCreate(name.trim(), assetType, valueTrimmed, toLocalIsoDate(), notes.trim() || null, memberId ? Number(memberId) : null);
     setName("");
     setValue("");
     setNotes("");
     setMemberId("");
+    setSubmitAttempted(false);
     setOpen(false);
   }
 
@@ -64,7 +74,13 @@ function NewAssetForm({
           </option>
         ))}
       </select>
-      <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Current value" />
+      <input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Current value"
+        aria-invalid={submitAttempted && valueError !== null}
+      />
+      {submitAttempted && valueError && <span className="field-error">{valueError}</span>}
       <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" />
       {familyMembers.length > 0 && (
         <select value={memberId} onChange={(e) => setMemberId(e.target.value)}>
@@ -76,7 +92,7 @@ function NewAssetForm({
           ))}
         </select>
       )}
-      <button type="submit" disabled={!name.trim() || !value.trim()}>
+      <button type="submit" disabled={!name.trim()}>
         Save
       </button>
       <button type="button" className="modal-secondary" onClick={() => setOpen(false)}>
@@ -117,7 +133,7 @@ function PropertyAssetsSection({
   function commitEdit(id: number, value: string) {
     setEditing(null);
     if (!value.trim()) return;
-    onUpdateValue(id, value.trim(), todayIso());
+    onUpdateValue(id, value.trim(), toLocalIsoDate());
   }
 
   return (

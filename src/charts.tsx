@@ -99,11 +99,23 @@ export function Sparkline({
   width = 52,
   height = 26,
   color = "var(--accent)",
+  title,
 }: {
   points: number[];
   width?: number;
   height?: number;
   color?: string;
+  /** A one-line description of what the trend shows (e.g. "Up 3 months in
+   * a row, from $80 to $140"). WCAG 1.1.1 requires every non-text graphic
+   * to either be marked decorative or given a text alternative — pass this
+   * when the *shape* of the trend is information the surrounding numbers
+   * don't already say out loud (a lone total doesn't tell you it's the
+   * third month in a row of creeping up). Omit it when a sibling element
+   * already states the trend in words (the Dashboard's stat cards render
+   * their own "▲ $X over Nmo" line right next to the chart) — the SVG is
+   * then marked `aria-hidden` instead, since a screen reader saying the
+   * same thing twice is worse than not saying it at all. */
+  title?: string;
 }) {
   if (points.length < 2) return null;
   const min = Math.min(...points);
@@ -116,7 +128,15 @@ export function Sparkline({
   const y = (v: number) => pad + innerH - ((v - min) / span) * innerH;
   const linePts = points.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
   return (
-    <svg className="stat-spark" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+    <svg
+      className="stat-spark"
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      role={title ? "img" : undefined}
+      aria-hidden={title ? undefined : true}
+    >
+      {title && <title>{title}</title>}
       <polyline points={linePts} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );

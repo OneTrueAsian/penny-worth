@@ -67,4 +67,12 @@ export const CHANGELOG: Record<string, string[]> = {
     "Modals, the \"More\" menu, and expandable stat panels now animate open and closed; respects your OS's reduced-motion setting.",
     "StockData.org is now available as a live stock-price provider in Settings (100 requests/day, batches of up to 3 symbols per request).",
   ],
+  "1.1.10": [
+    "Investments now shows a \"Today's gain/loss\" figure, portfolio-wide and per-holding, based on the last price update of the day.",
+    "Settings now has a permanent Release Notes section so you can look back at what changed in any past version, not just the one you just updated to.",
+    "Fixed bill due-date checks and CSV export filenames occasionally landing on the wrong day depending on your timezone.",
+    "Fixed switching or creating a profile occasionally losing track of which database file it was pointed at.",
+    "Add Transaction, new holdings, and new assets now reject invalid or negative amounts instead of silently accepting them and corrupting totals.",
+    "Contrast, keyboard, and screen-reader polish across the app: darker text and accent colors for readability, in-app messages that no longer shift the page when they appear, sparklines and filter checkboxes that expose their meaning to screen readers, and the Recurring calendar now shows each bill's amount directly instead of hiding it behind a tooltip.",
+  ],
 };

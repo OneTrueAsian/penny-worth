@@ -36,7 +36,7 @@ import { MemberFilterDropdown, type MemberFilterValue } from "./MemberFilterDrop
 import { MoreFiltersPopover } from "./MoreFiltersPopover";
 import { UpdateBanner } from "./UpdateBanner";
 import { NavIcon } from "./icons";
-import { formatAmount } from "./format";
+import { formatAmount, toLocalIsoDate } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { useDelayedVisibility } from "./useDelayedVisibility";
 import type {
@@ -1024,7 +1024,7 @@ function App({
     const DUE_SOON_DAYS = 3;
 
     (async () => {
-      const todayIso = new Date().toISOString().slice(0, 10);
+      const todayIso = toLocalIsoDate();
       const today = new Date(todayIso);
       const dueSoon = recurring.filter((r) => {
         if (parseFloat(r.amount) >= 0) return false; // bills only, not income
@@ -1944,7 +1944,7 @@ function App({
 
   async function handleExportReportsCsv() {
     const path = await save({
-      defaultPath: `reports-export-${new Date().toISOString().slice(0, 10)}.csv`,
+      defaultPath: `reports-export-${toLocalIsoDate()}.csv`,
       filters: [{ name: "CSV", extensions: ["csv"] }],
     });
     if (!path) return;
@@ -1967,7 +1967,7 @@ function App({
 
   async function handleExportLedgerCsv() {
     const path = await save({
-      defaultPath: `ledger-export-${new Date().toISOString().slice(0, 10)}.csv`,
+      defaultPath: `ledger-export-${toLocalIsoDate()}.csv`,
       filters: [{ name: "CSV", extensions: ["csv"] }],
     });
     if (!path) return;
@@ -2410,15 +2410,17 @@ function App({
         <div className="page">
 
       <UpdateBanner />
-      {status && <StatusBanner text={status.text} kind={status.kind} onDismiss={() => setStatusState(null)} />}
-      {undoToast && (
-        <StatusBanner
-          text={undoToast.text}
-          kind="info"
-          action={{ label: "Undo", onClick: handleUndoBulkDelete }}
-          onDismiss={() => setUndoToast(null)}
-        />
-      )}
+      <div className="toast-stack">
+        {status && <StatusBanner text={status.text} kind={status.kind} onDismiss={() => setStatusState(null)} />}
+        {undoToast && (
+          <StatusBanner
+            text={undoToast.text}
+            kind="info"
+            action={{ label: "Undo", onClick: handleUndoBulkDelete }}
+            onDismiss={() => setUndoToast(null)}
+          />
+        )}
+      </div>
 
       {activeTab === "dashboard" && (
         <DashboardView
@@ -3405,6 +3407,7 @@ function App({
 
       {activeTab === "settings" && (
         <SettingsView
+          appVersion={appVersion}
           dataFileLocation={dataFileLocation}
           onRelocateDataFile={handleRelocateDataFile}
           backups={backups}

@@ -13,19 +13,32 @@
 
   --text: #142420;
   --text-muted: #5e6e67;
-  --text-faint: #8b9891;
+  /* Darkened from #8b9891 (2.97:1 on white, fails WCAG 1.4.3) to actually
+     clear 4.5:1 — this is real label text (e.g. `.labeled-field-label`),
+     not decoration, so AA applies. Same hue, just dark enough. */
+  --text-faint: #6b7871;
   --border: #e1e6df;
   --border-strong: #ccd5cb;
 
-  --accent: #1e9e76;
+  /* --accent/--positive/--negative/--warning below are darkened from their
+     original values (#1e9e76 / #1e9e76 / #bd5b3c / #c08a2e) to clear WCAG
+     1.4.3's 4.5:1 minimum for normal text in light mode — the originals
+     ranged 3.0-4.4:1 against white and as low as 2.5:1 against their own
+     "-soft" badge-pill backgrounds (e.g. `.budget-alert-warning`), a real
+     failure on the exact colors this app uses to signal "over budget" /
+     "you're fine". Dark mode's variants already clear 6-8.7:1 and are
+     untouched — this was evidently checked for dark mode and not carried
+     back to light, since the two palettes are declared independently.
+     Same hue as before, just far enough down in lightness to pass. */
+  --accent: #198463;
   --accent-strong: #157a5b;
   --accent-soft: #def2e9;
   --accent-soft-text: #146b4e;
 
-  --positive: #1e9e76;
-  --negative: #bd5b3c;
+  --positive: #198463;
+  --negative: #a24e33;
   --negative-soft: #f7e4dc;
-  --warning: #c08a2e;
+  --warning: #866120;
   --warning-soft: #f5e9d2;
   --info: #3e7cb8;
   --info-soft: #dce8f5;
@@ -716,19 +729,43 @@ button:disabled {
 }
 
 .cal-item {
-  font-size: 11px;
-  font-weight: 600;
+  display: flex;
+  flex-direction: column;
   padding: 2px 5px;
   border-radius: 5px;
   background: var(--surface-2);
   color: var(--text);
   overflow: hidden;
+}
+
+/* The amount used to live only in this element's `title` attribute —
+   invisible without a mouse (no hover on touch, unreachable by keyboard
+   focus per WCAG 1.4.13, and it made this calendar strictly less
+   informative than the List view sitting right next to it, which shows
+   the amount as a plain column). Both lines are real visible text now;
+   `title` stays as a supplementary fallback for when the merchant name
+   itself is what's truncated. */
+.cal-item-merchant {
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.cal-item-amount {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
 .cal-item-due-soon {
   background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.cal-item-due-soon .cal-item-amount {
   color: var(--warning);
 }
 
@@ -1618,6 +1655,10 @@ button:disabled {
   font-weight: 600;
 }
 
+.stat-value-muted {
+  color: var(--text-muted);
+}
+
 .stat-label {
   font-size: 11px;
   text-transform: uppercase;
@@ -1694,12 +1735,39 @@ button:disabled {
   }
 }
 
+/* Floats above the page instead of sitting in document flow (its old
+   `margin-bottom`-only layout), so it's visible regardless of scroll
+   position and never shifts the content below it — real "Visibility of
+   System Status" (Nielsen #1) for the bulk-delete undo toast specifically:
+   that control lives in the bulk-action bar at the bottom of a
+   potentially long, scrolled Ledger table, so an in-flow banner at the
+   top of the page could land entirely outside the viewport. `.toast-stack`
+   (below) positions the fixed container; `.status` itself stays a normal
+   flex row within it. */
+.toast-stack {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(92vw, 480px);
+  pointer-events: none;
+}
+
+.toast-stack .status {
+  pointer-events: auto;
+  box-shadow: var(--shadow-md);
+}
+
 .status {
   display: flex;
   align-items: center;
   gap: 9px;
   font-size: 13px;
-  margin: 0 0 14px 0;
+  margin: 0;
   padding: 9px 12px;
   border-radius: 9px;
   border: 1px solid transparent;
@@ -1909,12 +1977,18 @@ button:disabled {
   margin-bottom: 6px;
 }
 
+/* A real checkbox, not just clickable-looking text — checking/unchecking
+   an entire group at once was already real functionality here, but
+   nothing signified that it was possible (Norman's affordance-vs-signifier
+   gap: it read as a plain section heading). A checkbox is the one shape
+   every OS file-picker already trains users to recognize for "select all
+   within a group," and it comes with tri-state (checked/unchecked/
+   indeterminate) support screen readers already understand natively. */
 .account-filter-group-label {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 7px;
   width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
   padding: 4px 0;
   font-size: 11px;
   text-transform: uppercase;
@@ -2787,6 +2861,62 @@ button:disabled {
 
 .modal-changelog-list li:last-child {
   margin-bottom: 0;
+}
+
+.release-notes-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.release-note-entry {
+  border-top: 1px solid var(--border);
+  padding: 10px 0;
+}
+
+.release-note-entry:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.release-note-entry summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13.5px;
+  list-style: none;
+}
+
+.release-note-entry summary::-webkit-details-marker {
+  display: none;
+}
+
+.release-note-entry summary::before {
+  content: "▸";
+  display: inline-block;
+  color: var(--text-muted);
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+
+.release-note-entry[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.release-note-entry .modal-changelog-list {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.release-note-current {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
 }
 
 .modal-field {

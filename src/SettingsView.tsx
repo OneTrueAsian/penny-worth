@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Backup, LivePriceProviderId, LivePriceSettings, Profile } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { CHANGELOG } from "./changelog";
 
 const LIVE_PRICE_PROVIDERS: Record<
   LivePriceProviderId,
@@ -405,7 +406,44 @@ function ProfilesSection({
   );
 }
 
+/** Every released version's notes, newest first — the persistent
+ * counterpart to `WhatsNewDialog` (App.tsx), which only ever shows the one
+ * version a viewer just updated to, once, then never again. Reuses the
+ * same `CHANGELOG` data (`changelog.ts`) rather than a second copy, so
+ * cutting a release only ever means adding one entry there. `Object.keys`
+ * preserves insertion order for string keys, and `CHANGELOG`'s entries are
+ * already written oldest-first, so reversing it is enough — no real
+ * version-number parsing needed. */
+function ReleaseNotesSection({ currentVersion }: { currentVersion: string | null }) {
+  const versions = Object.keys(CHANGELOG).reverse();
+  if (versions.length === 0) return null;
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">Release notes</span>
+      </div>
+      <div className="release-notes-list">
+        {versions.map((v, i) => (
+          <details key={v} className="release-note-entry" open={i === 0}>
+            <summary>
+              <span>Version {v}</span>
+              {v === currentVersion && <span className="release-note-current">Current</span>}
+            </summary>
+            <ul className="modal-changelog-list">
+              {CHANGELOG[v].map((note, j) => (
+                <li key={j}>{note}</li>
+              ))}
+            </ul>
+          </details>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsView({
+  appVersion,
   dataFileLocation,
   onRelocateDataFile,
   backups,
@@ -421,6 +459,7 @@ export function SettingsView({
   onSetLivePriceApiKey,
   onRefreshLivePrices,
 }: {
+  appVersion: string | null;
   dataFileLocation: string | null;
   onRelocateDataFile: () => void;
   backups: Backup[];
@@ -453,6 +492,7 @@ export function SettingsView({
         onSetApiKey={onSetLivePriceApiKey}
         onRefreshNow={onRefreshLivePrices}
       />
+      <ReleaseNotesSection currentVersion={appVersion} />
     </div>
   );
 }

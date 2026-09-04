@@ -1,6 +1,6 @@
 [package]
 name = "pennyworth"
-version = "1.1.9"
+version = "1.1.10"
 description = "Penny Worth — a local budgeting app with learning transaction categorization"
 authors = ["OneTrueAsian"]
 license = "MIT"

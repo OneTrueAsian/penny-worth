@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useId, useRef, useState } from "react";
-import { formatAmount } from "./format";
+import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
 import type { Account, CategoryTransaction, FamilyMember, MonthExpenseDetail, ReportBudgetLine } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
@@ -301,7 +301,7 @@ export function NewTransactionDialog({
   const [accountId, setAccountId] = useState(
     defaultAccountId !== null ? String(defaultAccountId) : accounts[0] ? String(accounts[0].id) : "",
   );
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => toLocalIsoDate());
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("");
@@ -309,7 +309,7 @@ export function NewTransactionDialog({
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
   const amountTrimmed = amount.trim();
-  const amountIsNumeric = amountTrimmed !== "" && !isNaN(parseFloat(amountTrimmed));
+  const amountIsNumeric = amountTrimmed !== "" && isValidDecimalString(amountTrimmed);
   const amountError = amountTrimmed === "" ? "Enter an amount." : !amountIsNumeric ? "That doesn't look like a number." : null;
   const valid = accountId !== "" && description.trim() !== "" && amountIsNumeric && date !== "";
 
