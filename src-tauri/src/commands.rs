@@ -1038,6 +1038,23 @@ pub fn set_account_starting_balance(
         .map_err(|e| e.to_string())
 }
 
+/// Corrects an account's current balance as of today, without touching any
+/// existing transaction — see `Store::set_account_balance_override`.
+#[tauri::command]
+pub fn set_account_balance_override(
+    id: i64,
+    balance: String,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let balance = parse_amount(&balance)?;
+    let today = chrono::Local::now().date_naive();
+    state
+        .store
+        .set_account_balance_override(id, balance, today)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn update_account_type(
     id: i64,
@@ -1398,6 +1415,33 @@ pub fn update_transaction_account(
     state
         .store
         .update_transaction_account(id, account_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_transaction_date(
+    id: i64,
+    date: String,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let date = parse_date(&date)?;
+    state.store.update_transaction_date(id, date).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_transaction_description(
+    id: i64,
+    description: String,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    if description.trim().is_empty() {
+        return Err("Description can't be empty.".to_string());
+    }
+    state
+        .store
+        .update_transaction_description(id, description.trim())
         .map_err(|e| e.to_string())
 }
 

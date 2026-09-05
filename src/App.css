@@ -983,6 +983,16 @@ button:disabled {
   flex: 1;
 }
 
+/* Wraps instead of stretching the card's fixed-width `.account-card-end`
+   column wide — `.field-hint` elsewhere lives inside a fixed-width modal
+   where wrapping happens for free, but this column sizes to its content
+   by default (flex: none). */
+.account-card .account-card-end .field-hint {
+  max-width: 170px;
+  white-space: normal;
+  line-height: 1.35;
+}
+
 .account-card .account-card-end {
   flex: none;
   display: flex;
@@ -2167,6 +2177,31 @@ button:disabled {
 }
 
 .row-delete-confirm {
+  display: flex;
+  gap: 6px;
+}
+
+/* The plain `.row-delete-confirm` (bulk delete) stays a single nowrap row;
+   this variant (single-transaction delete) adds a wrapping impact message
+   above the buttons, which needs to escape `.actions-col`'s `width: 1%;
+   white-space: nowrap` (sized deliberately narrow for the common case of
+   just two buttons) or it would blow the whole Ledger table wide. */
+.row-delete-confirm.row-delete-confirm-detailed {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  white-space: normal;
+  max-width: 220px;
+}
+
+.delete-impact-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+  line-height: 1.35;
+}
+
+.row-delete-confirm-actions {
   display: flex;
   gap: 6px;
 }

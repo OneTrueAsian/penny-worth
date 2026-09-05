@@ -546,6 +546,7 @@ impl Store {
         self.migrate_add_live_price_provider_if_missing()?;
         self.migrate_add_deleted_at_if_missing()?;
         self.migrate_add_holdings_prev_close_if_missing()?;
+        self.migrate_fix_stale_manual_balance_override_reset_dates()?;
         self.seed_categories_if_missing()
     }
 
@@ -845,6 +846,42 @@ impl Store {
         Ok(())
     }
 
+    /// One-time data fixup, not a schema change: `set_account_balance_override`
+    /// originally stored its checkpoint's `reset_date` as `as_of` itself
+    /// instead of the day before it (see that method's own doc comment for
+    /// why that's wrong — a transaction dated `as_of` added afterward would
+    /// be silently excluded from every balance computed from then on).
+    /// Nothing else ever rewrites an existing `balance_resets` row, so a
+    /// database that already had a correction applied before this fix
+    /// shipped would otherwise be stuck with the wrong date forever —
+    /// permanently under-counting that account until the user happened to
+    /// correct it again, which they should never have to know to do.
+    ///
+    /// Detectable unambiguously and safely: the fixed code can never
+    /// produce a row where `reset_date` equals the date encoded in a
+    /// `"manual:<date>"` period, since it always backs that date up by one
+    /// day. Any row where it still does was provably written by the old
+    /// code and is safe to correct in place. Idempotent — once corrected,
+    /// a row no longer matches this shape, so re-running this on every
+    /// launch (like every other migration here) is a no-op after the
+    /// first.
+    fn migrate_fix_stale_manual_balance_override_reset_dates(&self) -> rusqlite::Result<()> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, period FROM balance_resets WHERE period LIKE 'manual:%' AND reset_date = substr(period, 8)")?;
+        let stale: Vec<(i64, String)> =
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+
+        for (id, period) in stale {
+            let encoded = &period["manual:".len()..];
+            let Ok(encoded_date) = NaiveDate::parse_from_str(encoded, "%Y-%m-%d") else { continue };
+            let Some(corrected) = encoded_date.pred_opt() else { continue };
+            self.conn.execute("UPDATE balance_resets SET reset_date = ?1 WHERE id = ?2", params![corrected.to_string(), id])?;
+        }
+        Ok(())
+    }
+
     /// Same pattern as `migrate_add_account_id_if_missing`: a database from
     /// before the confidence indicator existed has no `confidence` column
     /// at all. `NULL` is already the correct value for every existing row
@@ -1133,10 +1170,22 @@ impl Store {
         starting_balance: Decimal,
         as_of: NaiveDate,
     ) -> rusqlite::Result<Decimal> {
+        // `reset_date DESC` alone isn't enough: a manual override and the
+        // automatic monthly rollover both anchor to "the day before
+        // whenever they ran" (see `set_account_balance_override` and
+        // `roll_forward_monthly_balances`), so whenever both run on the
+        // same calendar day — which is the common case, since a rollover
+        // fires on every app launch that hasn't already had one this
+        // month — they land on the exact same `reset_date` with no way to
+        // order between them. `id DESC` breaks the tie deterministically
+        // in favor of whichever was recorded more recently, which is also
+        // the semantically correct answer either way: a later row was
+        // always computed (or typed) with a fuller view of history than
+        // an earlier one dated the same day.
         let checkpoint = match self.conn.query_row(
             "SELECT reset_date, balance FROM balance_resets
              WHERE account_id = ?1 AND reset_date <= ?2
-             ORDER BY reset_date DESC LIMIT 1",
+             ORDER BY reset_date DESC, id DESC LIMIT 1",
             params![account_id, as_of.to_string()],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         ) {
@@ -1417,14 +1466,92 @@ impl Store {
         Ok(rolled)
     }
 
-    /// Sets (or corrects) an account's starting balance — a current cash
-    /// balance for checking/savings, a credit limit for a credit account,
-    /// or the amount currently owed for a loan. An unknown id is a
-    /// harmless no-op, same convention as `set_category`.
+    /// Sets (or corrects) an account's original starting balance / credit
+    /// limit. Once an account has gone through even one monthly rollover
+    /// (see `roll_forward_monthly_balances`) — which happens automatically
+    /// on the first launch of every month — this value stops affecting
+    /// `current_balance` at all, since `account_balance_as_of` always
+    /// prefers the latest `balance_resets` checkpoint over it. To correct
+    /// a checking/savings/loan account's *current* balance after that
+    /// point, use `set_account_balance_override` instead — this method
+    /// remains the right one for a credit account's limit (which has no
+    /// reset-based equivalent) or for backfilling history before any
+    /// transactions exist. An unknown id is a harmless no-op, same
+    /// convention as `set_category`.
     pub fn set_account_starting_balance(&self, id: i64, balance: Decimal) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE accounts SET starting_balance = ?1 WHERE id = ?2",
             params![balance.to_string(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Corrects an account's *current* balance without touching any
+    /// existing transaction — inserts a `balance_resets` checkpoint,
+    /// exactly like `roll_forward_monthly_balances` does once a month,
+    /// just triggered on demand instead. `account_balance_as_of` then uses
+    /// this value as the new baseline for every date on or after `as_of`,
+    /// while every earlier "balance as of" lookup (sparklines, trends,
+    /// past net worth) is untouched.
+    ///
+    /// `balance` is treated as authoritative for right now: calling this
+    /// makes `current_balance` equal `balance` *immediately*, no matter
+    /// what's already on the ledger dated `as_of`. Only a transaction
+    /// added *after* this call (any date from here on, including later
+    /// the same day) moves it further — that's the whole point of a
+    /// manual correction, and a user typing "$20,000" who then sees some
+    /// other number because of a transaction they forgot was already
+    /// there is exactly the confusing, unfriendly behavior this method
+    /// exists to avoid.
+    ///
+    /// The checkpoint itself is stored dated the day *before* `as_of`, not
+    /// `as_of` itself — same trick as `roll_forward_monthly_balances` (see
+    /// its own comment): a transaction dated `as_of` must still count on
+    /// top of this correction, whether it's added a second before this
+    /// call or added a year later. Storing the checkpoint on `as_of`
+    /// itself would make `account_balance_as_of`'s `date > since_date`
+    /// filter permanently exclude anything dated `as_of` added afterward,
+    /// since a same-day transaction can never be both "after `as_of`" and
+    /// "on or before `as_of`" at once. But that means any transaction
+    /// *already* dated `as_of` at the moment this is called would
+    /// otherwise be summed a second time on top of `balance` (once
+    /// implicitly, since the user is looking at a total that already
+    /// includes it; once explicitly, by `account_balance_as_of` itself) —
+    /// so the checkpoint's stored value nets those back out up front:
+    /// `balance` minus whatever's already posted `as_of`, so the two
+    /// cancel out to exactly `balance` and only genuinely new activity
+    /// moves it from there.
+    ///
+    /// Uses its own `period` key (`"manual:<as_of>"`) so it can never
+    /// collide with — or silently overwrite — that month's automatic
+    /// rollover row; calling this again for the same `as_of` date replaces
+    /// the earlier correction instead of stacking a second one. An unknown
+    /// id is a harmless no-op, same convention as `set_account_starting_balance`.
+    pub fn set_account_balance_override(&self, id: i64, balance: Decimal, as_of: NaiveDate) -> rusqlite::Result<()> {
+        let exists: bool =
+            self.conn.query_row("SELECT EXISTS(SELECT 1 FROM accounts WHERE id = ?1)", params![id], |row| row.get(0))?;
+        if !exists {
+            return Ok(());
+        }
+
+        let mut stmt = self
+            .conn
+            .prepare("SELECT amount FROM transactions WHERE account_id = ?1 AND date = ?2 AND deleted_at IS NULL")?;
+        let already_posted_today: Vec<String> =
+            stmt.query_map(params![id, as_of.to_string()], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let already_posted_today: Decimal = already_posted_today
+            .iter()
+            .map(|a| Decimal::from_str(a).expect("amount stored by this crate must be valid"))
+            .sum();
+        let checkpoint_balance = balance - already_posted_today;
+
+        let period = format!("manual:{as_of}");
+        let reset_date = as_of.pred_opt().expect("NaiveDate::pred_opt only fails at the calendar's minimum date");
+        self.conn.execute(
+            "INSERT INTO balance_resets (account_id, period, reset_date, balance) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account_id, period) DO UPDATE SET reset_date = excluded.reset_date, balance = excluded.balance",
+            params![id, period, reset_date.to_string(), checkpoint_balance.to_string()],
         )?;
         Ok(())
     }
@@ -1963,6 +2090,58 @@ impl Store {
         self.conn.execute(
             "UPDATE transactions SET account_id = ?1, fingerprint = ?2 WHERE id = ?3",
             params![account_id, fp, id],
+        )?;
+        Ok(())
+    }
+
+    /// Corrects a transaction's date after the fact (misread a statement,
+    /// or it posted a day later than it was actually charged). The
+    /// fingerprint is recomputed since it includes the date. An unknown id
+    /// is a harmless no-op, same convention as `update_transaction_amount`.
+    pub fn update_transaction_date(&self, id: i64, date: NaiveDate) -> rusqlite::Result<()> {
+        let existing = self.conn.query_row(
+            "SELECT account_id, description, amount FROM transactions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+        );
+        let (account_id, description, amount_str) = match existing {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
+        let fp = fingerprint(account_id, &Transaction { date, description, amount, category: None });
+
+        self.conn.execute(
+            "UPDATE transactions SET date = ?1, fingerprint = ?2 WHERE id = ?3",
+            params![date.to_string(), fp, id],
+        )?;
+        Ok(())
+    }
+
+    /// Corrects a transaction's description after the fact (a raw import
+    /// description that didn't get cleaned up, or a manual entry with a
+    /// typo). The fingerprint is recomputed since it includes the
+    /// description. An unknown id is a harmless no-op, same convention as
+    /// `update_transaction_amount`.
+    pub fn update_transaction_description(&self, id: i64, description: &str) -> rusqlite::Result<()> {
+        let existing = self.conn.query_row(
+            "SELECT account_id, date, amount FROM transactions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+        );
+        let (account_id, date_str, amount_str) = match existing {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").expect("date stored by this crate must be valid");
+        let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
+        let fp = fingerprint(account_id, &Transaction { date, description: description.to_string(), amount, category: None });
+
+        self.conn.execute(
+            "UPDATE transactions SET description = ?1, fingerprint = ?2 WHERE id = ?3",
+            params![description, fp, id],
         )?;
         Ok(())
     }
@@ -4891,6 +5070,385 @@ mod tests {
     }
 
     #[test]
+    fn set_account_balance_override_becomes_the_new_baseline_going_forward() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2026-09-05", "Coffee", "-5.00")]).unwrap();
+
+        store.set_account_balance_override(checking, "2000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-10".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "1995.00".parse().unwrap(),
+            "override + the transaction dated after it, ignoring the original starting balance entirely"
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_does_not_change_balance_as_of_a_date_before_it() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2026-09-01", "Payroll", "500.00")]).unwrap();
+
+        store.set_account_balance_override(checking, "9999.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-02".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "1500.00".parse().unwrap(),
+            "a date before the override must be unaffected by it"
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_on_the_same_day_replaces_rather_than_stacks() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        store.set_account_balance_override(checking, "5000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+        store.set_account_balance_override(checking, "3000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(accounts[0].current_balance, "3000.00".parse().unwrap());
+    }
+
+    #[test]
+    fn set_account_balance_override_wins_over_the_current_months_automatic_rollover() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        store.roll_forward_monthly_balances("2026-09-01".parse().unwrap()).unwrap();
+        store.set_account_balance_override(checking, "7500.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "7500.00".parse().unwrap(),
+            "the manual override is dated after the monthly rollover's checkpoint, so it must win"
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_on_an_unknown_account_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_account_balance_override(999, "100.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn set_account_balance_override_nets_out_a_transaction_already_posted_the_same_day() {
+        // Reproduces the exact real-world confusion reported: an account
+        // already has a same-day transaction (a leftover purchase from
+        // testing, not deleted) when the balance is corrected. Typing
+        // "$20,000" must show exactly $20,000 immediately — not $18,500,
+        // requiring the user to have remembered and mentally subtracted a
+        // transaction they may not even recall exists.
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2026-09-04", "barbor shop", "-1500.00")]).unwrap();
+
+        store.set_account_balance_override(checking, "20000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "20000.00".parse().unwrap(),
+            "a transaction already posted the same day must be netted out, so the typed amount is exactly what shows"
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_still_lets_a_new_same_day_transaction_move_the_balance_after_netting() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2026-09-04", "barbor shop", "-1500.00")]).unwrap();
+
+        store.set_account_balance_override(checking, "20000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+        // A genuinely new transaction, added *after* the correction, dated
+        // the same day — must still move the balance from here, exactly
+        // like the already-posted one must not.
+        store.save_transactions(checking, &[tx("2026-09-04", "Coffee", "-100.00")]).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(accounts[0].current_balance, "19900.00".parse().unwrap());
+    }
+
+    #[test]
+    fn set_account_balance_override_counts_a_transaction_dated_the_same_day_added_afterward() {
+        // Regression test: a correction and a transaction landing on the
+        // exact same calendar date — the correction happens first, then a
+        // transaction dated that same day is added afterward — must not
+        // silently exclude that transaction (it did, before this test was
+        // added: the checkpoint was originally stored dated `as_of` itself,
+        // so `date > since_date` filtered out anything dated `as_of` too).
+        let store = Store::open_in_memory().unwrap();
+        let card = store.get_or_create_account("Rewards Credit Card", AccountType::Credit).unwrap();
+        store.set_account_starting_balance(card, "0.00".parse().unwrap()).unwrap();
+
+        store.set_account_balance_override(card, "0.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+        store.save_transactions(card, &[tx("2026-09-04", "test500", "-500.00")]).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts.iter().find(|a| a.id == card).unwrap().current_balance,
+            "-500.00".parse().unwrap(),
+            "a transaction dated the same day as the override, added afterward, must still count"
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_ignores_a_soft_deleted_transaction_dated_after_it() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        store.set_account_balance_override(checking, "2000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+        let ids = store.save_transactions_with_ids(checking, &[tx("2026-09-05", "Refund", "300.00")]).unwrap();
+        store.delete_transaction(ids[0], "2026-09-05T12:00:00".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-10".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "2000.00".parse().unwrap(),
+            "a soft-deleted transaction dated after the override must not count toward the new baseline either"
+        );
+    }
+
+    #[test]
+    fn a_stale_pre_fix_manual_override_self_heals_on_the_next_launch_with_no_user_action() {
+        // Reproduces the exact real-world scenario found via live testing:
+        // a balance was corrected by the pre-fix build (checkpoint dated
+        // `as_of` itself), the app is later relaunched running the fixed
+        // code, and a transaction dated the same day as that old
+        // correction is added. The stale row must self-heal the moment
+        // the store reopens — the fix must not require the user to
+        // manually re-correct the balance to unstick it.
+        let dir = std::env::temp_dir().join(format!("pennyworth-stale-override-migration-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("stale_override.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).unwrap();
+        }
+
+        let checking = {
+            let store = Store::open(&db_path).unwrap();
+            let id = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+            store.set_account_starting_balance(id, "1000.00".parse().unwrap()).unwrap();
+            // Directly simulates what the pre-fix `set_account_balance_override`
+            // wrote — bypassing the (now-fixed) method, since it can no
+            // longer produce this shape itself.
+            store
+                .conn
+                .execute(
+                    "INSERT INTO balance_resets (account_id, period, reset_date, balance) VALUES (?1, 'manual:2026-09-04', '2026-09-04', '20000.00')",
+                    params![id],
+                )
+                .unwrap();
+            id
+        }; // old store dropped here — simulates the app closing
+
+        let store = Store::open(&db_path).unwrap(); // the next real launch, running the fixed code
+        store.save_transactions(checking, &[tx("2026-09-04", "Groceries", "-40.00")]).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts.iter().find(|a| a.id == checking).unwrap().current_balance,
+            "19960.00".parse().unwrap(),
+            "a stale pre-fix override must self-heal on reopen and count a same-day transaction, with no manual re-correction"
+        );
+
+        drop(store);
+        std::fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
+    fn migrate_fix_stale_manual_balance_override_reset_dates_leaves_correctly_anchored_rows_alone() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        store.set_account_balance_override(checking, "5000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        // The migration already ran once as part of opening this store;
+        // running it again explicitly must be a genuine no-op against a
+        // row the (already-fixed) override method itself just wrote.
+        store.migrate_fix_stale_manual_balance_override_reset_dates().unwrap();
+
+        let reset_date: String = store
+            .conn
+            .query_row(
+                "SELECT reset_date FROM balance_resets WHERE account_id = ?1 AND period = 'manual:2026-09-04'",
+                params![checking],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reset_date, "2026-09-03");
+    }
+
+    #[test]
+    fn set_account_balance_override_wins_a_same_day_tie_against_the_automatic_rollovers_own_checkpoint() {
+        // Regression test for a real bug found via live QA: the automatic
+        // monthly rollover and a manual override both anchor their
+        // `reset_date` to "yesterday relative to whenever they ran" — so
+        // a rollover that already fired this app launch (the common case)
+        // and a same-day manual override land on the *exact same*
+        // `reset_date`. Without a deterministic tiebreaker, `ORDER BY
+        // reset_date DESC LIMIT 1` picked whichever row SQLite happened to
+        // return first among the tie, which was the *stale* rollover
+        // value in practice — silently discarding the override.
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        // The rollover runs first (as it does on every real app launch),
+        // landing a "2026-09" reset dated 2026-09-03 with the pre-override
+        // balance.
+        store.roll_forward_monthly_balances("2026-09-04".parse().unwrap()).unwrap();
+        // The user then corrects the balance later the same day — its
+        // checkpoint is *also* dated 2026-09-03 under the yesterday-anchor
+        // scheme, tying with the rollover's row exactly.
+        store.set_account_balance_override(checking, "2500.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "2500.00".parse().unwrap(),
+            "the manual override must win a same-`reset_date` tie against an earlier automatic rollover"
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_is_correctly_absorbed_by_a_later_monthly_rollover() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        store.set_account_balance_override(checking, "5000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2026-09-10", "Groceries", "-40.00")]).unwrap();
+
+        // Next month's automatic rollover has no idea a manual override ever
+        // happened — it just calls `account_balance_as_of` like any other
+        // reader, which already picks the override up transparently.
+        let rolled = store.roll_forward_monthly_balances("2026-10-01".parse().unwrap()).unwrap();
+
+        assert_eq!(rolled.len(), 1);
+        assert_eq!(
+            rolled[0].2,
+            "4960.00".parse().unwrap(),
+            "the monthly rollover must compose on top of the manual override, not ignore or double-count it"
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_accepts_zero_and_negative_values() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        store.set_account_balance_override(checking, "0.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(store.list_accounts("2026-09-04".parse().unwrap()).unwrap()[0].current_balance, "0.00".parse().unwrap());
+
+        // A negative balance is legitimate (overdraft, or a credit
+        // account's "available" going past its limit) — must not be
+        // rejected or clamped.
+        store.set_account_balance_override(checking, "-250.00".parse().unwrap(), "2026-09-05".parse().unwrap()).unwrap();
+        assert_eq!(
+            store.list_accounts("2026-09-05".parse().unwrap()).unwrap()[0].current_balance,
+            "-250.00".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_never_touches_starting_balance() {
+        let store = Store::open_in_memory().unwrap();
+        let card = store.get_or_create_account("Rewards Credit Card", AccountType::Credit).unwrap();
+        store.set_account_starting_balance(card, "3000.00".parse().unwrap()).unwrap(); // credit limit
+
+        store.set_account_balance_override(card, "-1870.96".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].starting_balance,
+            "3000.00".parse().unwrap(),
+            "correcting the balance must never move the credit limit — they're independently editable"
+        );
+        assert_eq!(accounts[0].current_balance, "-1870.96".parse().unwrap());
+    }
+
+    #[test]
+    fn set_account_balance_override_two_corrections_on_different_days_both_apply_in_order() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        store.set_account_balance_override(checking, "2000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2026-09-05", "Coffee", "-5.00")]).unwrap();
+        store.set_account_balance_override(checking, "3000.00".parse().unwrap(), "2026-09-08".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2026-09-09", "Groceries", "-40.00")]).unwrap();
+
+        // A date between the two corrections must still reflect the first
+        // one plus whatever landed before the second (dates picked with a
+        // clear day of slack on either side of each correction, so this
+        // isn't accidentally testing the same-day-absorption boundary
+        // covered by the other tests).
+        assert_eq!(
+            store.list_accounts("2026-09-06".parse().unwrap()).unwrap()[0].current_balance,
+            "1995.00".parse().unwrap(),
+            "a date after the first correction but before the second must not see the second"
+        );
+        // The latest date must reflect the second correction plus only
+        // what's dated after *it*, not double-counting anything absorbed
+        // into the second correction's own typed value.
+        assert_eq!(
+            store.list_accounts("2026-09-10".parse().unwrap()).unwrap()[0].current_balance,
+            "2960.00".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_pred_opt_handles_a_leap_day_boundary_correctly() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        // 2028 is a leap year — the day before March 1st is Feb 29th, not
+        // Feb 28th. A transaction dated the leap day itself, entered before
+        // the override, must be absorbed (not double-counted); one dated
+        // the override's own day, entered after, must still count.
+        store.save_transactions(checking, &[tx("2028-02-29", "Leap day charge", "-15.00")]).unwrap();
+
+        store.set_account_balance_override(checking, "2000.00".parse().unwrap(), "2028-03-01".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2028-03-01", "Same-day charge", "-25.00")]).unwrap();
+
+        assert_eq!(
+            store.list_accounts("2028-03-01".parse().unwrap()).unwrap()[0].current_balance,
+            "1975.00".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_does_not_affect_a_different_account() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        let savings = store.get_or_create_account("Emergency Savings", AccountType::Savings).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        store.set_account_starting_balance(savings, "500.00".parse().unwrap()).unwrap();
+
+        store.set_account_balance_override(checking, "9999.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts.iter().find(|a| a.id == savings).unwrap().current_balance,
+            "500.00".parse().unwrap(),
+            "correcting one account's balance must not affect any other account"
+        );
+    }
+
+    #[test]
     fn update_account_type_corrects_a_mistakenly_created_account() {
         let store = Store::open_in_memory().unwrap();
         let id = store.get_or_create_account("Sapphire Rewards", AccountType::Savings).unwrap();
@@ -5694,6 +6252,72 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let account = test_account(&store);
         store.update_transaction_account(999, account).unwrap();
+    }
+
+    #[test]
+    fn update_transaction_date_persists_the_new_date() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.save_transactions(account, &[tx("2026-08-20", "Ferrywood Coffee", "-6.75")]).unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+
+        store.update_transaction_date(id, "2026-08-21".parse().unwrap()).unwrap();
+
+        assert_eq!(store.all_transactions().unwrap()[0].transaction.date, "2026-08-21".parse::<NaiveDate>().unwrap());
+    }
+
+    #[test]
+    fn update_transaction_date_keeps_dedup_working_against_the_corrected_value() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.save_transactions(account, &[tx("2026-08-20", "Ferrywood Coffee", "-6.75")]).unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.update_transaction_date(id, "2026-08-21".parse().unwrap()).unwrap();
+
+        let flags = store.check_duplicates(account, &[tx("2026-08-20", "Ferrywood Coffee", "-6.75")]).unwrap();
+        assert_eq!(flags, vec![false], "re-importing the original date should look new now that the stored row moved");
+
+        let flags = store.check_duplicates(account, &[tx("2026-08-21", "Ferrywood Coffee", "-6.75")]).unwrap();
+        assert_eq!(flags, vec![true]);
+    }
+
+    #[test]
+    fn update_transaction_date_on_an_unknown_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.update_transaction_date(999, "2026-08-20".parse().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn update_transaction_description_persists_the_new_description() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.save_transactions(account, &[tx("2026-08-20", "Ferrywood Coffee", "-6.75")]).unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+
+        store.update_transaction_description(id, "Ferrywood Coffee Co.").unwrap();
+
+        assert_eq!(store.all_transactions().unwrap()[0].transaction.description, "Ferrywood Coffee Co.");
+    }
+
+    #[test]
+    fn update_transaction_description_keeps_dedup_working_against_the_corrected_value() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.save_transactions(account, &[tx("2026-08-20", "Ferrywood Coffee", "-6.75")]).unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.update_transaction_description(id, "Ferrywood Coffee Co.").unwrap();
+
+        let flags = store.check_duplicates(account, &[tx("2026-08-20", "Ferrywood Coffee", "-6.75")]).unwrap();
+        assert_eq!(flags, vec![false], "re-importing the original description should look new now that the stored row moved");
+
+        let flags = store.check_duplicates(account, &[tx("2026-08-20", "Ferrywood Coffee Co.", "-6.75")]).unwrap();
+        assert_eq!(flags, vec![true]);
+    }
+
+    #[test]
+    fn update_transaction_description_on_an_unknown_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.update_transaction_description(999, "New description").unwrap();
     }
 
     #[test]

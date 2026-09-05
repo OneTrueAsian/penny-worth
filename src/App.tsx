@@ -175,6 +175,29 @@ function compareTransactionsBy(a: Transaction, b: Transaction, column: LedgerSor
   }
 }
 
+/** What deleting a transaction will do to its account's number, worded to
+ * match what that account actually displays — "balance" for cash/other
+ * accounts, "amount owed" for credit/loan (see AccountsView's identical
+ * framing). A credit account's tracked value is *available* credit, not
+ * owed (owed = limit − available), so removing a negative (spending)
+ * transaction there raises available and therefore *lowers* what's owed —
+ * the opposite direction from every other account type, where the tracked
+ * value and "owed" move together. Returns `null` for a zero amount (no
+ * impact to explain) or an unknown account. */
+function describeDeleteImpact(amount: string, account: Account | undefined): string | null {
+  if (!account) return null;
+  const parsed = parseFloat(amount);
+  if (Number.isNaN(parsed) || parsed === 0) return null;
+
+  const isCredit = account.account_type === "credit";
+  const isLoan = account.account_type === "loan";
+  const label = isCredit || isLoan ? "amount owed" : "balance";
+  const trackedValueGoesUp = parsed < 0; // removing a negative (expense) frees up that much
+  const displayedNumberGoesUp = isCredit ? !trackedValueGoesUp : trackedValueGoesUp;
+  const direction = displayedNumberGoesUp ? "increase" : "decrease";
+  return `Deleting this will ${direction} ${account.name}'s ${label} by ${formatAmount(Math.abs(parsed).toFixed(2))}.`;
+}
+
 /** The sidebar's reorderable tabs — grouped for display (see `NavGroup`)
  * but reordered as one flat sequence via drag-and-drop; rendering then
  * re-partitions that sequence by `group`, so a drag effectively only ever
@@ -675,6 +698,8 @@ function App({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [moreMenuOpen]);
   const [editingAmount, setEditingAmount] = useState<{ id: number; value: string } | null>(null);
+  const [editingDate, setEditingDate] = useState<{ id: number; value: string } | null>(null);
+  const [editingDescription, setEditingDescription] = useState<{ id: number; value: string } | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
   const [applyingDebtId, setApplyingDebtId] = useState<number | null>(null);
@@ -1259,6 +1284,15 @@ function App({
     }
   }
 
+  async function handleSetBalanceOverride(accountId: number, balance: string) {
+    try {
+      await invoke("set_account_balance_override", { id: accountId, balance });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
   async function handleUpdateAccountType(accountId: number, accountType: string) {
     try {
       await invoke("update_account_type", { id: accountId, accountType });
@@ -1809,6 +1843,27 @@ function App({
     setEditingAmount(null);
     try {
       await invoke("update_transaction_amount", { id, amount: value.trim() });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function commitDateEdit(id: number, value: string) {
+    setEditingDate(null);
+    if (!value.trim()) return;
+    try {
+      await invoke("update_transaction_date", { id, date: value.trim() });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function commitDescriptionEdit(id: number, value: string) {
+    setEditingDescription(null);
+    try {
+      await invoke("update_transaction_description", { id, description: value.trim() });
       await refresh();
     } catch (e) {
       setStatus(String(e));
@@ -2789,9 +2844,52 @@ function App({
                   aria-label={`Select transaction ${t.id}`}
                 />
               </td>
-              <td>{t.date}</td>
               <td>
-                {t.description}
+                {editingDate?.id === t.id ? (
+                  <input
+                    autoFocus
+                    type="date"
+                    className="row-edit-input"
+                    value={editingDate.value}
+                    onChange={(e) => setEditingDate({ id: t.id, value: e.target.value })}
+                    onBlur={() => commitDateEdit(t.id, editingDate.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitDateEdit(t.id, editingDate.value);
+                      if (e.key === "Escape") setEditingDate(null);
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="amount-editable"
+                    title="Click to fix the date"
+                    onClick={() => setEditingDate({ id: t.id, value: t.date })}
+                  >
+                    {t.date}
+                  </span>
+                )}
+              </td>
+              <td>
+                {editingDescription?.id === t.id ? (
+                  <input
+                    autoFocus
+                    className="row-edit-input"
+                    value={editingDescription.value}
+                    onChange={(e) => setEditingDescription({ id: t.id, value: e.target.value })}
+                    onBlur={() => commitDescriptionEdit(t.id, editingDescription.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitDescriptionEdit(t.id, editingDescription.value);
+                      if (e.key === "Escape") setEditingDescription(null);
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="amount-editable"
+                    title="Click to fix the description"
+                    onClick={() => setEditingDescription({ id: t.id, value: t.description })}
+                  >
+                    {t.description}
+                  </span>
+                )}
                 {(anomalyFlagsByTransaction.get(t.id) ?? []).map((flag, i) => (
                   <span
                     key={i}
@@ -2947,13 +3045,19 @@ function App({
               </td>
               <td className="actions-col">
                 {confirmingDeleteId === t.id ? (
-                  <span className="row-delete-confirm">
-                    <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
-                      Cancel
-                    </button>
-                    <button type="button" className="btn-danger" onClick={() => handleDeleteTransaction(t.id)}>
-                      Delete
-                    </button>
+                  <span className="row-delete-confirm row-delete-confirm-detailed">
+                    {(() => {
+                      const impact = describeDeleteImpact(t.amount, accounts.find((a) => a.id === t.account_id));
+                      return impact ? <span className="delete-impact-note">{impact}</span> : null;
+                    })()}
+                    <span className="row-delete-confirm-actions">
+                      <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
+                        Cancel
+                      </button>
+                      <button type="button" className="btn-danger" onClick={() => handleDeleteTransaction(t.id)}>
+                        Delete
+                      </button>
+                    </span>
                   </span>
                 ) : (
                   <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(t.id)}>
@@ -3376,6 +3480,7 @@ function App({
           accounts={accounts}
           manualAssetsTotal={assets.reduce((s, a) => s + parseFloat(a.value), 0)}
           onSetStartingBalance={handleSetStartingBalance}
+          onSetBalanceOverride={handleSetBalanceOverride}
           onUpdateAccountType={handleUpdateAccountType}
           onDeleteAccount={handleDeleteAccount}
           onSetAccountDetails={handleSetAccountDetails}

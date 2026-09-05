@@ -75,4 +75,10 @@ export const CHANGELOG: Record<string, string[]> = {
     "Add Transaction, new holdings, and new assets now reject invalid or negative amounts instead of silently accepting them and corrupting totals.",
     "Contrast, keyboard, and screen-reader polish across the app: darker text and accent colors for readability, in-app messages that no longer shift the page when they appear, sparklines and filter checkboxes that expose their meaning to screen readers, and the Recurring calendar now shows each bill's amount directly instead of hiding it behind a tooltip.",
   ],
+  "1.2.0": [
+    "Accounts: click the balance (or amount owed) to correct it directly — it becomes the exact number you type immediately, already accounting for anything on the ledger that day, and new transactions still adjust it normally from there.",
+    "Credit cards: the limit is now edited separately from the amount owed — click \"Available\" to change the limit, click \"Owed\" to correct what's owed directly.",
+    "Deleting a transaction now shows exactly how much — and which direction — it'll change the account's balance before you confirm.",
+    "The Ledger's date and description can now be corrected after the fact, alongside the amount, account, member, and category.",
+  ],
 };

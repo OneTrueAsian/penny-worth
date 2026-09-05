@@ -7,6 +7,15 @@ import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
 const ACCOUNT_TYPE_OPTIONS = ["checking", "savings", "credit", "loan", "investment", "other"];
 
+/** The one balance-ish field currently being edited inline, across every
+ * card (only one at a time). `mode` only matters for a credit account,
+ * which has two independently editable numbers — "balance" is the Owed
+ * figure (corrected via `Store::set_account_balance_override`), "limit"
+ * is the credit limit itself (`starting_balance`, unchanged since it has
+ * no reset-based equivalent). Every other account type only ever uses
+ * "balance". */
+type EditingBalance = { id: number; value: string; mode: "balance" | "limit" };
+
 /** Every stat on this page that can be clicked open to show what makes it
  * up — its own state, independent of ReportsView's `ReportStatKey`, so
  * expanding one doesn't affect the other now that they're separate pages. */
@@ -34,6 +43,7 @@ function AccountCard({
   editing,
   setEditing,
   onSetStartingBalance,
+  onSetBalanceOverride,
   onUpdateAccountType,
   editingDetails,
   setEditingDetails,
@@ -45,9 +55,10 @@ function AccountCard({
   onDeleteAccount,
 }: {
   account: Account;
-  editing: { id: number; value: string } | null;
-  setEditing: (v: { id: number; value: string } | null) => void;
+  editing: EditingBalance | null;
+  setEditing: (v: EditingBalance | null) => void;
   onSetStartingBalance: (accountId: number, balance: string) => void;
+  onSetBalanceOverride: (accountId: number, balance: string) => void;
   onUpdateAccountType: (accountId: number, accountType: string) => void;
   editingDetails: { id: number; institution: string; mask: string } | null;
   setEditingDetails: (v: { id: number; institution: string; mask: string } | null) => void;
@@ -67,9 +78,32 @@ function AccountCard({
     : (parseFloat(a.starting_balance) - parseFloat(a.current_balance)).toFixed(2);
 
   function commitEdit(id: number, value: string) {
+    const mode = editing?.mode;
     setEditing(null);
     if (!value.trim()) return;
-    onSetStartingBalance(id, value.trim());
+    // A credit card's limit is a genuinely separate value from its balance
+    // — editing it means changing `starting_balance` itself. Everything
+    // else "correcting the balance" means fixing what's true *today*,
+    // which needs a dated checkpoint (see Store::set_account_balance_override)
+    // instead of rewriting the account's original baseline — otherwise a
+    // correction here would retroactively shift every past "balance as of"
+    // lookup (sparklines, trends, net worth history) that predates it.
+    if (isCredit && mode === "limit") {
+      onSetStartingBalance(id, value.trim());
+      return;
+    }
+    if (isCredit) {
+      // What's shown and edited here is "owed," but a credit account's own
+      // balance actually tracks *available* credit (owed = limit -
+      // available) — solve for the available value that makes owed equal
+      // what was typed, and correct that instead of "owed" directly.
+      const typedOwed = parseFloat(value.trim());
+      if (Number.isNaN(typedOwed)) return;
+      const available = parseFloat(a.starting_balance) - typedOwed;
+      onSetBalanceOverride(id, available.toFixed(2));
+      return;
+    }
+    onSetBalanceOverride(id, value.trim());
   }
 
   function commitDetails(id: number) {
@@ -133,38 +167,56 @@ function AccountCard({
         </div>
       </div>
       <div className="account-card-end">
-        {editing?.id === a.id ? (
-          <input
-            autoFocus
-            className="amount-edit-input"
-            value={editing.value}
-            onChange={(e) => setEditing({ id: a.id, value: e.target.value })}
-            onBlur={() => commitEdit(a.id, editing.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitEdit(a.id, editing.value);
-              if (e.key === "Escape") setEditing(null);
-            }}
-          />
+        {editing?.id === a.id && editing.mode === "balance" ? (
+          <>
+            <input
+              autoFocus
+              className="amount-edit-input"
+              value={editing.value}
+              onChange={(e) => setEditing({ id: a.id, value: e.target.value, mode: "balance" })}
+              onBlur={() => commitEdit(a.id, editing.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitEdit(a.id, editing.value);
+                if (e.key === "Escape") setEditing(null);
+              }}
+            />
+            <span className="field-hint">
+              {isLiability
+                ? "Sets what's owed to exactly this amount — new transactions still change it from here."
+                : "Sets the balance to exactly this amount — new transactions still change it from here."}
+            </span>
+          </>
         ) : (
           <span
             className={isLiability ? "bal neg amount-editable" : "bal amount-editable"}
-            title={
-              isCredit
-                ? "Click to set the credit limit"
-                : isLoan
-                  ? "Click to set the amount currently owed"
-                  : "Click to set the starting balance"
-            }
-            onClick={() => setEditing({ id: a.id, value: a.starting_balance })}
+            title={isLiability ? "Click to correct the amount currently owed" : "Click to correct today's balance"}
+            onClick={() => setEditing({ id: a.id, value: isLiability ? owed : a.current_balance, mode: "balance" })}
           >
-            {isCredit
-              ? `Owed ${formatAmount(owed)}`
-              : isLoan
-                ? `Owed ${formatAmount(owed)}`
-                : formatAmount(a.current_balance)}
+            {isLiability ? `Owed ${formatAmount(owed)}` : formatAmount(a.current_balance)}
           </span>
         )}
-        {isCredit && <span className="sub">Available {formatAmount(a.current_balance)}</span>}
+        {isCredit &&
+          (editing?.id === a.id && editing.mode === "limit" ? (
+            <input
+              autoFocus
+              className="amount-edit-input"
+              value={editing.value}
+              onChange={(e) => setEditing({ id: a.id, value: e.target.value, mode: "limit" })}
+              onBlur={() => commitEdit(a.id, editing.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitEdit(a.id, editing.value);
+                if (e.key === "Escape") setEditing(null);
+              }}
+            />
+          ) : (
+            <span
+              className="sub amount-editable"
+              title="Click to set the credit limit"
+              onClick={() => setEditing({ id: a.id, value: a.starting_balance, mode: "limit" })}
+            >
+              Available {formatAmount(a.current_balance)}
+            </span>
+          ))}
         {confirmingDeleteId === a.id ? (
           <span className="row-delete-confirm">
             <button type="button" className="modal-secondary btn-sm" onClick={() => setConfirmingDeleteId(null)}>
@@ -188,6 +240,7 @@ export function AccountsView({
   accounts,
   manualAssetsTotal,
   onSetStartingBalance,
+  onSetBalanceOverride,
   onUpdateAccountType,
   onDeleteAccount,
   onSetAccountDetails,
@@ -201,6 +254,7 @@ export function AccountsView({
    * accounts, same as before the two pages split apart. */
   manualAssetsTotal: number;
   onSetStartingBalance: (accountId: number, balance: string) => void;
+  onSetBalanceOverride: (accountId: number, balance: string) => void;
   onUpdateAccountType: (accountId: number, accountType: string) => void;
   onDeleteAccount: (accountId: number) => void;
   onSetAccountDetails: (accountId: number, institution: string | null, mask: string | null) => void;
@@ -208,7 +262,7 @@ export function AccountsView({
   onSetAccountMember: (accountId: number, memberId: number | null) => void;
   onAddAccount: () => void;
 }) {
-  const [editing, setEditing] = useState<{ id: number; value: string } | null>(null);
+  const [editing, setEditing] = useState<EditingBalance | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
   const [editingDetails, setEditingDetails] = useState<{ id: number; institution: string; mask: string } | null>(
@@ -237,6 +291,7 @@ export function AccountsView({
     editing,
     setEditing,
     onSetStartingBalance,
+    onSetBalanceOverride,
     onUpdateAccountType,
     editingDetails,
     setEditingDetails,
