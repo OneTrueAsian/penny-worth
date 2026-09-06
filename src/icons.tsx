@@ -38,6 +38,16 @@ export function NavIcon({ name }: { name: string }) {
       </svg>
     );
   }
+  if (name === "users") {
+    return (
+      <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="9" cy="8" r="3" />
+        <path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" />
+        <path d="M16 4.3a3 3 0 0 1 0 5.8" />
+        <path d="M21 20c0-2.8-1.9-5.1-4.5-5.8" />
+      </svg>
+    );
+  }
   if (name === "settings") {
     return (
       <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

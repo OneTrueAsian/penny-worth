@@ -2,8 +2,9 @@ import { FormEvent, useState } from "react";
 import type { Account, Asset, Bucket, DebtPayoffPlan, FamilyMember, Report, Transaction } from "./types";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
-import { groupOf, netWorthContribution } from "./accountGroups";
+import { groupOf } from "./accountGroups";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { netWorthByMember, spendingByMember } from "./memberBreakdowns";
 
 const ASSET_TYPE_OPTIONS = ["real_estate", "vehicle", "other"];
 const ASSET_TYPE_LABELS: Record<string, string> = {
@@ -482,19 +483,7 @@ export function ReportsView({
   }
   const tagBreakdown = Array.from(tagTotals, ([name, amount]) => ({ name, amount }));
 
-  // All-time spending grouped by family member — same outflows-only
-  // convention as tag spending above. Unlike a tag, a transaction carries
-  // at most one member, so there's no double-counting; an unattributed
-  // transaction is left out entirely rather than lumped into a catch-all
-  // "Unassigned" bucket — this is meant to answer "how much did each named
-  // person spend," not to track attribution coverage.
-  const memberTotals = new Map<string, number>();
-  for (const t of transactions) {
-    const amount = parseFloat(t.amount);
-    if (amount >= 0 || !t.member_name) continue;
-    memberTotals.set(t.member_name, (memberTotals.get(t.member_name) ?? 0) + Math.abs(amount));
-  }
-  const memberBreakdown = Array.from(memberTotals, ([name, amount]) => ({ name, amount }));
+  const memberBreakdown = spendingByMember(transactions);
 
   const topLevelBreakdowns: Record<"totalSaved" | "income" | "byTag" | "byMember", { name: string; amount: number }[]> = {
     totalSaved: totalSavedBreakdown,
@@ -503,23 +492,7 @@ export function ReportsView({
     byMember: memberBreakdown,
   };
 
-  // Net worth grouped by family member — accounts plus manually-tracked
-  // assets, same netWorthContribution convention `AccountsSection` uses for
-  // its type-based grouping. An "Unassigned" row covers whatever isn't
-  // attributed to anyone, so (unlike the spending breakdown above) this
-  // total always reconciles with the overall Net Worth stat.
-  const netWorthByMember = new Map<string, number>();
-  for (const a of accounts) {
-    const key = a.member_name ?? "Unassigned";
-    netWorthByMember.set(key, (netWorthByMember.get(key) ?? 0) + netWorthContribution(a));
-  }
-  for (const asset of assets) {
-    const key = asset.member_name ?? "Unassigned";
-    netWorthByMember.set(key, (netWorthByMember.get(key) ?? 0) + parseFloat(asset.value));
-  }
-  const netWorthByMemberRows = Array.from(netWorthByMember, ([name, amount]) => ({ name, amount })).sort((x, y) =>
-    x.name === "Unassigned" ? 1 : y.name === "Unassigned" ? -1 : x.name.localeCompare(y.name),
-  );
+  const netWorthByMemberRows = netWorthByMember(accounts, assets);
 
   return (
     <div className="reports-view">

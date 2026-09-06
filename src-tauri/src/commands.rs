@@ -452,6 +452,7 @@ pub struct BucketDto {
     pub account_name: Option<String>,
     pub member_id: Option<i64>,
     pub member_name: Option<String>,
+    pub sinking_amount: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -460,6 +461,7 @@ pub struct ReportBudgetLineDto {
     pub budget_group: String,
     pub budgeted: String,
     pub actual: String,
+    pub cap_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -500,6 +502,15 @@ pub struct RecurringDto {
     pub account_name: Option<String>,
     pub member_id: Option<i64>,
     pub member_name: Option<String>,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+pub struct RecurringTotalsDto {
+    pub monthly_expense: String,
+    pub monthly_income: String,
+    pub annual_expense: String,
+    pub annual_income: String,
 }
 
 #[derive(Serialize)]
@@ -1490,14 +1501,16 @@ pub fn create_bucket(
     target_amount: Option<String>,
     target_date: Option<String>,
     account_id: Option<i64>,
+    sinking_amount: Option<String>,
     state: tauri::State<AppStateHandle>,
 ) -> Result<i64, String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
     let target_amount = target_amount.map(|a| parse_amount(&a)).transpose()?;
     let target_date = target_date.map(|d| parse_date(&d)).transpose()?;
+    let sinking_amount = sinking_amount.map(|a| parse_amount(&a)).transpose()?;
     state
         .store
-        .create_bucket(&name, target_amount, target_date, account_id)
+        .create_bucket(&name, target_amount, target_date, account_id, sinking_amount)
         .map_err(|e| e.to_string())
 }
 
@@ -1517,6 +1530,7 @@ pub fn list_buckets(state: tauri::State<AppStateHandle>) -> Result<Vec<BucketDto
             account_name: b.account_name,
             member_id: b.member_id,
             member_name: b.member_name,
+            sinking_amount: b.sinking_amount.map(|a| a.to_string()),
         })
         .collect())
 }
@@ -1527,15 +1541,45 @@ pub fn update_bucket_details(
     target_amount: Option<String>,
     target_date: Option<String>,
     account_id: Option<i64>,
+    sinking_amount: Option<String>,
     state: tauri::State<AppStateHandle>,
 ) -> Result<(), String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
     let target_amount = target_amount.map(|a| parse_amount(&a)).transpose()?;
     let target_date = target_date.map(|d| parse_date(&d)).transpose()?;
+    let sinking_amount = sinking_amount.map(|a| parse_amount(&a)).transpose()?;
     state
         .store
-        .update_bucket_details(id, target_amount, target_date, account_id)
+        .update_bucket_details(id, target_amount, target_date, account_id, sinking_amount)
         .map_err(|e| e.to_string())
+}
+
+/// Auto-contributes each sinking-fund bucket's fixed monthly amount if this
+/// is the first time it's happened this calendar month — see
+/// `Store::apply_sinking_fund_contributions`. Safe to call on every app
+/// launch, same convention as `check_monthly_rollover`.
+#[tauri::command]
+pub fn check_sinking_fund_contributions(
+    state: tauri::State<AppStateHandle>,
+) -> Result<Vec<SinkingFundContributionDto>, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let today = chrono::Local::now().date_naive();
+    let applied = state.store.apply_sinking_fund_contributions(today).map_err(|e| e.to_string())?;
+    Ok(applied
+        .into_iter()
+        .map(|(bucket_id, bucket_name, amount)| SinkingFundContributionDto {
+            bucket_id,
+            bucket_name,
+            amount: amount.to_string(),
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+pub struct SinkingFundContributionDto {
+    pub bucket_id: i64,
+    pub bucket_name: String,
+    pub amount: String,
 }
 
 #[tauri::command]
@@ -1619,6 +1663,7 @@ pub fn get_report(state: tauri::State<AppStateHandle>) -> Result<ReportDto, Stri
             budget_group: a.budget_group,
             budgeted: a.budgeted.to_string(),
             actual: a.actual.to_string(),
+            cap_enabled: a.cap_enabled,
         })
         .collect();
 
@@ -1651,8 +1696,55 @@ pub fn budget_actuals_for_month(
             budget_group: a.budget_group,
             budgeted: a.budgeted.to_string(),
             actual: a.actual.to_string(),
+            cap_enabled: a.cap_enabled,
         })
         .collect())
+}
+
+#[derive(Serialize)]
+pub struct MemberBudgetActualDto {
+    pub category: String,
+    pub budget_group: String,
+    pub budgeted: String,
+    pub member_id: Option<i64>,
+    pub member_name: Option<String>,
+    pub actual: String,
+}
+
+/// Budget-vs-actual for one month, split by family member — see
+/// `Store::monthly_budget_actuals_by_member`.
+#[tauri::command]
+pub fn monthly_budget_actuals_by_member(
+    year: i32,
+    month: u32,
+    state: tauri::State<AppStateHandle>,
+) -> Result<Vec<MemberBudgetActualDto>, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let actuals = state.store.monthly_budget_actuals_by_member(year, month).map_err(|e| e.to_string())?;
+    Ok(actuals
+        .into_iter()
+        .map(|a| MemberBudgetActualDto {
+            category: a.category,
+            budget_group: a.budget_group,
+            budgeted: a.budgeted.to_string(),
+            member_id: a.member_id,
+            member_name: a.member_name,
+            actual: a.actual.to_string(),
+        })
+        .collect())
+}
+
+/// Opts a category's specific month in or out of the stricter 90% warning
+/// threshold — see `Store::set_budget_cap`.
+#[tauri::command]
+pub fn set_budget_cap(
+    category: String,
+    period: String,
+    cap_enabled: bool,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    state.store.set_budget_cap(&category, &period, cap_enabled).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -1733,6 +1825,7 @@ pub struct BudgetAlertDto {
     pub actual: String,
     pub pct: String,
     pub level: String,
+    pub cap_enabled: bool,
 }
 
 #[tauri::command]
@@ -1752,6 +1845,7 @@ pub fn budget_alerts_for_month(
             actual: a.actual.to_string(),
             pct: a.pct.to_string(),
             level: a.level,
+            cap_enabled: a.cap_enabled,
         })
         .collect())
 }
@@ -1915,6 +2009,7 @@ pub fn list_recurring(state: tauri::State<AppStateHandle>) -> Result<Vec<Recurri
             account_name: r.account_name,
             member_id: r.member_id,
             member_name: r.member_name,
+            status: r.status,
         })
         .collect())
 }
@@ -1923,6 +2018,24 @@ pub fn list_recurring(state: tauri::State<AppStateHandle>) -> Result<Vec<Recurri
 pub fn delete_recurring(id: i64, state: tauri::State<AppStateHandle>) -> Result<(), String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
     state.store.delete_recurring(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_recurring_status(id: i64, status: String, state: tauri::State<AppStateHandle>) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    state.store.set_recurring_status(id, &status).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn recurring_totals(state: tauri::State<AppStateHandle>) -> Result<RecurringTotalsDto, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let totals = state.store.recurring_totals().map_err(|e| e.to_string())?;
+    Ok(RecurringTotalsDto {
+        monthly_expense: totals.monthly_expense.to_string(),
+        monthly_income: totals.monthly_income.to_string(),
+        annual_expense: totals.annual_expense.to_string(),
+        annual_income: totals.annual_income.to_string(),
+    })
 }
 
 #[tauri::command]
@@ -2110,6 +2223,45 @@ pub fn set_live_price_settings(
         .ok_or_else(|| format!("unknown live-price provider: {provider}"))?;
     let api_key = api_key.filter(|k| !k.trim().is_empty());
     state.store.set_live_price_settings(provider.as_str(), api_key.as_deref()).map_err(|e| e.to_string())
+}
+
+/// Global feature toggles shown as switches under Settings — see
+/// `budget_core::StoredAppSettings` for what turning each one off does
+/// (and, for `envelope_caps_enabled`, does *not* do to stored data).
+#[derive(Serialize)]
+pub struct AppSettingsDto {
+    pub apply_to_debt_enabled: bool,
+    pub split_purchases_enabled: bool,
+    pub envelope_caps_enabled: bool,
+}
+
+#[tauri::command]
+pub fn get_app_settings(state: tauri::State<AppStateHandle>) -> Result<AppSettingsDto, String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let settings = state.store.get_app_settings().map_err(|e| e.to_string())?;
+    Ok(AppSettingsDto {
+        apply_to_debt_enabled: settings.apply_to_debt_enabled,
+        split_purchases_enabled: settings.split_purchases_enabled,
+        envelope_caps_enabled: settings.envelope_caps_enabled,
+    })
+}
+
+#[tauri::command]
+pub fn set_apply_to_debt_enabled(enabled: bool, state: tauri::State<AppStateHandle>) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    state.store.set_apply_to_debt_enabled(enabled).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_split_purchases_enabled(enabled: bool, state: tauri::State<AppStateHandle>) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    state.store.set_split_purchases_enabled(enabled).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_envelope_caps_enabled(enabled: bool, state: tauri::State<AppStateHandle>) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    state.store.set_envelope_caps_enabled(enabled).map_err(|e| e.to_string())
 }
 
 /// Looks up one live quote — used only by the New Holding form's autofill,

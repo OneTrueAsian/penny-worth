@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { Backup, LivePriceProviderId, LivePriceSettings, Profile } from "./types";
+import type { AppSettings, Backup, LivePriceProviderId, LivePriceSettings, Profile } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { CHANGELOG } from "./changelog";
 
@@ -262,6 +262,62 @@ function LivePricesSection({
   );
 }
 
+function FeatureTogglesSection({
+  appSettings,
+  onSetApplyToDebtEnabled,
+  onSetSplitPurchasesEnabled,
+  onSetEnvelopeCapsEnabled,
+}: {
+  appSettings: AppSettings;
+  onSetApplyToDebtEnabled: (enabled: boolean) => void;
+  onSetSplitPurchasesEnabled: (enabled: boolean) => void;
+  onSetEnvelopeCapsEnabled: (enabled: boolean) => void;
+}) {
+  const toggles: { key: keyof AppSettings; label: string; description: string; onChange: (enabled: boolean) => void }[] = [
+    {
+      key: "apply_to_debt_enabled",
+      label: "Apply to Debt",
+      description: 'Shows "Apply to a debt →" on Ledger transactions, so a payment can also reduce a loan or credit card balance.',
+      onChange: onSetApplyToDebtEnabled,
+    },
+    {
+      key: "split_purchases_enabled",
+      label: "Split purchases",
+      description: "Shows the Split control on Ledger transactions, for dividing one purchase across multiple categories.",
+      onChange: onSetSplitPurchasesEnabled,
+    },
+    {
+      key: "envelope_caps_enabled",
+      label: "Envelope Caps",
+      description: 'Shows the "Cap" checkbox on Budget categories, for warning at 90% instead of the default 80%.',
+      onChange: onSetEnvelopeCapsEnabled,
+    },
+  ];
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">Feature toggles</span>
+      </div>
+      <p className="modal-message-secondary">
+        Turn a feature off to hide it everywhere it appears. Nothing it already stored is lost — turning it back on
+        picks up right where it left off.
+      </p>
+      <div className="feature-toggle-list">
+        {toggles.map((t) => (
+          <label key={t.key} className="feature-toggle-row">
+            <input type="checkbox" checked={appSettings[t.key]} onChange={(e) => t.onChange(e.target.checked)} />
+            <span className="feature-toggle-text">
+              <span className="feature-toggle-label">{t.label}</span>
+              <span className="modal-message-secondary">{t.description}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProfilesSection({
   profiles,
   onCreateProfile,
@@ -458,6 +514,10 @@ export function SettingsView({
   livePriceSettings,
   onSetLivePriceApiKey,
   onRefreshLivePrices,
+  appSettings,
+  onSetApplyToDebtEnabled,
+  onSetSplitPurchasesEnabled,
+  onSetEnvelopeCapsEnabled,
 }: {
   appVersion: string | null;
   dataFileLocation: string | null;
@@ -474,6 +534,10 @@ export function SettingsView({
   livePriceSettings: LivePriceSettings | null;
   onSetLivePriceApiKey: (provider: LivePriceProviderId, apiKey: string | null) => void;
   onRefreshLivePrices: () => void;
+  appSettings: AppSettings;
+  onSetApplyToDebtEnabled: (enabled: boolean) => void;
+  onSetSplitPurchasesEnabled: (enabled: boolean) => void;
+  onSetEnvelopeCapsEnabled: (enabled: boolean) => void;
 }) {
   return (
     <div className="reports-view">
@@ -491,6 +555,12 @@ export function SettingsView({
         settings={livePriceSettings}
         onSetApiKey={onSetLivePriceApiKey}
         onRefreshNow={onRefreshLivePrices}
+      />
+      <FeatureTogglesSection
+        appSettings={appSettings}
+        onSetApplyToDebtEnabled={onSetApplyToDebtEnabled}
+        onSetSplitPurchasesEnabled={onSetSplitPurchasesEnabled}
+        onSetEnvelopeCapsEnabled={onSetEnvelopeCapsEnabled}
       />
       <ReleaseNotesSection currentVersion={appVersion} />
     </div>

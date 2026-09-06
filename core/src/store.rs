@@ -143,6 +143,7 @@ pub struct StoredBucket {
     pub account_name: Option<String>,
     pub member_id: Option<i64>,
     pub member_name: Option<String>,
+    pub sinking_amount: Option<Decimal>,
 }
 
 /// A budgeted category's monthly target and which group it's organized
@@ -152,6 +153,7 @@ pub struct BudgetLine {
     pub category: String,
     pub budget_group: String,
     pub monthly_amount: Decimal,
+    pub cap_enabled: bool,
 }
 
 /// A budgeted category's target vs. actual spend for one specific
@@ -162,11 +164,28 @@ pub struct BudgetActual {
     pub budget_group: String,
     pub budgeted: Decimal,
     pub actual: Decimal,
+    pub cap_enabled: bool,
+}
+
+/// One category's target vs. one family member's share of the actual
+/// spend behind it, for one specific calendar month (see
+/// `Store::monthly_budget_actuals_by_member`) — `budgeted` is always the
+/// category's one shared target (there's no per-member budget), repeated
+/// on every member's row for that category. `member_id`/`member_name` are
+/// both `None` for the unattributed share, not omitted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemberBudgetActual {
+    pub category: String,
+    pub budget_group: String,
+    pub budgeted: Decimal,
+    pub member_id: Option<i64>,
+    pub member_name: Option<String>,
+    pub actual: Decimal,
 }
 
 /// A budgeted category that's at or near its monthly limit (see
 /// `Store::budget_alerts_for_month`) — `level` is `"warning"` (>= 80% of
-/// budget spent) or `"over"` (>= 100%).
+/// budget spent, or >= 90% if `cap_enabled`) or `"over"` (> 100%).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BudgetAlert {
     pub category: String,
@@ -175,6 +194,7 @@ pub struct BudgetAlert {
     pub actual: Decimal,
     pub pct: Decimal,
     pub level: String,
+    pub cap_enabled: bool,
 }
 
 /// One transaction flagged as an anomaly (see `Store::anomaly_flags`) —
@@ -263,6 +283,7 @@ pub struct StoredRecurring {
     pub account_name: Option<String>,
     pub member_id: Option<i64>,
     pub member_name: Option<String>,
+    pub status: String,
 }
 
 /// A pattern detected in the ledger that looks recurring but isn't yet
@@ -275,6 +296,16 @@ pub struct RecurringCandidate {
     pub cadence: String,
     pub anchor_date: NaiveDate,
     pub occurrence_count: usize,
+}
+
+/// Recurring spend/income totaled onto a common monthly and annual
+/// footing across every cadence — see `Store::recurring_totals`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RecurringTotals {
+    pub monthly_expense: Decimal,
+    pub monthly_income: Decimal,
+    pub annual_expense: Decimal,
+    pub annual_income: Decimal,
 }
 
 /// An investment holding, with `value` and `gain_loss` computed fresh
@@ -317,6 +348,21 @@ pub struct StoredLivePriceSettings {
     pub api_key: Option<String>,
     pub provider: String,
     pub last_refreshed_at: Option<NaiveDateTime>,
+}
+
+/// Global per-profile feature toggles, shown as switches under Settings.
+/// All three default to *on* — this table only ever hides a feature that
+/// otherwise already ships enabled, so an existing profile that's never
+/// touched Settings sees no behavior change. `envelope_caps_enabled: false`
+/// doesn't erase any category's stored `cap_enabled` flag (see
+/// `Store::set_budget_cap`) — it just suspends that flag's effect on the
+/// 90% threshold in `budget_alerts_for_month`, so re-enabling the feature
+/// later restores exactly what was capped before.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StoredAppSettings {
+    pub apply_to_debt_enabled: bool,
+    pub split_purchases_enabled: bool,
+    pub envelope_caps_enabled: bool,
 }
 
 /// A manually-tracked asset outside the accounts model — real estate, a
@@ -491,6 +537,13 @@ impl Store {
                 balance TEXT NOT NULL,
                 UNIQUE(account_id, period)
             );
+            CREATE TABLE IF NOT EXISTS bucket_auto_contributions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bucket_id INTEGER NOT NULL REFERENCES buckets(id),
+                period TEXT NOT NULL,
+                contribution_id INTEGER NOT NULL REFERENCES bucket_contributions(id),
+                UNIQUE(bucket_id, period)
+            );
             CREATE TABLE IF NOT EXISTS budget_periods (
                 period TEXT PRIMARY KEY
             );
@@ -525,6 +578,12 @@ impl Store {
                 last_refreshed_at TEXT,
                 requests_used_today INTEGER NOT NULL DEFAULT 0,
                 requests_count_date TEXT
+            );
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                apply_to_debt_enabled INTEGER NOT NULL DEFAULT 1,
+                split_purchases_enabled INTEGER NOT NULL DEFAULT 1,
+                envelope_caps_enabled INTEGER NOT NULL DEFAULT 1
             );",
         )?;
         self.migrate_add_account_id_if_missing()?;
@@ -536,10 +595,13 @@ impl Store {
         self.migrate_add_budget_group_if_missing()?;
         self.migrate_budgets_to_period_scoped_if_missing()?;
         self.backfill_budget_periods_if_missing()?;
+        self.migrate_add_cap_enabled_to_budgets_if_missing()?;
         self.migrate_add_bucket_extras_if_missing()?;
+        self.migrate_add_bucket_sinking_amount_if_missing()?;
         self.migrate_add_member_id_to_accounts_if_missing()?;
         self.migrate_add_member_id_to_transactions_if_missing()?;
         self.migrate_add_member_id_to_recurring_if_missing()?;
+        self.migrate_add_status_to_recurring_if_missing()?;
         self.migrate_add_member_id_to_buckets_if_missing()?;
         self.migrate_add_member_id_to_assets_if_missing()?;
         self.migrate_add_live_price_request_tracking_if_missing()?;
@@ -634,6 +696,35 @@ impl Store {
         Ok(())
     }
 
+    /// Same pattern once more: `sinking_amount` turns a bucket into a
+    /// sinking fund — an amount auto-contributed once a month (see
+    /// `Store::apply_sinking_fund_contributions`) for an irregular annual
+    /// cost like insurance or holiday gifts, instead of only accepting
+    /// manual contributions. `NULL` (the default for every pre-existing
+    /// row) means the feature is off for that bucket, same convention as
+    /// `target_amount`/`target_date`/`account_id`.
+    fn migrate_add_bucket_sinking_amount_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(buckets)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "sinking_amount" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE buckets ADD COLUMN sinking_amount TEXT", [])?;
+        Ok(())
+    }
+
     /// Same pattern once more: a database from before grouped budgets
     /// existed has no `budget_group` column. Existing budget lines
     /// backfill to `'flexible'` — the same default a fresh line gets —
@@ -661,6 +752,36 @@ impl Store {
             "UPDATE budgets SET budget_group = 'flexible' WHERE budget_group IS NULL",
             [],
         )?;
+        Ok(())
+    }
+
+    /// Same pattern once more: `cap_enabled` lets a category opt into a
+    /// stricter 90%-of-budget warning threshold (see
+    /// `Store::budget_alerts_for_month`) instead of the default 80%.
+    /// Defaults to `0` (off) for every pre-existing row and every future
+    /// row `set_budget` inserts without mentioning this column. Must run
+    /// *after* `migrate_budgets_to_period_scoped_if_missing` — that one
+    /// rebuilds `budgets` from a hardcoded column list on a legacy
+    /// database, which would silently drop this column if it ran first.
+    fn migrate_add_cap_enabled_to_budgets_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(budgets)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "cap_enabled" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE budgets ADD COLUMN cap_enabled INTEGER NOT NULL DEFAULT 0", [])?;
         Ok(())
     }
 
@@ -1093,6 +1214,37 @@ impl Store {
         Ok(())
     }
 
+    /// Same pattern once more: `status` (`"keep"` | `"reviewing"` |
+    /// `"canceled"`) is a purely user-facing audit label for the Recurring
+    /// tab's spend-audit view — it never suppresses a `recurring` row from
+    /// `next_occurrence`-driven surfaces (Cash Flow's forecast, Dashboard's
+    /// "due soon" list, `recurring_totals`), since the app has no way to
+    /// verify a bill has genuinely stopped in real life; `delete_recurring`
+    /// is still the only way to actually stop tracking something. Defaults
+    /// to `'keep'` for every pre-existing row and every future row
+    /// `create_recurring` inserts without mentioning this column.
+    fn migrate_add_status_to_recurring_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(recurring)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "status" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE recurring ADD COLUMN status TEXT NOT NULL DEFAULT 'keep'", [])?;
+        Ok(())
+    }
+
     /// Same pattern once more: `buckets.member_id` — see
     /// `migrate_add_member_id_to_accounts_if_missing`.
     fn migrate_add_member_id_to_buckets_if_missing(&self) -> rusqlite::Result<()> {
@@ -1351,7 +1503,7 @@ impl Store {
                 }
                 None => None,
             };
-            match self.create_bucket(&row.name, row.target_amount, row.target_date, account_id) {
+            match self.create_bucket(&row.name, row.target_amount, row.target_date, account_id, None) {
                 Ok(_) => outcome.buckets_created += 1,
                 Err(rusqlite::Error::SqliteFailure(e, _))
                     if e.code == rusqlite::ErrorCode::ConstraintViolation =>
@@ -2483,36 +2635,40 @@ impl Store {
         target_amount: Option<Decimal>,
         target_date: Option<NaiveDate>,
         account_id: Option<i64>,
+        sinking_amount: Option<Decimal>,
     ) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO buckets (name, target_amount, target_date, account_id) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO buckets (name, target_amount, target_date, account_id, sinking_amount) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 name,
                 target_amount.map(|a| a.to_string()),
                 target_date.map(|d| d.to_string()),
                 account_id,
+                sinking_amount.map(|a| a.to_string()),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Updates a bucket's target amount, target date, and linked account
-    /// (all optional/nullable — the linked account is purely informational,
-    /// it doesn't feed into any balance calculation). An unknown id is a
-    /// harmless no-op.
+    /// Updates a bucket's target amount, target date, linked account, and
+    /// sinking-fund auto-contribution amount (all optional/nullable — the
+    /// linked account is purely informational, it doesn't feed into any
+    /// balance calculation). An unknown id is a harmless no-op.
     pub fn update_bucket_details(
         &self,
         id: i64,
         target_amount: Option<Decimal>,
         target_date: Option<NaiveDate>,
         account_id: Option<i64>,
+        sinking_amount: Option<Decimal>,
     ) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE buckets SET target_amount = ?1, target_date = ?2, account_id = ?3 WHERE id = ?4",
+            "UPDATE buckets SET target_amount = ?1, target_date = ?2, account_id = ?3, sinking_amount = ?4 WHERE id = ?5",
             params![
                 target_amount.map(|a| a.to_string()),
                 target_date.map(|d| d.to_string()),
                 account_id,
+                sinking_amount.map(|a| a.to_string()),
                 id,
             ],
         )?;
@@ -2536,7 +2692,7 @@ impl Store {
     pub fn list_buckets(&self) -> rusqlite::Result<Vec<StoredBucket>> {
         let mut stmt = self.conn.prepare(
             "SELECT b.id, b.name, b.target_amount, b.target_date, b.account_id, a.name,
-                    GROUP_CONCAT(c.amount, '|'), b.member_id, fm.name
+                    GROUP_CONCAT(c.amount, '|'), b.member_id, fm.name, b.sinking_amount
              FROM buckets b
              LEFT JOIN accounts a ON a.id = b.account_id
              LEFT JOIN bucket_contributions c ON c.bucket_id = b.id
@@ -2555,12 +2711,13 @@ impl Store {
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, Option<i64>>(7)?,
                 row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (id, name, target_amount, target_date, account_id, account_name, contributions, member_id, member_name) = row?;
+            let (id, name, target_amount, target_date, account_id, account_name, contributions, member_id, member_name, sinking_amount) = row?;
             let saved_amount = contributions
                 .map(|joined| {
                     joined
@@ -2582,6 +2739,8 @@ impl Store {
                 account_name,
                 member_id,
                 member_name,
+                sinking_amount: sinking_amount
+                    .map(|a| Decimal::from_str(&a).expect("amount stored by this crate must be valid")),
             });
         }
         Ok(result)
@@ -2608,11 +2767,67 @@ impl Store {
     /// an explicit statement rather than an `ON DELETE CASCADE`, since that
     /// requires `PRAGMA foreign_keys = ON` which this connection doesn't
     /// set (matching how `delete_category` explicitly removes matching
-    /// rules rather than relying on a database-level cascade).
+    /// rules rather than relying on a database-level cascade). Also clears
+    /// this bucket's `bucket_auto_contributions` guard rows first — left
+    /// behind, they'd dangle once the `bucket_contributions` rows they
+    /// point at are gone, same reasoning as deleting the contributions
+    /// themselves rather than leaving them orphaned.
     pub fn delete_bucket(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM bucket_auto_contributions WHERE bucket_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM bucket_contributions WHERE bucket_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM buckets WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Auto-contributes each sinking-fund bucket's fixed monthly amount
+    /// once per calendar month — same idiom as
+    /// `roll_forward_monthly_balances`: a `period` ("YYYY-MM") guard
+    /// (belt-and-suspenders alongside `bucket_auto_contributions`'s own
+    /// `UNIQUE` constraint), computed/inserted once, returns only the
+    /// buckets freshly touched *this* call (empty on every later call the
+    /// same month) so the caller can show a one-time note. The dollars
+    /// land in `bucket_contributions` exactly like a manual contribution
+    /// (`note = "Automatic monthly contribution"`) — this is what makes
+    /// `saved_amount`, `total_saved`, and `delete_bucket`'s cascade pick it
+    /// up with zero special-casing; `bucket_auto_contributions` exists
+    /// purely as the guard and a pointer back to which row was the auto
+    /// one. A manual contribution the same month is still allowed —
+    /// this guard is scoped to `(bucket_id, period)` only, independent of
+    /// `add_bucket_contribution`.
+    pub fn apply_sinking_fund_contributions(&self, today: NaiveDate) -> rusqlite::Result<Vec<(i64, String, Decimal)>> {
+        let period = format!("{:04}-{:02}", today.year(), today.month());
+
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, sinking_amount FROM buckets WHERE sinking_amount IS NOT NULL")?;
+        let buckets: Vec<(i64, String, String)> = stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut applied = Vec::new();
+        for (id, name, sinking_amount_str) in buckets {
+            let already_done: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM bucket_auto_contributions WHERE bucket_id = ?1 AND period = ?2)",
+                params![id, period],
+                |row| row.get(0),
+            )?;
+            if already_done {
+                continue;
+            }
+
+            let amount = Decimal::from_str(&sinking_amount_str).expect("amount stored by this crate must be valid");
+            self.conn.execute(
+                "INSERT INTO bucket_contributions (bucket_id, date, amount, note) VALUES (?1, ?2, ?3, ?4)",
+                params![id, today.to_string(), amount.to_string(), "Automatic monthly contribution"],
+            )?;
+            let contribution_id = self.conn.last_insert_rowid();
+            self.conn.execute(
+                "INSERT INTO bucket_auto_contributions (bucket_id, period, contribution_id) VALUES (?1, ?2, ?3)",
+                params![id, period, contribution_id],
+            )?;
+            applied.push((id, name, amount));
+        }
+        Ok(applied)
     }
 
     /// Sets (or updates) one category's target budget amount and group
@@ -2636,6 +2851,21 @@ impl Store {
             .execute("INSERT OR IGNORE INTO budget_periods (period) VALUES (?1)", params![period])?;
         self.conn
             .execute("INSERT OR IGNORE INTO categories (name) VALUES (?1)", params![category])?;
+        Ok(())
+    }
+
+    /// Opts a category's specific month in or out of the stricter 90%
+    /// warning threshold (see `Store::budget_alerts_for_month`) — a
+    /// dedicated single-field setter, same convention as
+    /// `set_bucket_member`/`set_recurring_member`, so `set_budget` itself
+    /// (and its many existing call sites) never needs to change. A
+    /// (category, period) pair with no budget line yet is a harmless
+    /// no-op, matching `delete_budget`'s convention.
+    pub fn set_budget_cap(&self, category: &str, period: &str, cap_enabled: bool) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE budgets SET cap_enabled = ?1 WHERE category = ?2 AND period = ?3",
+            params![cap_enabled, category, period],
+        )?;
         Ok(())
     }
 
@@ -2677,8 +2907,8 @@ impl Store {
 
             if let Some(source_period) = source_period {
                 self.conn.execute(
-                    "INSERT INTO budgets (category, period, monthly_amount, budget_group)
-                     SELECT category, ?1, monthly_amount, budget_group FROM budgets WHERE period = ?2",
+                    "INSERT INTO budgets (category, period, monthly_amount, budget_group, cap_enabled)
+                     SELECT category, ?1, monthly_amount, budget_group, cap_enabled FROM budgets WHERE period = ?2",
                     params![period, source_period],
                 )?;
             }
@@ -2686,24 +2916,26 @@ impl Store {
                 .execute("INSERT OR IGNORE INTO budget_periods (period) VALUES (?1)", params![period])?;
         }
 
-        let mut stmt = self
-            .conn
-            .prepare("SELECT category, budget_group, monthly_amount FROM budgets WHERE period = ?1 ORDER BY category")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT category, budget_group, monthly_amount, cap_enabled FROM budgets WHERE period = ?1 ORDER BY category",
+        )?;
         let rows = stmt.query_map(params![period], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (category, budget_group, amount) = row?;
+            let (category, budget_group, amount, cap_enabled) = row?;
             result.push(BudgetLine {
                 category,
                 budget_group,
                 monthly_amount: Decimal::from_str(&amount).expect("amount stored by this crate must be valid"),
+                cap_enabled,
             });
         }
         Ok(result)
@@ -2803,7 +3035,75 @@ impl Store {
                 budget_group: line.budget_group,
                 budgeted: line.monthly_amount,
                 actual: spent,
+                cap_enabled: line.cap_enabled,
             });
+        }
+        Ok(result)
+    }
+
+    /// Same as `monthly_budget_actuals`, further split by which family
+    /// member's transactions made up each category's actual — reuses the
+    /// identical split/debt-payment-exclusion-aware query rather than
+    /// reimplementing it, since a purely client-side reduction over
+    /// `list_transactions`'s output would silently misattribute a split
+    /// transaction (its own `category` field is stale once split; the
+    /// frontend never receives `transaction_splits` rows to know that). A
+    /// split line's member is the *parent* transaction's — a split carries
+    /// no member of its own.
+    ///
+    /// Unattributed spend is bucketed under `member_id: None`
+    /// ("Unassigned") rather than dropped, unlike the simpler top-level
+    /// "spending by person" stat cards (`memberBreakdowns.ts` on the
+    /// frontend) — this table exists to reconcile against
+    /// `monthly_budget_actuals`'s own category total, and dropping
+    /// unattributed spend would make the member rows visibly undercount
+    /// it. A category with no transactions at all this month (from any
+    /// member) simply produces no rows, matching `monthly_budget_actuals`'s
+    /// own $0 for that category once summed back up.
+    pub fn monthly_budget_actuals_by_member(&self, year: i32, month: u32) -> rusqlite::Result<Vec<MemberBudgetActual>> {
+        let month_key = format!("{year:04}-{month:02}");
+        let budgets = self.list_budgets(&month_key)?;
+        let member_names: std::collections::HashMap<i64, String> =
+            self.list_family_members()?.into_iter().map(|m| (m.id, m.name)).collect();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT amount, member_id FROM transactions
+             WHERE category = ?1 AND substr(date, 1, 7) = ?2
+                   AND id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL
+             UNION ALL
+             SELECT ts.amount, t.member_id FROM transaction_splits ts
+             JOIN transactions t ON t.id = ts.transaction_id
+             WHERE ts.category = ?1 AND substr(t.date, 1, 7) = ?2
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND t.deleted_at IS NULL",
+        )?;
+
+        let mut result = Vec::new();
+        for line in budgets {
+            let rows = stmt.query_map(params![line.category, month_key], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+            })?;
+
+            let mut by_member: std::collections::BTreeMap<Option<i64>, Decimal> = std::collections::BTreeMap::new();
+            for row in rows {
+                let (amount_str, member_id) = row?;
+                let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
+                let signed = if line.budget_group == "income" { amount } else { -amount };
+                *by_member.entry(member_id).or_insert(Decimal::ZERO) += signed;
+            }
+
+            for (member_id, actual) in by_member {
+                result.push(MemberBudgetActual {
+                    category: line.category.clone(),
+                    budget_group: line.budget_group.clone(),
+                    budgeted: line.monthly_amount,
+                    member_id,
+                    member_name: member_id.and_then(|id| member_names.get(&id).cloned()),
+                    actual,
+                });
+            }
         }
         Ok(result)
     }
@@ -2927,26 +3227,37 @@ impl Store {
     /// Which budgeted categories are at or near their monthly limit —
     /// built on top of `monthly_budget_actuals`, no separate query. A
     /// category shows up once it's spent 80% or more of its budget
-    /// (`"warning"`) — landing exactly on 100% still counts as a warning,
-    /// not "over"; only spending *past* the budget (`"over"`) does.
-    /// Anything below 80%, any income line (exceeding an income budget is
+    /// (`"warning"`) — or 90% or more if it's opted into a cap via
+    /// `set_budget_cap` (a stricter threshold, not an additional tier) —
+    /// landing exactly on 100% still counts as a warning, not "over"; only
+    /// spending *past* the budget (`"over"`) does. Anything below the
+    /// warning threshold, any income line (exceeding an income budget is
     /// already a positive, never an alert), and any zero-budgeted line
-    /// (nothing to alert
-    /// against) are all left out entirely rather than included at 0%.
+    /// (nothing to alert against) are all left out entirely rather than
+    /// included at 0%.
     pub fn budget_alerts_for_month(&self, year: i32, month: u32) -> rusqlite::Result<Vec<BudgetAlert>> {
         let hundred = Decimal::from(100);
+        // Turning the Envelope Caps feature off suspends every category's
+        // cap the same way, without touching any of their stored
+        // `cap_enabled` flags — see `StoredAppSettings`.
+        let caps_feature_enabled = self.get_app_settings()?.envelope_caps_enabled;
         let mut result = Vec::new();
         for line in self.monthly_budget_actuals(year, month)? {
             if line.budget_group == "income" || line.budgeted <= Decimal::ZERO {
                 continue;
             }
             let pct = (line.actual / line.budgeted) * hundred;
+            // A category that's opted into a cap (`cap_enabled`) warns
+            // earlier — at 90% instead of the default 80% — replacing that
+            // category's threshold rather than adding a third tier on top.
             // Landing exactly on budget (pct == 100) is not overspending —
             // only going past it is, so "over" needs to be strictly
             // greater than 100, not >=.
+            let effective_cap = line.cap_enabled && caps_feature_enabled;
+            let warning_threshold = if effective_cap { Decimal::from(90) } else { Decimal::from(80) };
             let level = if pct > hundred {
                 "over"
-            } else if pct >= Decimal::from(80) {
+            } else if pct >= warning_threshold {
                 "warning"
             } else {
                 continue;
@@ -2958,6 +3269,7 @@ impl Store {
                 actual: line.actual,
                 pct,
                 level: level.to_string(),
+                cap_enabled: effective_cap,
             });
         }
         // Most-severe first — "over" budget outranks "warning" regardless of
@@ -3275,7 +3587,7 @@ impl Store {
     pub fn list_recurring(&self, today: NaiveDate) -> rusqlite::Result<Vec<StoredRecurring>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.id, r.merchant, r.category, r.amount, r.cadence, r.anchor_date, r.account_id, a.name,
-                    r.member_id, fm.name
+                    r.member_id, fm.name, r.status
              FROM recurring r
              LEFT JOIN accounts a ON a.id = r.account_id
              LEFT JOIN family_members fm ON fm.id = r.member_id",
@@ -3292,12 +3604,13 @@ impl Store {
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<i64>>(8)?,
                 row.get::<_, Option<String>>(9)?,
+                row.get::<_, String>(10)?,
             ))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (id, merchant, category, amount, cadence, anchor_date_str, account_id, account_name, member_id, member_name) = row?;
+            let (id, merchant, category, amount, cadence, anchor_date_str, account_id, account_name, member_id, member_name, status) = row?;
             let anchor_date = NaiveDate::parse_from_str(&anchor_date_str, "%Y-%m-%d")
                 .expect("date stored by this crate must be valid");
             result.push(StoredRecurring {
@@ -3312,6 +3625,7 @@ impl Store {
                 account_name,
                 member_id,
                 member_name,
+                status,
             });
         }
         result.sort_by_key(|r| r.next_date);
@@ -3322,6 +3636,57 @@ impl Store {
     pub fn delete_recurring(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM recurring WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Sets a recurring item's audit status (`"keep"`/`"reviewing"`/
+    /// `"canceled"`) — a dedicated single-field setter, same convention as
+    /// `set_recurring_member`. Purely a label for the Recurring tab's audit
+    /// view; see the migration's doc comment for why it never suppresses
+    /// this item from forecasts or reminders. An unknown id is a harmless
+    /// no-op.
+    pub fn set_recurring_status(&self, id: i64, status: &str) -> rusqlite::Result<()> {
+        self.conn.execute("UPDATE recurring SET status = ?1 WHERE id = ?2", params![status, id])?;
+        Ok(())
+    }
+
+    /// Total monthly and annual recurring spend/income, normalized onto a
+    /// common footing across every cadence — weekly ×52/12 (or ×52 for the
+    /// annual figure), biweekly ×26/12 (×26 annual), monthly ×1 (×12
+    /// annual), annual ÷12 (×1 annual). Computed in Rust with `Decimal`
+    /// rather than client-side, so this repo's only real test coverage for
+    /// money math applies here too. Includes every row regardless of
+    /// `status` — a "canceled" item is still a real charge until it's
+    /// actually deleted (see `set_recurring_status`'s doc comment).
+    ///
+    /// The weekly/biweekly/annual multipliers are exact fractions (52/12
+    /// etc.), which `Decimal` division can only represent to its fixed
+    /// precision — summed across several rows that residual can land a
+    /// fraction of a cent off a "nice" total (e.g. `303.999...96` instead
+    /// of `304.00`). Rounded to the cent at the end, same as every other
+    /// dollar figure this app ever displays.
+    pub fn recurring_totals(&self) -> rusqlite::Result<RecurringTotals> {
+        let mut stmt = self.conn.prepare("SELECT amount, cadence FROM recurring")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+
+        let mut totals = RecurringTotals::default();
+        for row in rows {
+            let (amount_str, cadence) = row?;
+            let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
+            let monthly = amount * monthly_multiplier(&cadence);
+            let annual = amount * annual_multiplier(&cadence);
+            if amount < Decimal::ZERO {
+                totals.monthly_expense += -monthly;
+                totals.annual_expense += -annual;
+            } else {
+                totals.monthly_income += monthly;
+                totals.annual_income += annual;
+            }
+        }
+        totals.monthly_expense = totals.monthly_expense.round_dp(2);
+        totals.monthly_income = totals.monthly_income.round_dp(2);
+        totals.annual_expense = totals.annual_expense.round_dp(2);
+        totals.annual_income = totals.annual_income.round_dp(2);
+        Ok(totals)
     }
 
     /// Scans the whole ledger for merchant+amount pairs that recur on a
@@ -3641,6 +4006,53 @@ impl Store {
             "INSERT INTO live_price_settings (id, last_refreshed_at) VALUES (1, ?1)
              ON CONFLICT(id) DO UPDATE SET last_refreshed_at = ?1",
             params![at.format("%Y-%m-%d %H:%M:%S").to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// No row yet means nobody has ever touched a toggle — defaults to
+    /// every feature on, matching how each of these three already behaved
+    /// before this setting existed.
+    pub fn get_app_settings(&self) -> rusqlite::Result<StoredAppSettings> {
+        let row = match self.conn.query_row(
+            "SELECT apply_to_debt_enabled, split_purchases_enabled, envelope_caps_enabled FROM app_settings WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?, row.get::<_, bool>(2)?)),
+        ) {
+            Ok(v) => Some(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e),
+        };
+        let (apply_to_debt_enabled, split_purchases_enabled, envelope_caps_enabled) = row.unwrap_or((true, true, true));
+        Ok(StoredAppSettings { apply_to_debt_enabled, split_purchases_enabled, envelope_caps_enabled })
+    }
+
+    pub fn set_apply_to_debt_enabled(&self, enabled: bool) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO app_settings (id, apply_to_debt_enabled) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET apply_to_debt_enabled = ?1",
+            params![enabled],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_split_purchases_enabled(&self, enabled: bool) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO app_settings (id, split_purchases_enabled) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET split_purchases_enabled = ?1",
+            params![enabled],
+        )?;
+        Ok(())
+    }
+
+    /// See the doc comment on `StoredAppSettings` — this suspends the cap
+    /// tier's effect in `budget_alerts_for_month` without touching any
+    /// category's stored `cap_enabled` flag.
+    pub fn set_envelope_caps_enabled(&self, enabled: bool) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO app_settings (id, envelope_caps_enabled) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET envelope_caps_enabled = ?1",
+            params![enabled],
         )?;
         Ok(())
     }
@@ -4320,6 +4732,33 @@ fn next_occurrence(anchor: NaiveDate, cadence: &str, today: NaiveDate) -> NaiveD
     next
 }
 
+/// Normalizes one cadence's amount onto a common monthly footing —
+/// weekly and biweekly average out to slightly more than 4/2 times a
+/// month (52/26 weeks a year, not 48/24), annual divides down to a
+/// twelfth. Applied identically to income and expense in
+/// `Store::recurring_totals`, fixing a bug in an earlier client-side
+/// version that only normalized income this way and silently dropped
+/// non-monthly *expenses* from the displayed total entirely.
+fn monthly_multiplier(cadence: &str) -> Decimal {
+    match cadence {
+        "weekly" => Decimal::from(52) / Decimal::from(12),
+        "biweekly" => Decimal::from(26) / Decimal::from(12),
+        "annual" => Decimal::from(1) / Decimal::from(12),
+        _ => Decimal::from(1), // "monthly", and the fallback for anything unrecognized
+    }
+}
+
+/// Same idea as `monthly_multiplier`, normalized onto a year instead —
+/// each computed from its own exact yearly count rather than derived by
+/// multiplying the monthly figure by 12, to avoid compounding rounding.
+fn annual_multiplier(cadence: &str) -> Decimal {
+    match cadence {
+        "weekly" => Decimal::from(52),
+        "biweekly" => Decimal::from(26),
+        "annual" => Decimal::from(1),
+        _ => Decimal::from(12), // "monthly", and the fallback for anything unrecognized
+    }
+}
 
 /// The number of days in a given calendar month — computed as the gap
 /// between its first day and the next month's first day, rather than a
@@ -5660,7 +6099,7 @@ mod tests {
     fn delete_family_member_nulls_member_id_on_the_buckets_it_owns() {
         let store = Store::open_in_memory().unwrap();
         let member = store.create_family_member("Alex").unwrap();
-        let bucket_id = store.create_bucket("Emergency Fund", None, None, None).unwrap();
+        let bucket_id = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
         store.set_bucket_member(bucket_id, Some(member)).unwrap();
 
         store.delete_family_member(member).unwrap();
@@ -5777,7 +6216,7 @@ mod tests {
     fn set_bucket_member_assigns_and_clears_a_member() {
         let store = Store::open_in_memory().unwrap();
         let member = store.create_family_member("Alex").unwrap();
-        let bucket_id = store.create_bucket("Emergency Fund", None, None, None).unwrap();
+        let bucket_id = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
 
         store.set_bucket_member(bucket_id, Some(member)).unwrap();
         assert_eq!(store.list_buckets().unwrap()[0].member_id, Some(member));
@@ -5866,7 +6305,7 @@ mod tests {
     fn list_buckets_includes_its_members_name() {
         let store = Store::open_in_memory().unwrap();
         let member = store.create_family_member("Alex").unwrap();
-        let bucket_id = store.create_bucket("Emergency Fund", None, None, None).unwrap();
+        let bucket_id = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
         store.set_bucket_member(bucket_id, Some(member)).unwrap();
 
         let buckets = store.list_buckets().unwrap();
@@ -7050,7 +7489,7 @@ mod tests {
     fn a_fresh_bucket_has_zero_saved_and_the_target_it_was_given() {
         let store = Store::open_in_memory().unwrap();
         let id = store
-            .create_bucket("Emergency Fund", Some("1000.00".parse().unwrap()), None, None)
+            .create_bucket("Emergency Fund", Some("1000.00".parse().unwrap()), None, None, None)
             .unwrap();
 
         let buckets = store.list_buckets().unwrap();
@@ -7066,7 +7505,7 @@ mod tests {
     #[test]
     fn a_bucket_with_no_target_has_none() {
         let store = Store::open_in_memory().unwrap();
-        store.create_bucket("Rainy Day", None, None, None).unwrap();
+        store.create_bucket("Rainy Day", None, None, None, None).unwrap();
 
         assert_eq!(store.list_buckets().unwrap()[0].target_amount, None);
     }
@@ -7078,7 +7517,7 @@ mod tests {
         let target_date: NaiveDate = "2027-04-15".parse().unwrap();
 
         store
-            .create_bucket("Japan Trip", Some("6000.00".parse().unwrap()), Some(target_date), Some(savings))
+            .create_bucket("Japan Trip", Some("6000.00".parse().unwrap()), Some(target_date), Some(savings), None)
             .unwrap();
 
         let bucket = &store.list_buckets().unwrap()[0];
@@ -7090,12 +7529,12 @@ mod tests {
     #[test]
     fn update_bucket_details_changes_target_and_linked_account() {
         let store = Store::open_in_memory().unwrap();
-        let id = store.create_bucket("Japan Trip", None, None, None).unwrap();
+        let id = store.create_bucket("Japan Trip", None, None, None, None).unwrap();
         let savings = store.get_or_create_account("Nest Egg", AccountType::Savings).unwrap();
         let target_date: NaiveDate = "2027-04-15".parse().unwrap();
 
         store
-            .update_bucket_details(id, Some("6000.00".parse().unwrap()), Some(target_date), Some(savings))
+            .update_bucket_details(id, Some("6000.00".parse().unwrap()), Some(target_date), Some(savings), None)
             .unwrap();
 
         let bucket = &store.list_buckets().unwrap()[0];
@@ -7107,13 +7546,13 @@ mod tests {
     #[test]
     fn update_bucket_details_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
-        store.update_bucket_details(999, Some("100.00".parse().unwrap()), None, None).unwrap();
+        store.update_bucket_details(999, Some("100.00".parse().unwrap()), None, None, None).unwrap();
     }
 
     #[test]
     fn contributions_accumulate_into_the_saved_amount_withdrawals_included() {
         let store = Store::open_in_memory().unwrap();
-        let id = store.create_bucket("Vacation", None, None, None).unwrap();
+        let id = store.create_bucket("Vacation", None, None, None, None).unwrap();
 
         store
             .add_bucket_contribution(id, "2026-08-01".parse().unwrap(), "200.00".parse().unwrap(), None)
@@ -7139,8 +7578,8 @@ mod tests {
     #[test]
     fn each_buckets_saved_amount_is_independent() {
         let store = Store::open_in_memory().unwrap();
-        let vacation = store.create_bucket("Vacation", None, None, None).unwrap();
-        let emergency = store.create_bucket("Emergency Fund", None, None, None).unwrap();
+        let vacation = store.create_bucket("Vacation", None, None, None, None).unwrap();
+        let emergency = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
 
         store
             .add_bucket_contribution(vacation, "2026-08-01".parse().unwrap(), "200.00".parse().unwrap(), None)
@@ -7159,7 +7598,7 @@ mod tests {
     #[test]
     fn deleting_a_bucket_removes_its_contributions_too() {
         let store = Store::open_in_memory().unwrap();
-        let id = store.create_bucket("Vacation", None, None, None).unwrap();
+        let id = store.create_bucket("Vacation", None, None, None, None).unwrap();
         store
             .add_bucket_contribution(id, "2026-08-01".parse().unwrap(), "200.00".parse().unwrap(), None)
             .unwrap();
@@ -7168,9 +7607,72 @@ mod tests {
 
         assert_eq!(store.list_buckets().unwrap().len(), 0);
         // re-creating a bucket of the same name must not resurrect the old contributions
-        let new_id = store.create_bucket("Vacation", None, None, None).unwrap();
+        let new_id = store.create_bucket("Vacation", None, None, None, None).unwrap();
         assert_eq!(store.list_buckets().unwrap()[0].saved_amount, "0".parse().unwrap());
         assert_ne!(id, new_id);
+    }
+
+    #[test]
+    fn a_bucket_with_no_sinking_amount_is_left_untouched_by_apply_sinking_fund_contributions() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_bucket("Vacation", None, None, None, None).unwrap();
+
+        let applied = store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
+
+        assert!(applied.is_empty());
+        assert_eq!(store.list_buckets().unwrap()[0].saved_amount, Decimal::ZERO);
+    }
+
+    #[test]
+    fn sinking_fund_contribution_is_a_no_op_the_second_time_in_the_same_month() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()))
+            .unwrap();
+
+        let first = store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
+        let second = store.apply_sinking_fund_contributions("2026-09-20".parse().unwrap()).unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].2, "50.00".parse().unwrap());
+        assert!(second.is_empty(), "already contributed this month, must not fire twice");
+        assert_eq!(store.list_buckets().unwrap()[0].saved_amount, "50.00".parse().unwrap());
+    }
+
+    #[test]
+    fn a_sinking_fund_contribution_still_allows_a_manual_contribution_the_same_month() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store
+            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()))
+            .unwrap();
+
+        store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
+        store
+            .add_bucket_contribution(id, "2026-09-10".parse().unwrap(), "25.00".parse().unwrap(), Some("extra"))
+            .unwrap();
+
+        assert_eq!(store.list_buckets().unwrap()[0].saved_amount, "75.00".parse().unwrap());
+    }
+
+    #[test]
+    fn deleting_a_bucket_also_clears_its_auto_contribution_guard() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store
+            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()))
+            .unwrap();
+        store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
+
+        store.delete_bucket(id).unwrap();
+
+        // Re-creating a same-named sinking-fund bucket must be able to
+        // auto-contribute this exact month again — proving the old
+        // bucket's guard row didn't survive the delete.
+        let new_id = store
+            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()))
+            .unwrap();
+        let applied = store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].0, new_id);
     }
 
     // Budgets.
@@ -7385,8 +7887,8 @@ mod tests {
     #[test]
     fn total_saved_sums_contributions_across_every_bucket() {
         let store = Store::open_in_memory().unwrap();
-        let vacation = store.create_bucket("Vacation", None, None, None).unwrap();
-        let emergency = store.create_bucket("Emergency Fund", None, None, None).unwrap();
+        let vacation = store.create_bucket("Vacation", None, None, None, None).unwrap();
+        let emergency = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
         store
             .add_bucket_contribution(vacation, "2026-08-01".parse().unwrap(), "200.00".parse().unwrap(), None)
             .unwrap();
@@ -7499,6 +8001,117 @@ mod tests {
         let actuals = store.monthly_budget_actuals(2026, 8).unwrap();
 
         assert_eq!(actuals[0].actual, "1200.00".parse().unwrap());
+    }
+
+    #[test]
+    fn monthly_budget_actuals_by_member_splits_one_categorys_actual_across_two_members() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        let alex = store.create_family_member("Alex").unwrap();
+        let jordan = store.create_family_member("Jordan").unwrap();
+        store.set_budget("Groceries", "0000-01", "300.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-08-05", "Green Leaf Grocers", "-60.00"),
+                    tx("2026-08-06", "Corner Store", "-40.00"),
+                ],
+            )
+            .unwrap();
+        let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
+        for id in &ids {
+            store.set_category(*id, "Groceries", CategorySource::User, None).unwrap();
+        }
+        store.set_transaction_member(ids[0], Some(alex)).unwrap();
+        store.set_transaction_member(ids[1], Some(jordan)).unwrap();
+
+        let by_member = store.monthly_budget_actuals_by_member(2026, 8).unwrap();
+
+        assert_eq!(by_member.len(), 2, "got {by_member:?}");
+        let alex_row = by_member.iter().find(|m| m.member_id == Some(alex)).unwrap();
+        let jordan_row = by_member.iter().find(|m| m.member_id == Some(jordan)).unwrap();
+        assert_eq!(alex_row.actual, "60.00".parse().unwrap());
+        assert_eq!(alex_row.budgeted, "300.00".parse().unwrap(), "the shared budget target repeats on every member row");
+        assert_eq!(jordan_row.actual, "40.00".parse().unwrap());
+    }
+
+    #[test]
+    fn monthly_budget_actuals_by_member_attributes_a_split_line_to_its_parent_transactions_member() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        let alex = store.create_family_member("Alex").unwrap();
+        store.set_budget("Groceries", "0000-01", "200.00".parse().unwrap(), "flexible").unwrap();
+        store.set_budget("Household", "0000-01", "100.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(account, &[tx("2026-08-05", "Target", "-100.00")])
+            .unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.set_category(id, "Groceries", CategorySource::User, None).unwrap();
+        store.set_transaction_member(id, Some(alex)).unwrap();
+        store
+            .set_transaction_splits(
+                id,
+                &[
+                    ("Groceries".to_string(), "-60.00".parse().unwrap(), None),
+                    ("Household".to_string(), "-40.00".parse().unwrap(), None),
+                ],
+            )
+            .unwrap();
+
+        let by_member = store.monthly_budget_actuals_by_member(2026, 8).unwrap();
+
+        let groceries = by_member.iter().find(|m| m.category == "Groceries").unwrap();
+        let household = by_member.iter().find(|m| m.category == "Household").unwrap();
+        assert_eq!(groceries.member_id, Some(alex), "a split line has no member of its own — it's the parent's");
+        assert_eq!(household.member_id, Some(alex));
+    }
+
+    #[test]
+    fn monthly_budget_actuals_by_member_buckets_an_unattributed_transaction_as_unassigned() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Groceries", "0000-01", "200.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(account, &[tx("2026-08-05", "Green Leaf Grocers", "-60.00")])
+            .unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.set_category(id, "Groceries", CategorySource::User, None).unwrap();
+
+        let by_member = store.monthly_budget_actuals_by_member(2026, 8).unwrap();
+
+        assert_eq!(by_member.len(), 1);
+        assert_eq!(by_member[0].member_id, None);
+        assert_eq!(by_member[0].member_name, None);
+        assert_eq!(by_member[0].actual, "60.00".parse().unwrap());
+    }
+
+    #[test]
+    fn monthly_budget_actuals_by_member_sums_to_the_same_total_monthly_budget_actuals_reports_per_category() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        let alex = store.create_family_member("Alex").unwrap();
+        store.set_budget("Groceries", "0000-01", "300.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-08-05", "Green Leaf Grocers", "-60.00"),
+                    tx("2026-08-06", "Corner Store", "-40.00"),
+                ],
+            )
+            .unwrap();
+        let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
+        for id in &ids {
+            store.set_category(*id, "Groceries", CategorySource::User, None).unwrap();
+        }
+        store.set_transaction_member(ids[0], Some(alex)).unwrap(); // ids[1] left unattributed
+
+        let whole_total = store.monthly_budget_actuals(2026, 8).unwrap()[0].actual;
+        let by_member_total: Decimal =
+            store.monthly_budget_actuals_by_member(2026, 8).unwrap().iter().map(|m| m.actual).sum();
+
+        assert_eq!(by_member_total, whole_total, "the per-member rows must reconcile with the category's own total");
     }
 
     #[test]
@@ -7793,6 +8406,139 @@ mod tests {
         let alerts = store.budget_alerts_for_month(2026, 8).unwrap();
 
         assert!(alerts.is_empty(), "a zero-budgeted line has nothing to alert against, got {alerts:?}");
+    }
+
+    #[test]
+    fn budget_alerts_for_month_does_not_yet_warn_a_capped_category_below_90_percent_even_though_an_uncapped_category_at_the_same_spend_already_would(
+    ) {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Dining Out", "0000-01", "100.00".parse().unwrap(), "flexible").unwrap();
+        store.set_budget_cap("Dining Out", "0000-01", true).unwrap();
+        store.set_budget("Groceries", "0000-01", "100.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-08-01", "Restaurant", "-85.00"),
+                    tx("2026-08-02", "Green Leaf Grocers", "-85.00"),
+                ],
+            )
+            .unwrap();
+        for t in store.all_transactions().unwrap() {
+            let category = if t.transaction.description == "Restaurant" { "Dining Out" } else { "Groceries" };
+            store.set_category(t.id, category, CategorySource::User, None).unwrap();
+        }
+
+        let alerts = store.budget_alerts_for_month(2026, 8).unwrap();
+
+        assert_eq!(alerts.len(), 1, "85% clears the uncapped 80% bar but not the capped 90% one, got {alerts:?}");
+        assert_eq!(alerts[0].category, "Groceries");
+    }
+
+    #[test]
+    fn budget_alerts_for_month_flags_a_capped_category_once_it_reaches_90_percent() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Dining Out", "0000-01", "100.00".parse().unwrap(), "flexible").unwrap();
+        store.set_budget_cap("Dining Out", "0000-01", true).unwrap();
+        store
+            .save_transactions(account, &[tx("2026-08-01", "Restaurant", "-92.00")])
+            .unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.set_category(id, "Dining Out", CategorySource::User, None).unwrap();
+
+        let alerts = store.budget_alerts_for_month(2026, 8).unwrap();
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].category, "Dining Out");
+        assert_eq!(alerts[0].level, "warning");
+        assert!(alerts[0].cap_enabled);
+    }
+
+    #[test]
+    fn turning_off_the_envelope_caps_feature_suspends_a_categorys_cap_without_clearing_it() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Dining Out", "0000-01", "100.00".parse().unwrap(), "flexible").unwrap();
+        store.set_budget_cap("Dining Out", "0000-01", true).unwrap();
+        store
+            .save_transactions(account, &[tx("2026-08-01", "Restaurant", "-85.00")])
+            .unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.set_category(id, "Dining Out", CategorySource::User, None).unwrap();
+
+        store.set_envelope_caps_enabled(false).unwrap();
+        let alerts = store.budget_alerts_for_month(2026, 8).unwrap();
+        assert_eq!(alerts.len(), 1, "with the feature off, 85% must fall back to the plain 80% threshold");
+        assert!(!alerts[0].cap_enabled, "the effective cap reported here should read as off too");
+
+        // Turning it back on restores the 90% threshold — the category's
+        // own cap_enabled flag was never touched by the feature toggle.
+        store.set_envelope_caps_enabled(true).unwrap();
+        let alerts = store.budget_alerts_for_month(2026, 8).unwrap();
+        assert!(alerts.is_empty(), "85% is back below the capped 90% bar once the feature is re-enabled");
+    }
+
+    #[test]
+    fn budget_alerts_for_month_still_uses_80_percent_for_a_category_that_never_opted_into_a_cap() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Groceries", "0000-01", "100.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(account, &[tx("2026-08-05", "Green Leaf Grocers", "-85.00")])
+            .unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.set_category(id, "Groceries", CategorySource::User, None).unwrap();
+
+        let alerts = store.budget_alerts_for_month(2026, 8).unwrap();
+
+        assert_eq!(alerts.len(), 1, "85% must still warn an uncapped category, got {alerts:?}");
+        assert!(!alerts[0].cap_enabled);
+    }
+
+    #[test]
+    fn list_budgets_carries_a_categorys_cap_setting_forward_into_a_new_month() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_budget("Dining Out", "2026-08", "100.00".parse().unwrap(), "flexible").unwrap();
+        store.set_budget_cap("Dining Out", "2026-08", true).unwrap();
+
+        // Touching September for the first time materializes it by copying
+        // August forward — the cap setting must come along, not silently
+        // reset to off.
+        let september = store.list_budgets("2026-09").unwrap();
+
+        assert_eq!(september.len(), 1);
+        assert!(september[0].cap_enabled, "the cap setting must carry forward with the rest of the line");
+    }
+
+    #[test]
+    fn set_budget_cap_on_a_category_with_no_budget_line_this_period_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_budget_cap("Groceries", "2026-08", true).unwrap();
+    }
+
+    // Materialization is first-touch-wins, same as it's always been for
+    // monthly_amount/budget_group: a later period copies whatever the
+    // source period looks like *the moment it's first viewed*, then never
+    // re-syncs. Browsing ahead to a future month before finishing an edit
+    // in the current month freezes that future month at the stale value —
+    // pre-existing behavior that cap_enabled inherits by riding along in
+    // the same copy-forward mechanism, not a regression this feature added.
+    #[test]
+    fn a_period_materialized_before_a_sources_cap_is_set_does_not_retroactively_pick_it_up() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_budget("Groceries", "2026-09", "550.00".parse().unwrap(), "flexible").unwrap();
+
+        let _ = store.list_budgets("2026-10").unwrap();
+
+        store.set_budget_cap("Groceries", "2026-09", true).unwrap();
+
+        let september = store.list_budgets("2026-09").unwrap();
+        assert!(september.iter().find(|b| b.category == "Groceries").unwrap().cap_enabled);
+
+        let october = store.list_budgets("2026-10").unwrap();
+        assert!(!october.iter().find(|b| b.category == "Groceries").unwrap().cap_enabled);
     }
 
     // Anomaly flags.
@@ -8205,6 +8951,70 @@ mod tests {
     fn delete_recurring_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
         store.delete_recurring(999).unwrap();
+    }
+
+    #[test]
+    fn set_recurring_status_on_an_unknown_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_recurring_status(999, "canceled").unwrap();
+    }
+
+    #[test]
+    fn recurring_totals_is_zero_with_no_recurring_items() {
+        let store = Store::open_in_memory().unwrap();
+        let totals = store.recurring_totals().unwrap();
+        assert_eq!(totals, RecurringTotals::default());
+    }
+
+    #[test]
+    fn recurring_totals_sums_every_cadence_onto_a_common_monthly_and_annual_footing() {
+        let store = Store::open_in_memory().unwrap();
+        // One expense on each cadence, $12 (weekly), $24 (biweekly), $100
+        // (monthly), $1200 (annual) — chosen so each cadence's monthly and
+        // annual figures are easy to hand-verify.
+        store
+            .create_recurring("Weekly Thing", None, "-12.00".parse().unwrap(), "weekly", "2026-06-01".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_recurring("Biweekly Thing", None, "-24.00".parse().unwrap(), "biweekly", "2026-06-01".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_recurring("Monthly Thing", None, "-100.00".parse().unwrap(), "monthly", "2026-06-01".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_recurring("Annual Thing", None, "-1200.00".parse().unwrap(), "annual", "2026-06-01".parse().unwrap(), None)
+            .unwrap();
+
+        let totals = store.recurring_totals().unwrap();
+
+        // Monthly: 12*(52/12) + 24*(26/12) + 100 + 1200*(1/12) = 52 + 52 + 100 + 100 = 304
+        assert_eq!(totals.monthly_expense, "304.00".parse().unwrap());
+        // Annual: 12*52 + 24*26 + 100*12 + 1200 = 624 + 624 + 1200 + 1200 = 3648
+        assert_eq!(totals.annual_expense, "3648.00".parse().unwrap());
+        assert_eq!(totals.monthly_income, Decimal::ZERO);
+        assert_eq!(totals.annual_income, Decimal::ZERO);
+    }
+
+    #[test]
+    fn recurring_totals_treats_income_and_expense_symmetrically_across_cadences() {
+        // Regression test for a client-side bug found during review: an
+        // earlier version only normalized non-monthly cadences for
+        // *income*, silently dropping weekly/biweekly/annual *expenses*
+        // from the displayed monthly total entirely. A weekly expense and
+        // a weekly income of the same magnitude must normalize to the same
+        // monthly figure (just opposite sign/bucket).
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_recurring("Weekly Expense", None, "-12.00".parse().unwrap(), "weekly", "2026-06-01".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_recurring("Weekly Income", None, "12.00".parse().unwrap(), "weekly", "2026-06-08".parse().unwrap(), None)
+            .unwrap();
+
+        let totals = store.recurring_totals().unwrap();
+
+        assert_eq!(totals.monthly_expense, totals.monthly_income);
+        assert_eq!(totals.annual_expense, totals.annual_income);
     }
 
     #[test]
@@ -8692,6 +9502,42 @@ mod tests {
 
         let settings = store.get_live_price_settings().unwrap();
         assert_eq!(settings.last_refreshed_at, Some(at));
+    }
+
+    #[test]
+    fn app_settings_default_to_every_feature_enabled_before_anything_is_ever_set() {
+        let store = Store::open_in_memory().unwrap();
+
+        let settings = store.get_app_settings().unwrap();
+
+        assert!(settings.apply_to_debt_enabled);
+        assert!(settings.split_purchases_enabled);
+        assert!(settings.envelope_caps_enabled);
+    }
+
+    #[test]
+    fn setting_one_app_feature_flag_does_not_disturb_the_others() {
+        let store = Store::open_in_memory().unwrap();
+
+        store.set_split_purchases_enabled(false).unwrap();
+
+        let settings = store.get_app_settings().unwrap();
+        assert!(!settings.split_purchases_enabled);
+        assert!(settings.apply_to_debt_enabled, "unrelated flags must keep their default");
+        assert!(settings.envelope_caps_enabled, "unrelated flags must keep their default");
+    }
+
+    #[test]
+    fn app_settings_flags_persist_across_repeated_toggles() {
+        let store = Store::open_in_memory().unwrap();
+
+        store.set_apply_to_debt_enabled(false).unwrap();
+        store.set_envelope_caps_enabled(false).unwrap();
+        store.set_apply_to_debt_enabled(true).unwrap();
+
+        let settings = store.get_app_settings().unwrap();
+        assert!(settings.apply_to_debt_enabled);
+        assert!(!settings.envelope_caps_enabled);
     }
 
     #[test]

@@ -390,13 +390,18 @@ const FAQ_ENTRIES: FaqEntry[] = [
   },
   {
     question: "How do budgets carry forward month to month?",
-    tags: ["budget", "carry forward", "monthly", "rollover"],
+    tags: ["budget", "carry forward", "monthly", "rollover", "cap"],
     answer: (
       <p>
         A new month starts from whatever the closest earlier month had set
         for each category, so you don't need to re-enter every line every
         month. Changing the current month's amount never changes a past
-        month's numbers.
+        month's numbers. This copy happens the first time you open a given
+        month — so if you browse ahead to a future month before finishing
+        your edits (amount, group, or the 90% "Cap" toggle) in the current
+        one, that future month locks in whatever the current month looked
+        like at that moment and won't retroactively pick up later changes.
+        Finish editing the current month first, then move forward.
       </p>
     ),
   },

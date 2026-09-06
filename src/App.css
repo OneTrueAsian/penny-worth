@@ -775,6 +775,24 @@ button:disabled {
   margin: 0;
 }
 
+.breakdown-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.breakdown-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.breakdown-list li:last-child {
+  border-bottom: none;
+}
+
 .reports-section-head {
   display: flex;
   align-items: center;
@@ -2477,6 +2495,104 @@ button:disabled {
 .budget-alert-over {
   background: var(--negative-soft);
   color: var(--negative);
+}
+
+.budget-cap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.budget-cap-toggle input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.feature-toggle-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+}
+
+.feature-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.feature-toggle-row:last-child {
+  border-bottom: none;
+}
+
+.feature-toggle-row input {
+  margin-top: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.feature-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.feature-toggle-label {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.status-pill-group {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.status-pill {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+.status-pill-active.status-pill-keep {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  border-color: transparent;
+}
+
+.status-pill-active.status-pill-reviewing {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: transparent;
+}
+
+.status-pill-active.status-pill-canceled {
+  background: var(--negative-soft);
+  color: var(--negative);
+  border-color: transparent;
+}
+
+.recurring-row-canceled {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.recurring-row-canceled .status-pill-group,
+.recurring-row-canceled .row-delete-confirm {
+  text-decoration: none;
 }
 
 .insights-list {

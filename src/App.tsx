@@ -28,6 +28,7 @@ import { ReportsView } from "./ReportsView";
 import { SettingsView } from "./SettingsView";
 import { CADENCE_OPTIONS, RecurringView } from "./RecurringView";
 import { InvestmentsView } from "./InvestmentsView";
+import { HouseholdView } from "./HouseholdView";
 import { CashFlowView } from "./CashFlowView";
 import { DashboardView } from "./DashboardView";
 import { HelpView } from "./HelpView";
@@ -42,6 +43,7 @@ import { useDelayedVisibility } from "./useDelayedVisibility";
 import type {
   Account,
   AnomalyFlag,
+  AppSettings,
   Asset,
   Backup,
   Bucket,
@@ -57,16 +59,19 @@ import type {
   LivePriceProviderId,
   LivePriceRefreshSummary,
   LivePriceSettings,
+  MemberBudgetActual,
   MonthExpenseDetail,
   NetWorthPoint,
   Profile,
   Recurring,
   RecurringCandidate,
+  RecurringTotals,
   Report,
   ReportBudgetLine,
   RolledAccount,
   SetupImportPreview,
   SetupImportSummary,
+  SinkingFundContribution,
   Transaction,
   TransactionSplit,
   YoyCashFlow,
@@ -137,6 +142,7 @@ type Tab =
   | "reports"
   | "recurring"
   | "investments"
+  | "household"
   | "settings"
   | "help";
 
@@ -215,6 +221,7 @@ const NAV_ITEMS: { id: Tab; label: string; icon: string; group: NavGroup }[] = [
   { id: "buckets", label: "Buckets", icon: "flag", group: "planning" },
   { id: "cashflow", label: "Cash Flow", icon: "trend", group: "insights" },
   { id: "investments", label: "Investments", icon: "barchart", group: "insights" },
+  { id: "household", label: "Household", icon: "users", group: "insights" },
   { id: "reports", label: "Reports", icon: "wallet", group: "insights" },
 ];
 
@@ -416,6 +423,12 @@ function App({
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [recurring, setRecurring] = useState<Recurring[]>([]);
+  const [recurringTotals, setRecurringTotals] = useState<RecurringTotals>({
+    monthly_expense: "0.00",
+    monthly_income: "0.00",
+    annual_expense: "0.00",
+    annual_income: "0.00",
+  });
   const [recurringCandidates, setRecurringCandidates] = useState<RecurringCandidate[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -423,6 +436,14 @@ function App({
   const [backups, setBackups] = useState<Backup[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [livePriceSettings, setLivePriceSettings] = useState<LivePriceSettings | null>(null);
+  // Defaults to every feature on (not null) so nothing flashes hidden
+  // before this loads — matches how each of these three already behaved
+  // before this setting existed.
+  const [appSettings, setAppSettings] = useState<AppSettings>({
+    apply_to_debt_enabled: true,
+    split_purchases_enabled: true,
+    envelope_caps_enabled: true,
+  });
 
   const refreshBackups = useCallback(async () => {
     setBackups(await invoke<Backup[]>("list_backups"));
@@ -436,12 +457,17 @@ function App({
     setLivePriceSettings(await invoke<LivePriceSettings>("get_live_price_settings"));
   }, []);
 
+  const refreshAppSettings = useCallback(async () => {
+    setAppSettings(await invoke<AppSettings>("get_app_settings"));
+  }, []);
+
   useEffect(() => {
     invoke<string>("get_data_file_location").then(setDataFileLocation).catch((e) => setStatus(String(e)));
     refreshBackups().catch((e) => setStatus(String(e)));
     refreshProfiles().catch((e) => setStatus(String(e)));
     refreshLivePriceSettings().catch((e) => setStatus(String(e)));
-  }, [refreshBackups, refreshProfiles, refreshLivePriceSettings]);
+    refreshAppSettings().catch((e) => setStatus(String(e)));
+  }, [refreshBackups, refreshProfiles, refreshLivePriceSettings, refreshAppSettings]);
 
   // Once live prices are enabled for the active profile, refresh right away
   // and then every 2 hours for as long as the app stays open. Keyed on
@@ -549,6 +575,37 @@ function App({
     try {
       await invoke("set_live_price_settings", { provider, apiKey });
       await refreshLivePriceSettings();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSetApplyToDebtEnabled(enabled: boolean) {
+    try {
+      await invoke("set_apply_to_debt_enabled", { enabled });
+      await refreshAppSettings();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSetSplitPurchasesEnabled(enabled: boolean) {
+    try {
+      await invoke("set_split_purchases_enabled", { enabled });
+      await refreshAppSettings();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSetEnvelopeCapsEnabled(enabled: boolean) {
+    try {
+      await invoke("set_envelope_caps_enabled", { enabled });
+      await refreshAppSettings();
+      // The feature's effect on the 90% threshold lives in the backend
+      // (see budget_alerts_for_month) — refresh so any already-loaded
+      // alerts pick up the change immediately instead of on next nav.
+      await refreshBudgetMonthActuals(budgetYear, budgetMonthNum);
     } catch (e) {
       setStatus(String(e));
     }
@@ -776,6 +833,10 @@ function App({
 
   const totalPages = Math.max(1, Math.ceil(sortedTransactions.length / pageSize));
   const pagedTransactions = sortedTransactions.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  // The Debt column is the only one of the three feature toggles that's a
+  // whole dedicated ledger column — Split lives inside the Category cell,
+  // so hiding it doesn't change the column count.
+  const ledgerColumnCount = appSettings.apply_to_debt_enabled ? 10 : 9;
 
   // a filter/page-size change can leave `currentPage` pointing past the end
   // (or the ledger can shrink out from under it) — snap back rather than
@@ -896,12 +957,24 @@ function App({
     setBuckets(await invoke<Bucket[]>("list_buckets"));
   }, []);
 
+  const checkSinkingFundContributions = useCallback(async () => {
+    const applied = await invoke<SinkingFundContribution[]>("check_sinking_fund_contributions");
+    if (applied.length > 0) {
+      const names = applied.map((a) => a.bucket_name).join(", ");
+      setStatus(`Added this month's automatic contribution for ${applied.length} bucket(s): ${names}.`, "success");
+    }
+  }, []);
+
   const refreshReport = useCallback(async () => {
     setReport(await invoke<Report>("get_report"));
   }, []);
 
   const refreshRecurring = useCallback(async () => {
     setRecurring(await invoke<Recurring[]>("list_recurring"));
+  }, []);
+
+  const refreshRecurringTotals = useCallback(async () => {
+    setRecurringTotals(await invoke<RecurringTotals>("recurring_totals"));
   }, []);
 
   const refreshRecurringCandidates = useCallback(async () => {
@@ -1092,6 +1165,7 @@ function App({
   const [budgetMonthNum, setBudgetMonthNum] = useState(now.getMonth() + 1);
   const [budgetMonthActuals, setBudgetMonthActuals] = useState<ReportBudgetLine[]>([]);
   const [budgetAlerts, setBudgetAlerts] = useState<BudgetAlert[]>([]);
+  const [memberBudgetActuals, setMemberBudgetActuals] = useState<MemberBudgetActual[]>([]);
 
   const refreshBudgetMonthActuals = useCallback(async (year: number, month: number) => {
     const [actuals, alerts] = await Promise.all([
@@ -1100,6 +1174,10 @@ function App({
     ]);
     setBudgetMonthActuals(actuals);
     setBudgetAlerts(alerts);
+  }, []);
+
+  const refreshMemberBudgetActuals = useCallback(async (year: number, month: number) => {
+    setMemberBudgetActuals(await invoke<MemberBudgetActual[]>("monthly_budget_actuals_by_member", { year, month }));
   }, []);
 
   // Memoized so `BudgetRow`'s fetch-on-mount effect (keyed on this
@@ -1127,16 +1205,23 @@ function App({
       .finally(() => {
         refresh().catch((e) => setStatus(String(e)));
       });
-    refreshBuckets().catch((e) => setStatus(String(e)));
+    checkSinkingFundContributions()
+      .catch((e) => setStatus(String(e)))
+      .finally(() => {
+        refreshBuckets().catch((e) => setStatus(String(e)));
+      });
     refreshRecurring().catch((e) => setStatus(String(e)));
+    refreshRecurringTotals().catch((e) => setStatus(String(e)));
     refreshRecurringCandidates().catch((e) => setStatus(String(e)));
     refreshHoldings().catch((e) => setStatus(String(e)));
     refreshAssets().catch((e) => setStatus(String(e)));
   }, [
     checkMonthlyRollover,
     refresh,
+    checkSinkingFundContributions,
     refreshBuckets,
     refreshRecurring,
+    refreshRecurringTotals,
     refreshRecurringCandidates,
     refreshHoldings,
     refreshAssets,
@@ -1159,6 +1244,15 @@ function App({
       refreshBudgetMonthActuals(budgetYear, budgetMonthNum).catch((e) => setStatus(String(e)));
     }
   }, [activeTab, budgetYear, budgetMonthNum, refreshBudgetMonthActuals]);
+
+  useEffect(() => {
+    // Household reuses Budget's own month cursor rather than a second
+    // independent one, so the two tabs always agree on which month is
+    // being looked at.
+    if (activeTab === "household") {
+      refreshMemberBudgetActuals(budgetYear, budgetMonthNum).catch((e) => setStatus(String(e)));
+    }
+  }, [activeTab, budgetYear, budgetMonthNum, refreshMemberBudgetActuals]);
 
   function handlePrevBudgetMonth() {
     if (budgetMonthNum === 1) {
@@ -1191,6 +1285,15 @@ function App({
   async function handleSetBudget(category: string, monthlyAmount: string, budgetGroup: string) {
     try {
       await invoke("set_budget", { category, period: budgetPeriod, monthlyAmount, budgetGroup });
+      await refreshBudgetMonthActuals(budgetYear, budgetMonthNum);
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSetCap(category: string, capEnabled: boolean) {
+    try {
+      await invoke("set_budget_cap", { category, period: budgetPeriod, capEnabled });
       await refreshBudgetMonthActuals(budgetYear, budgetMonthNum);
     } catch (e) {
       setStatus(String(e));
@@ -1362,13 +1465,43 @@ function App({
     targetDate: string | null,
     accountId: number | null,
     memberId: number | null,
+    sinkingAmount: string | null,
   ) {
     try {
-      const id = await invoke<number>("create_bucket", { name, targetAmount, targetDate, accountId });
+      const id = await invoke<number>("create_bucket", { name, targetAmount, targetDate, accountId, sinkingAmount });
       if (memberId !== null) {
         await invoke("set_bucket_member", { id, memberId });
       }
       await refreshBuckets();
+      // A brand-new auto-contribute bucket didn't exist yet the last time
+      // this month's contributions were checked (at launch) — check again
+      // now so it doesn't sit at $0 until the app is next reopened.
+      if (sinkingAmount !== null) {
+        await checkSinkingFundContributions();
+        await refreshBuckets();
+      }
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleUpdateBucketDetails(
+    id: number,
+    targetAmount: string | null,
+    targetDate: string | null,
+    accountId: number | null,
+    sinkingAmount: string | null,
+  ) {
+    try {
+      await invoke("update_bucket_details", { id, targetAmount, targetDate, accountId, sinkingAmount });
+      await refreshBuckets();
+      // Same reasoning as handleCreateBucket: a sinking amount just added
+      // (or changed) here was invisible to the launch-time check, so catch
+      // it up immediately rather than making the user reload.
+      if (sinkingAmount !== null) {
+        await checkSinkingFundContributions();
+        await refreshBuckets();
+      }
     } catch (e) {
       setStatus(String(e));
     }
@@ -1406,7 +1539,7 @@ function App({
       if (memberId !== null) {
         await invoke("set_recurring_member", { id, memberId });
       }
-      await refreshRecurring();
+      await Promise.all([refreshRecurring(), refreshRecurringTotals()]);
     } catch (e) {
       setStatus(String(e));
     }
@@ -1425,7 +1558,7 @@ function App({
     try {
       await invoke("update_recurring", { id, merchant, category, amount, cadence, anchorDate, accountId });
       await invoke("set_recurring_member", { id, memberId });
-      await refreshRecurring();
+      await Promise.all([refreshRecurring(), refreshRecurringTotals()]);
     } catch (e) {
       setStatus(String(e));
     }
@@ -1434,6 +1567,15 @@ function App({
   async function handleDeleteRecurring(id: number) {
     try {
       await invoke("delete_recurring", { id });
+      await Promise.all([refreshRecurring(), refreshRecurringTotals()]);
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleSetRecurringStatus(id: number, status: "keep" | "reviewing" | "canceled") {
+    try {
+      await invoke("set_recurring_status", { id, status });
       await refreshRecurring();
     } catch (e) {
       setStatus(String(e));
@@ -1450,8 +1592,7 @@ function App({
         anchorDate: candidate.anchor_date,
         accountId: null,
       });
-      await refreshRecurring();
-      await refreshRecurringCandidates();
+      await Promise.all([refreshRecurring(), refreshRecurringTotals(), refreshRecurringCandidates()]);
     } catch (e) {
       setStatus(String(e));
     }
@@ -2828,7 +2969,7 @@ function App({
             <th className="sortable-col" onClick={() => toggleSort("source")}>
               Source{sortColumn === "source" && (sortDirection === "asc" ? " ▲" : " ▼")}
             </th>
-            <th>Debt</th>
+            {appSettings.apply_to_debt_enabled && <th>Debt</th>}
             <th className="actions-col"></th>
           </tr>
         </thead>
@@ -2990,9 +3131,11 @@ function App({
                     <option value="__new__">+ New category…</option>
                   </select>
                 )}
-                <button type="button" className="modal-secondary split-toggle" onClick={() => toggleSplitEditor(t)}>
-                  {t.split_count > 0 ? "Edit splits" : "Split →"}
-                </button>
+                {appSettings.split_purchases_enabled && (
+                  <button type="button" className="modal-secondary split-toggle" onClick={() => toggleSplitEditor(t)}>
+                    {t.split_count > 0 ? "Edit splits" : "Split →"}
+                  </button>
+                )}
               </td>
               <td className="source-col">
                 {t.category_source ?? ""}
@@ -3000,49 +3143,51 @@ function App({
                   <span className="confidence-badge">{Math.round(t.confidence * 100)}%</span>
                 )}
               </td>
-              <td className="debt-col">
-                {t.applied_to_debt ? (
-                  <span className="debt-applied-badge">
-                    → {t.applied_to_debt.debt_account_name} ({formatAmount(t.applied_to_debt.amount)})
-                    <button type="button" className="modal-secondary" onClick={() => handleUnapplyDebtPayment(t.id)}>
-                      Undo
-                    </button>
-                  </span>
-                ) : applyingDebtId === t.id ? (
-                  <span className="debt-apply-form">
-                    <select
-                      value={applyDebtForm.accountId}
-                      onChange={(e) => setApplyDebtForm({ ...applyDebtForm, accountId: e.target.value })}
-                    >
-                      {debtAccounts.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.name}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      className="debt-apply-amount"
-                      value={applyDebtForm.amount}
-                      onChange={(e) => setApplyDebtForm({ ...applyDebtForm, amount: e.target.value })}
-                      title="How much of this payment counts toward the debt (e.g. just the principal on a mortgage payment)"
-                    />
-                    <button type="button" className="debt-apply-confirm" onClick={() => handleApplyDebtPayment(t.id, t.date)}>
-                      Apply
-                    </button>
-                    <button type="button" className="modal-secondary" onClick={() => setApplyingDebtId(null)}>
-                      Cancel
-                    </button>
-                  </span>
-                ) : (
-                  debtAccounts.length > 0 &&
-                  accounts.find((a) => a.id === t.account_id)?.account_type !== "loan" &&
-                  accounts.find((a) => a.id === t.account_id)?.account_type !== "credit" && (
-                    <button type="button" className="modal-secondary debt-apply-trigger" onClick={() => startApplyingDebtPayment(t)}>
-                      Apply to a debt →
-                    </button>
-                  )
-                )}
-              </td>
+              {appSettings.apply_to_debt_enabled && (
+                <td className="debt-col">
+                  {t.applied_to_debt ? (
+                    <span className="debt-applied-badge">
+                      → {t.applied_to_debt.debt_account_name} ({formatAmount(t.applied_to_debt.amount)})
+                      <button type="button" className="modal-secondary" onClick={() => handleUnapplyDebtPayment(t.id)}>
+                        Undo
+                      </button>
+                    </span>
+                  ) : applyingDebtId === t.id ? (
+                    <span className="debt-apply-form">
+                      <select
+                        value={applyDebtForm.accountId}
+                        onChange={(e) => setApplyDebtForm({ ...applyDebtForm, accountId: e.target.value })}
+                      >
+                        {debtAccounts.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        className="debt-apply-amount"
+                        value={applyDebtForm.amount}
+                        onChange={(e) => setApplyDebtForm({ ...applyDebtForm, amount: e.target.value })}
+                        title="How much of this payment counts toward the debt (e.g. just the principal on a mortgage payment)"
+                      />
+                      <button type="button" className="debt-apply-confirm" onClick={() => handleApplyDebtPayment(t.id, t.date)}>
+                        Apply
+                      </button>
+                      <button type="button" className="modal-secondary" onClick={() => setApplyingDebtId(null)}>
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    debtAccounts.length > 0 &&
+                    accounts.find((a) => a.id === t.account_id)?.account_type !== "loan" &&
+                    accounts.find((a) => a.id === t.account_id)?.account_type !== "credit" && (
+                      <button type="button" className="modal-secondary debt-apply-trigger" onClick={() => startApplyingDebtPayment(t)}>
+                        Apply to a debt →
+                      </button>
+                    )
+                  )}
+                </td>
+              )}
               <td className="actions-col">
                 {confirmingDeleteId === t.id ? (
                   <span className="row-delete-confirm row-delete-confirm-detailed">
@@ -3068,7 +3213,7 @@ function App({
             </tr>
             {expandedSplitId === t.id && (
               <tr className="split-editor-row">
-                <td colSpan={10}>
+                <td colSpan={ledgerColumnCount}>
                   <div className="split-editor">
                     {splitLines.map((line, i) => (
                       <div className="split-editor-line" key={i}>
@@ -3122,7 +3267,7 @@ function App({
           ))}
           {filteredTransactions.length === 0 && (
             <tr>
-              <td colSpan={10} className="empty-state">
+              <td colSpan={ledgerColumnCount} className="empty-state">
                 {transactions.length === 0
                   ? "No transactions yet — import a CSV to get started."
                   : "No transactions match your filters."}
@@ -3177,6 +3322,7 @@ function App({
           accounts={accounts}
           familyMembers={familyMembers}
           onCreateBucket={handleCreateBucket}
+          onUpdateBucketDetails={handleUpdateBucketDetails}
           onAddContribution={handleAddContribution}
           onDeleteBucket={handleDeleteBucket}
         />
@@ -3191,9 +3337,24 @@ function App({
           onPrevMonth={handlePrevBudgetMonth}
           onNextMonth={handleNextBudgetMonth}
           onSetBudget={handleSetBudget}
+          onSetCap={handleSetCap}
+          envelopeCapsEnabled={appSettings.envelope_caps_enabled}
           onDeleteBudget={handleDeleteBudget}
           onCategoryClick={handleCategoryClick}
           onFetchTrend={handleFetchBudgetTrend}
+        />
+      )}
+
+      {activeTab === "household" && (
+        <HouseholdView
+          transactions={transactions}
+          accounts={accounts}
+          assets={assets}
+          familyMembers={familyMembers}
+          memberBudgetActuals={memberBudgetActuals}
+          monthLabel={budgetMonthLabel}
+          onPrevMonth={handlePrevBudgetMonth}
+          onNextMonth={handleNextBudgetMonth}
         />
       )}
 
@@ -3212,12 +3373,14 @@ function App({
       {activeTab === "recurring" && (
         <RecurringView
           recurring={recurring}
+          totals={recurringTotals}
           candidates={recurringCandidates}
           accounts={accounts}
           familyMembers={familyMembers}
           onCreate={handleCreateRecurring}
           onUpdate={handleUpdateRecurring}
           onDelete={handleDeleteRecurring}
+          onSetStatus={handleSetRecurringStatus}
           onAddCandidate={handleAddRecurringCandidate}
           onDismissCandidate={handleDismissRecurringCandidate}
         />
@@ -3527,6 +3690,10 @@ function App({
           livePriceSettings={livePriceSettings}
           onSetLivePriceApiKey={handleSetLivePriceApiKey}
           onRefreshLivePrices={handleRefreshLivePrices}
+          appSettings={appSettings}
+          onSetApplyToDebtEnabled={handleSetApplyToDebtEnabled}
+          onSetSplitPurchasesEnabled={handleSetSplitPurchasesEnabled}
+          onSetEnvelopeCapsEnabled={handleSetEnvelopeCapsEnabled}
         />
       )}
 

@@ -131,6 +131,8 @@ function BudgetRow({
   editingAmount,
   setEditingAmount,
   onSetBudget,
+  onSetCap,
+  envelopeCapsEnabled,
   confirmingDelete,
   setConfirmingDelete,
   onDeleteBudget,
@@ -147,6 +149,8 @@ function BudgetRow({
   editingAmount: { category: string; value: string } | null;
   setEditingAmount: (v: { category: string; value: string } | null) => void;
   onSetBudget: (category: string, monthlyAmount: string, budgetGroup: string) => void;
+  onSetCap: (category: string, capEnabled: boolean) => void;
+  envelopeCapsEnabled: boolean;
   confirmingDelete: string | null;
   setConfirmingDelete: (c: string | null) => void;
   onDeleteBudget: (category: string) => void;
@@ -159,6 +163,12 @@ function BudgetRow({
   onDragEnd: () => void;
 }) {
   const isIncome = line.budget_group === "income";
+  // Turning the feature off suspends the 90% tier everywhere it's shown,
+  // without ever touching the category's own stored cap_enabled flag —
+  // matches how the backend computes `budgetAlerts` (see
+  // Store::budget_alerts_for_month), so the badge text here can't drift
+  // out of sync with which threshold actually applies.
+  const effectiveCap = line.cap_enabled && envelopeCapsEnabled;
   // For expenses, "remaining" is budgeted minus actual (positive = under
   // budget). Income is the opposite — exceeding the expected amount is
   // good, so the sign flips for the income group.
@@ -234,11 +244,24 @@ function BudgetRow({
                 ? "Spent past its monthly budget"
                 : Math.abs(remaining) < 0.005
                   ? "Right at its monthly budget"
-                  : "Approaching its monthly budget (80%+)"
+                  : `Approaching its monthly budget (${effectiveCap ? "90%+" : "80%+"})`
             }
           >
-            {alertLevel === "over" ? "Over" : Math.abs(remaining) < 0.005 ? "100%" : "80%+"}
+            {alertLevel === "over" ? "Over" : Math.abs(remaining) < 0.005 ? "100%" : effectiveCap ? "90%+" : "80%+"}
           </span>
+        )}
+        {!isIncome && envelopeCapsEnabled && (
+          <label
+            className="budget-cap-toggle"
+            title="Only warn once this category hits 90% of its budget instead of the default 80% — for a category you're already watching closely"
+          >
+            <input
+              type="checkbox"
+              checked={line.cap_enabled}
+              onChange={(e) => onSetCap(line.category, e.target.checked)}
+            />
+            Cap
+          </label>
         )}
       </div>
       <select
@@ -311,6 +334,8 @@ export function BudgetView({
   onPrevMonth,
   onNextMonth,
   onSetBudget,
+  onSetCap,
+  envelopeCapsEnabled,
   onDeleteBudget,
   onCategoryClick,
   onFetchTrend,
@@ -322,6 +347,8 @@ export function BudgetView({
   onPrevMonth: () => void;
   onNextMonth: () => void;
   onSetBudget: (category: string, monthlyAmount: string, budgetGroup: string) => void;
+  onSetCap: (category: string, capEnabled: boolean) => void;
+  envelopeCapsEnabled: boolean;
   onDeleteBudget: (category: string) => void;
   onCategoryClick: (category: string) => void;
   onFetchTrend: (category: string) => Promise<{ month: string; actual: string }[]>;
@@ -449,6 +476,8 @@ export function BudgetView({
                   editingAmount={editingAmount}
                   setEditingAmount={setEditingAmount}
                   onSetBudget={onSetBudget}
+                  onSetCap={onSetCap}
+                  envelopeCapsEnabled={envelopeCapsEnabled}
                   confirmingDelete={confirmingDelete}
                   setConfirmingDelete={setConfirmingDelete}
                   onDeleteBudget={onDeleteBudget}

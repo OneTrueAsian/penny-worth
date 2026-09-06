@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import type { Account, FamilyMember, Recurring, RecurringCandidate } from "./types";
+import type { Account, FamilyMember, Recurring, RecurringCandidate, RecurringTotals } from "./types";
 import { formatAmount, toLocalIsoDate } from "./format";
 import { fmtMoneyShort } from "./charts";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
@@ -40,6 +40,22 @@ function stepDate(d: Date, cadence: string): Date {
       // monthly rather than looping forever or crashing.
       return addOneMonthClamped(d);
   }
+}
+
+/** A single item's cost normalized onto a common monthly footing, purely
+ * for sorting/display in the Audit table below — mirrors
+ * `Store::monthly_multiplier` (core/src/store.rs) exactly, but this one
+ * row at a time is a trivial enough calculation that it doesn't need a
+ * backend round-trip, same reasoning as `stepDate`'s own cadence math
+ * just above. The *aggregate* totals (the numbers that actually need to
+ * add up correctly) come from the backend's `recurring_totals` instead —
+ * see that method's doc comment for why summing this client-side used to
+ * be a real, silent bug. */
+function normalizedMonthlyCost(item: { amount: string; cadence: string }): number {
+  const amount = parseFloat(item.amount);
+  const multiplier =
+    item.cadence === "weekly" ? 52 / 12 : item.cadence === "biweekly" ? 26 / 12 : item.cadence === "annual" ? 1 / 12 : 1;
+  return Math.abs(amount) * multiplier;
 }
 
 /** Every date `item` actually lands on within `year`/`month` (1-12),
@@ -303,6 +319,7 @@ function EditRecurringRow({
       <td className="amount-col">
         <input className="amount-edit-input" value={amount} onChange={(e) => setAmount(e.target.value)} />
       </td>
+      <td className="account-col">—</td>
       <td className="actions-col">
         <span className="row-delete-confirm">
           <button type="button" className="modal-secondary" onClick={onCancel}>
@@ -317,18 +334,51 @@ function EditRecurringRow({
   );
 }
 
+const STATUS_OPTIONS: { value: "keep" | "reviewing" | "canceled"; label: string }[] = [
+  { value: "keep", label: "Keep" },
+  { value: "reviewing", label: "Reviewing" },
+  { value: "canceled", label: "Canceled" },
+];
+
+/** A compact 3-way toggle for one item's audit status — a click-to-set
+ * pill row rather than a `<select>`, so triaging a long list during an
+ * audit session is a single click per item instead of an open-then-pick.
+ * Purely a label (see `Store::set_recurring_status`'s doc comment) —
+ * marking something "Canceled" here never removes it from forecasts or
+ * reminders, only from an ordinary glance at this list feeling honest
+ * about what's actually still being charged. */
+function StatusPill({ status, onSetStatus }: { status: Recurring["status"]; onSetStatus: (status: Recurring["status"]) => void }) {
+  return (
+    <span className="status-pill-group" role="group" aria-label="Audit status">
+      {STATUS_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          className={status === opt.value ? `status-pill status-pill-${opt.value} status-pill-active` : "status-pill"}
+          onClick={() => onSetStatus(opt.value)}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </span>
+  );
+}
+
 export function RecurringView({
   recurring,
+  totals,
   candidates,
   accounts,
   familyMembers,
   onCreate,
   onUpdate,
   onDelete,
+  onSetStatus,
   onAddCandidate,
   onDismissCandidate,
 }: {
   recurring: Recurring[];
+  totals: RecurringTotals;
   candidates: RecurringCandidate[];
   accounts: Account[];
   familyMembers: FamilyMember[];
@@ -352,6 +402,7 @@ export function RecurringView({
     memberId: number | null,
   ) => void;
   onDelete: (id: number) => void;
+  onSetStatus: (id: number, status: "keep" | "reviewing" | "canceled") => void;
   onAddCandidate: (candidate: RecurringCandidate) => void;
   onDismissCandidate: (candidate: RecurringCandidate) => void;
 }) {
@@ -374,19 +425,9 @@ export function RecurringView({
     return daysUntil <= 3;
   }
 
-  const monthlyExpense = recurring
-    .filter((r) => parseFloat(r.amount) < 0 && r.cadence === "monthly")
-    .reduce((s, r) => s + Math.abs(parseFloat(r.amount)), 0);
-  const monthlyIncome = recurring
-    .filter((r) => parseFloat(r.amount) > 0)
-    .reduce((s, r) => {
-      const multiplier = r.cadence === "biweekly" ? 2.166 : r.cadence === "weekly" ? 4.333 : r.cadence === "annual" ? 1 / 12 : 1;
-      return s + parseFloat(r.amount) * multiplier;
-    }, 0);
-
   // Not persisted across sessions (unlike theme/nav-order) — not worth
   // remembering, matching the original design call.
-  const [view, setView] = useState<"list" | "calendar">("list");
+  const [view, setView] = useState<"list" | "calendar" | "audit">("list");
   const now = new Date();
   const [calendarYear, setCalendarYear] = useState(now.getFullYear());
   const [calendarMonth, setCalendarMonth] = useState(now.getMonth() + 1); // 1-12
@@ -433,12 +474,20 @@ export function RecurringView({
     <div className="buckets-view">
       <div className="stats">
         <div className="stat">
-          <span className="stat-value">{formatAmount(monthlyExpense.toFixed(2))}</span>
+          <span className="stat-value">{formatAmount(totals.monthly_expense)}</span>
           <span className="stat-label">Monthly recurring expenses</span>
         </div>
         <div className="stat">
-          <span className="stat-value">{formatAmount(monthlyIncome.toFixed(2))}</span>
+          <span className="stat-value">{formatAmount(totals.monthly_income)}</span>
           <span className="stat-label">Recurring income (est.)</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value">{formatAmount(totals.annual_expense)}</span>
+          <span className="stat-label">Annual recurring expenses</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value">{formatAmount(totals.annual_income)}</span>
+          <span className="stat-label">Annual recurring income (est.)</span>
         </div>
         <div className="stat">
           <span className="stat-value">{recurring.length}</span>
@@ -458,6 +507,9 @@ export function RecurringView({
           onClick={() => setView("calendar")}
         >
           Calendar
+        </button>
+        <button type="button" className={view === "audit" ? "view-toggle-active" : ""} onClick={() => setView("audit")}>
+          Audit
         </button>
       </div>
 
@@ -515,6 +567,7 @@ export function RecurringView({
             <th>Cadence</th>
             <th>Next due</th>
             <th className="amount-col">Amount</th>
+            <th>Status</th>
             <th className="actions-col"></th>
           </tr>
         </thead>
@@ -533,7 +586,7 @@ export function RecurringView({
                 }}
               />
             ) : (
-              <tr key={r.id}>
+              <tr key={r.id} className={r.status === "canceled" ? "recurring-row-canceled" : undefined}>
                 <td>
                   <div className="account-name-cell">{r.merchant}</div>
                   {r.member_name && <span className="account-col">{r.member_name}</span>}
@@ -547,6 +600,9 @@ export function RecurringView({
                   {isDueSoon(r.next_date) && <span className="budget-alert-badge budget-alert-warning">Due soon</span>}
                 </td>
                 <td className="amount-col">{formatAmount(r.amount)}</td>
+                <td>
+                  <StatusPill status={r.status} onSetStatus={(status) => onSetStatus(r.id, status)} />
+                </td>
                 <td className="actions-col">
                   {confirmingDeleteId === r.id ? (
                     <span className="row-delete-confirm">
@@ -573,13 +629,51 @@ export function RecurringView({
           )}
           {recurring.length === 0 && (
             <tr>
-              <td colSpan={6} className="empty-state">
+              <td colSpan={7} className="empty-state">
                 No recurring items yet.
               </td>
             </tr>
           )}
         </tbody>
       </table>
+      )}
+
+      {view === "audit" && (
+        <table className="ledger">
+          <thead>
+            <tr>
+              <th>Merchant</th>
+              <th>Cadence</th>
+              <th className="amount-col">Normalized monthly cost</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...recurring]
+              .sort((a, b) => normalizedMonthlyCost(b) - normalizedMonthlyCost(a))
+              .map((r) => (
+                <tr key={r.id} className={r.status === "canceled" ? "recurring-row-canceled" : undefined}>
+                  <td>
+                    <div className="account-name-cell">{r.merchant}</div>
+                  </td>
+                  <td>
+                    <span className="confidence-badge">{r.cadence}</span>
+                  </td>
+                  <td className="amount-col">{formatAmount(normalizedMonthlyCost(r).toFixed(2))}</td>
+                  <td>
+                    <StatusPill status={r.status} onSetStatus={(status) => onSetStatus(r.id, status)} />
+                  </td>
+                </tr>
+              ))}
+            {recurring.length === 0 && (
+              <tr>
+                <td colSpan={4} className="empty-state">
+                  No recurring items to audit yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       )}
 
       <NewRecurringForm accounts={accounts} familyMembers={familyMembers} onCreate={onCreate} />

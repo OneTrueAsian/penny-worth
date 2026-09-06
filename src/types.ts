@@ -46,6 +46,12 @@ export type LivePriceRefreshSummary = {
   failed: { symbol: string; error: string }[];
 };
 
+export type AppSettings = {
+  apply_to_debt_enabled: boolean;
+  split_purchases_enabled: boolean;
+  envelope_caps_enabled: boolean;
+};
+
 export type Insight = {
   severity: "warning" | "info";
   kind: "pace" | "category_jump" | "large_expense";
@@ -120,6 +126,22 @@ export type Bucket = {
   account_name: string | null;
   member_id: number | null;
   member_name: string | null;
+  sinking_amount: string | null;
+};
+
+export type SinkingFundContribution = {
+  bucket_id: number;
+  bucket_name: string;
+  amount: string;
+};
+
+export type MemberBudgetActual = {
+  category: string;
+  budget_group: string;
+  budgeted: string;
+  member_id: number | null;
+  member_name: string | null;
+  actual: string;
 };
 
 export type BudgetGroup = "income" | "fixed" | "flexible" | "nonmonthly";
@@ -129,6 +151,7 @@ export type ReportBudgetLine = {
   budget_group: string;
   budgeted: string;
   actual: string;
+  cap_enabled: boolean;
 };
 
 export type Recurring = {
@@ -143,6 +166,14 @@ export type Recurring = {
   account_name: string | null;
   member_id: number | null;
   member_name: string | null;
+  status: "keep" | "reviewing" | "canceled";
+};
+
+export type RecurringTotals = {
+  monthly_expense: string;
+  monthly_income: string;
+  annual_expense: string;
+  annual_income: string;
 };
 
 export type RecurringCandidate = {
@@ -254,6 +285,7 @@ export type BudgetAlert = {
   actual: string;
   pct: string;
   level: "warning" | "over";
+  cap_enabled: boolean;
 };
 
 export type AnomalyFlag = {

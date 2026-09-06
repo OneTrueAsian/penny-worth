@@ -81,4 +81,11 @@ export const CHANGELOG: Record<string, string[]> = {
     "Deleting a transaction now shows exactly how much — and which direction — it'll change the account's balance before you confirm.",
     "The Ledger's date and description can now be corrected after the fact, alongside the amount, account, member, and category.",
   ],
+  "1.2.1": [
+    "Sinking funds: a bucket can now auto-contribute a fixed amount every month for irregular annual costs like insurance or gifts — set it when creating a bucket, or add it later by editing one.",
+    "Recurring now has an Audit view, sorted by true monthly cost across every cadence, with a Keep / Reviewing / Canceled status you can set per item — canceling is just a label and still counts until you actually delete it.",
+    "A new Household tab shows spending, income, and net worth broken down by family member, plus a per-person cut of this month's budget (budgets themselves are still shared per category, not per-person).",
+    "Budget categories can now opt into a stricter 90% warning threshold instead of the default 80%, via a \"Cap\" checkbox on each row.",
+    "Settings has a new \"Feature toggles\" section — turn Apply to Debt, Split purchases, or Envelope Caps off to hide them everywhere they appear; nothing already stored is lost, and turning a feature back on picks up right where it left off.",
+  ],
 };

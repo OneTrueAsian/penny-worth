@@ -23,6 +23,7 @@ function NewBucketForm({
     targetDate: string | null,
     accountId: number | null,
     memberId: number | null,
+    sinkingAmount: string | null,
   ) => void;
 }) {
   const [name, setName] = useState("");
@@ -30,6 +31,7 @@ function NewBucketForm({
   const [targetDate, setTargetDate] = useState("");
   const [accountId, setAccountId] = useState("");
   const [memberId, setMemberId] = useState("");
+  const [sinkingAmount, setSinkingAmount] = useState("");
   const [open, setOpen] = useState(false);
 
   function handleSubmit(e: FormEvent) {
@@ -41,12 +43,14 @@ function NewBucketForm({
       targetDate.trim() ? targetDate.trim() : null,
       accountId ? Number(accountId) : null,
       memberId ? Number(memberId) : null,
+      sinkingAmount.trim() ? sinkingAmount.trim() : null,
     );
     setName("");
     setTarget("");
     setTargetDate("");
     setAccountId("");
     setMemberId("");
+    setSinkingAmount("");
     setOpen(false);
   }
 
@@ -82,11 +86,76 @@ function NewBucketForm({
           ))}
         </select>
       )}
+      <input
+        value={sinkingAmount}
+        onChange={(e) => setSinkingAmount(e.target.value)}
+        placeholder="Auto-contribute monthly (optional)"
+        title="Automatically add this amount once a month, for an irregular annual cost like insurance or gifts"
+      />
       <div className="bucket-new-form-actions">
         <button type="submit" disabled={!name.trim()}>
           Create
         </button>
         <button type="button" className="modal-secondary" onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function EditBucketForm({
+  bucket,
+  accounts,
+  onSave,
+  onCancel,
+}: {
+  bucket: Bucket;
+  accounts: Account[];
+  onSave: (targetAmount: string | null, targetDate: string | null, accountId: number | null, sinkingAmount: string | null) => void;
+  onCancel: () => void;
+}) {
+  const [target, setTarget] = useState(bucket.target_amount ?? "");
+  const [targetDate, setTargetDate] = useState(bucket.target_date ?? "");
+  const [accountId, setAccountId] = useState(bucket.account_id !== null ? String(bucket.account_id) : "");
+  const [sinkingAmount, setSinkingAmount] = useState(bucket.sinking_amount ?? "");
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    onSave(
+      target.trim() ? target.trim() : null,
+      targetDate.trim() ? targetDate.trim() : null,
+      accountId ? Number(accountId) : null,
+      sinkingAmount.trim() ? sinkingAmount.trim() : null,
+    );
+  }
+
+  return (
+    <form className="bucket-new-form" onSubmit={handleSubmit}>
+      <input
+        autoFocus
+        value={target}
+        onChange={(e) => setTarget(e.target.value)}
+        placeholder="Target amount (optional)"
+      />
+      <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} title="Target date" />
+      <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+        <option value="">No linked account</option>
+        {accounts.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.name}
+          </option>
+        ))}
+      </select>
+      <input
+        value={sinkingAmount}
+        onChange={(e) => setSinkingAmount(e.target.value)}
+        placeholder="Auto-contribute monthly (optional)"
+        title="Automatically add this amount once a month, for an irregular annual cost like insurance or gifts"
+      />
+      <div className="bucket-new-form-actions">
+        <button type="submit">Save</button>
+        <button type="button" className="modal-secondary" onClick={onCancel}>
           Cancel
         </button>
       </div>
@@ -133,6 +202,7 @@ export function BucketsView({
   accounts,
   familyMembers,
   onCreateBucket,
+  onUpdateBucketDetails,
   onAddContribution,
   onDeleteBucket,
 }: {
@@ -145,12 +215,21 @@ export function BucketsView({
     targetDate: string | null,
     accountId: number | null,
     memberId: number | null,
+    sinkingAmount: string | null,
+  ) => void;
+  onUpdateBucketDetails: (
+    id: number,
+    targetAmount: string | null,
+    targetDate: string | null,
+    accountId: number | null,
+    sinkingAmount: string | null,
   ) => void;
   onAddContribution: (bucketId: number, date: string, amount: string, note: string | null) => void;
   onDeleteBucket: (id: number) => void;
 }) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
+  const [editingId, setEditingId] = useState<number | null>(null);
 
   return (
     <div className="buckets-view">
@@ -183,9 +262,14 @@ export function BucketsView({
                         </button>
                       </span>
                     ) : (
-                      <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(b.id)}>
-                        Delete
-                      </button>
+                      <span className="row-delete-confirm">
+                        <button type="button" className="modal-secondary" onClick={() => setEditingId(b.id)}>
+                          Edit
+                        </button>
+                        <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(b.id)}>
+                          Delete
+                        </button>
+                      </span>
                     )}
                   </div>
                   <p className="bucket-saved">
@@ -199,9 +283,26 @@ export function BucketsView({
                     {b.member_name && b.target_date && " · "}
                     {b.target_date && `${daysLeft(b.target_date)} days left`}
                   </p>
+                  {b.sinking_amount && (
+                    <p className="bucket-target" title="Automatically added to this bucket once a month">
+                      Auto: {formatAmount(b.sinking_amount)}/mo
+                    </p>
+                  )}
                 </div>
               </div>
-              <ContributionForm bucketId={b.id} onAddContribution={onAddContribution} />
+              {editingId === b.id ? (
+                <EditBucketForm
+                  bucket={b}
+                  accounts={accounts}
+                  onCancel={() => setEditingId(null)}
+                  onSave={(targetAmount, targetDate, accountId, sinkingAmount) => {
+                    onUpdateBucketDetails(b.id, targetAmount, targetDate, accountId, sinkingAmount);
+                    setEditingId(null);
+                  }}
+                />
+              ) : (
+                <ContributionForm bucketId={b.id} onAddContribution={onAddContribution} />
+              )}
             </div>
           );
         })}
