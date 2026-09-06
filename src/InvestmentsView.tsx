@@ -4,6 +4,8 @@ import { DonutChart, LineChart, fmtMoneyShort } from "./charts";
 import { formatAmount, isValidDecimalString } from "./format";
 import { projectGoal } from "./projections";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { PinToDashboardButton } from "./PinToDashboardButton";
+import type { WidgetId } from "./dashboardLayout";
 
 const CLASS_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9"];
 
@@ -273,6 +275,8 @@ export function InvestmentsView({
   onDelete,
   livePricesEnabled,
   onFetchQuote,
+  layoutWidgets,
+  onPinWidget,
 }: {
   holdings: Holding[];
   accounts: Account[];
@@ -289,6 +293,8 @@ export function InvestmentsView({
   onDelete: (id: number) => void;
   livePricesEnabled: boolean;
   onFetchQuote: (symbol: string) => Promise<string | null>;
+  layoutWidgets: WidgetId[];
+  onPinWidget: (id: WidgetId) => void;
 }) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
@@ -381,6 +387,7 @@ export function InvestmentsView({
         <div className="card">
           <div className="card-head">
             <span className="reports-section-title">Allocation</span>
+            <PinToDashboardButton widgetId="allocation" layoutWidgets={layoutWidgets} onPin={onPinWidget} />
           </div>
           <div className="donut-with-legend">
             <DonutChart data={donutData} size={132} />

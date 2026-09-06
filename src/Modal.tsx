@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
 import type { Account, CategoryTransaction, FamilyMember, MonthExpenseDetail, ReportBudgetLine } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { WIDGET_CATALOG, type WidgetId } from "./dashboardLayout";
 
 /** Shared shell: a dimmed overlay behind a centered panel. Clicking the
  * overlay (not the panel) cancels, matching how a native dialog behaves —
@@ -951,6 +952,56 @@ export function ConfirmInvertDialog({
         </button>
         <button type="button" onClick={onConfirm}>
           Flip the signs
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+/** Two groups — the 6 always-available core widgets, and the 4 report
+ * sections that can also be pinned here from their home tab (Cash Flow,
+ * Investments, Reports). Adding one here is the exact same action as
+ * clicking "Pin to Dashboard" on its home tab — both just add the id to
+ * the layout — so a widget already on the Dashboard shows "Added" instead
+ * of a duplicate Add button, and clicking Add doesn't close the dialog,
+ * so more than one can be added in a row. */
+export function AddWidgetDialog({
+  currentWidgets,
+  onAdd,
+  onCancel,
+}: {
+  currentWidgets: WidgetId[];
+  onAdd: (id: WidgetId) => void;
+  onCancel: () => void;
+}) {
+  const groups: { title: string; items: typeof WIDGET_CATALOG }[] = [
+    { title: "Core widgets", items: WIDGET_CATALOG.filter((w) => w.group === "core") },
+    { title: "Pinned reports", items: WIDGET_CATALOG.filter((w) => w.group === "report") },
+  ];
+
+  return (
+    <ModalShell title="Add widget" onCancel={onCancel}>
+      {groups.map((g) => (
+        <div key={g.title}>
+          <p className="modal-message-secondary widget-group-title">{g.title}</p>
+          <ul className="category-manage-list">
+            {g.items.map((w) => {
+              const added = currentWidgets.includes(w.id);
+              return (
+                <li key={w.id} className="category-manage-row">
+                  <span className="category-manage-name">{w.label}</span>
+                  <button type="button" className="modal-secondary" disabled={added} onClick={() => onAdd(w.id)}>
+                    {added ? "Added" : "Add"}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+      <div className="modal-actions">
+        <button type="button" onClick={onCancel}>
+          Done
         </button>
       </div>
     </ModalShell>

@@ -52,6 +52,12 @@ export type AppSettings = {
   envelope_caps_enabled: boolean;
 };
 
+/** Purely a per-viewer display preference (like `Theme` in App.tsx) — stored
+ * in localStorage, never sent to the backend. Every style but "classic" is
+ * dark-only by design, so it ignores the sidebar's separate Light/Dark/
+ * System toggle. */
+export type ThemeStyle = "classic" | "aurora" | "midnight_emerald";
+
 export type Insight = {
   severity: "warning" | "info";
   kind: "pace" | "category_jump" | "large_expense";
@@ -127,6 +133,7 @@ export type Bucket = {
   member_id: number | null;
   member_name: string | null;
   sinking_amount: string | null;
+  color: string | null;
 };
 
 export type SinkingFundContribution = {

@@ -1,8 +1,11 @@
 import { FormEvent, useState } from "react";
 import type { Account, Asset, Bucket, DebtPayoffPlan, FamilyMember, Report, Transaction } from "./types";
 import { StatDetailPanel } from "./StatDetailPanel";
+import { LineChart } from "./charts";
 import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
-import { groupOf } from "./accountGroups";
+import { groupOf, owedAmount } from "./accountGroups";
+import { PinToDashboardButton } from "./PinToDashboardButton";
+import type { WidgetId } from "./dashboardLayout";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { netWorthByMember, spendingByMember } from "./memberBreakdowns";
 
@@ -234,6 +237,90 @@ function PropertyAssetsSection({
   );
 }
 
+/** Every savings bucket's progress toward its target, side by side — a
+ * summary the Buckets tab itself doesn't have (its own cards are meant to
+ * be worked from one at a time, not scanned as a group). Reuses each
+ * bucket's own color (see BucketsView's color picker) for its bar, so a
+ * color chosen there carries through to this report for free. */
+function BucketsOverviewSection({ buckets }: { buckets: Bucket[] }) {
+  if (buckets.length === 0) return null;
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">Buckets overview</span>
+      </div>
+      <div className="buckets-overview-list">
+        {buckets.map((b) => {
+          const saved = parseFloat(b.saved_amount);
+          const target = b.target_amount ? parseFloat(b.target_amount) : null;
+          const pct = target && target > 0 ? Math.min(100, Math.max(0, (saved / target) * 100)) : null;
+          return (
+            <div key={b.id} className="buckets-overview-row">
+              <div className="buckets-overview-row-head">
+                <span style={{ fontWeight: 600 }}>{b.name}</span>
+                <span className="account-col">
+                  {formatAmount(b.saved_amount)}
+                  {b.target_amount && ` of ${formatAmount(b.target_amount)}`}
+                </span>
+              </div>
+              {pct !== null ? (
+                <div className="progress-track">
+                  <div className="progress-fill" style={{ width: `${pct}%`, background: b.color ?? undefined }} />
+                </div>
+              ) : (
+                <p className="modal-message-secondary" style={{ margin: 0 }}>
+                  No target set
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Savings rate — (income − expenses) ÷ income — trended over every month
+ * with transaction history, trailing 12. A purely client-side reduction
+ * over the same `transactions` this page already has (matching this file's
+ * own existing convention for "income" — the literal "Income" category, see
+ * `incomeByAccount` above — and for "expense" — any negative amount, see
+ * `tagTotals` above), so it needed no new prop or fetch. Cash Flow's
+ * "Income vs. expenses" chart shows one month's totals in dollars; this is
+ * the trend those totals form over time, as a rate. */
+function SavingsRateTrendSection({ transactions }: { transactions: Transaction[] }) {
+  const monthly = new Map<string, { income: number; expense: number }>();
+  for (const t of transactions) {
+    const month = t.date.slice(0, 7);
+    const entry = monthly.get(month) ?? { income: 0, expense: 0 };
+    const amount = parseFloat(t.amount);
+    if (t.category === "Income") entry.income += amount;
+    else if (amount < 0) entry.expense += Math.abs(amount);
+    monthly.set(month, entry);
+  }
+  const points = Array.from(monthly.entries())
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .slice(-12)
+    .map(([month, { income, expense }]) => ({
+      label: new Date(`${month}-01T00:00:00`).toLocaleDateString("en-US", { month: "short" }),
+      value: income > 0 ? ((income - expense) / income) * 100 : 0,
+    }));
+
+  if (points.length === 0) return null;
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">Savings rate trend</span>
+      </div>
+      <p className="modal-message-secondary">
+        (Income − expenses) ÷ income, by month — a rate can go negative in a month spending outpaced income.
+      </p>
+      <LineChart points={points} height={180} formatValue={(v) => `${v.toFixed(0)}%`} />
+    </div>
+  );
+}
 
 /** Every stat on this page that can be clicked open to show what makes it
  * up. Account-level stats (assets/liabilities/net worth) moved to
@@ -251,12 +338,6 @@ const REPORT_STAT_LABELS: Record<ReportStatKey, string> = {
 /** How much is actually owed on a debt account — the positive counterpart
  * to `netWorthContribution`'s (negative) debt contribution. Matches
  * `AccountRow`'s own `owed` calculation. */
-function owedAmount(a: Account): number {
-  const group = groupOf(a.account_type);
-  if (group === "loan") return parseFloat(a.current_balance);
-  return parseFloat(a.starting_balance) - parseFloat(a.current_balance);
-}
-
 const DEBT_STRATEGY_OPTIONS: { value: string; label: string }[] = [
   { value: "snowball", label: "Snowball (smallest balance first)" },
   { value: "avalanche", label: "Avalanche (highest rate first)" },
@@ -267,6 +348,8 @@ export function DebtPayoffPlannerSection({
   onSetAccountInterestRate,
   onCalculateDebtPayoff,
   onSetAccountExcludedFromDebtPayoff,
+  layoutWidgets,
+  onPinWidget,
 }: {
   accounts: Account[];
   onSetAccountInterestRate: (accountId: number, rate: string | null) => void;
@@ -276,6 +359,8 @@ export function DebtPayoffPlannerSection({
     minimums: { accountId: number; minimumPayment: string }[],
   ) => Promise<DebtPayoffPlan | null>;
   onSetAccountExcludedFromDebtPayoff: (accountId: number, excluded: boolean) => void;
+  layoutWidgets: WidgetId[];
+  onPinWidget: (id: WidgetId) => void;
 }) {
   // Every debt with a balance owed is listed — including ones the user has
   // excluded (e.g. a card paid off in full every month) — so excluding is
@@ -310,6 +395,7 @@ export function DebtPayoffPlannerSection({
     <div className="card">
       <div className="card-head">
         <span className="reports-section-title">Debt Payoff Planner</span>
+        <PinToDashboardButton widgetId="debt_payoff" layoutWidgets={layoutWidgets} onPin={onPinWidget} />
       </div>
       <table className="ledger">
         <thead>
@@ -427,6 +513,8 @@ export function ReportsView({
   onSetAssetMember,
   onDeleteAsset,
   onOpenBudget,
+  layoutWidgets,
+  onPinWidget,
 }: {
   report: Report | null;
   accounts: Account[];
@@ -450,6 +538,8 @@ export function ReportsView({
   onSetAssetMember: (id: number, memberId: number | null) => void;
   onDeleteAsset: (id: number) => void;
   onOpenBudget: () => void;
+  layoutWidgets: WidgetId[];
+  onPinWidget: (id: WidgetId) => void;
 }) {
   const [expandedStat, setExpandedStat] = useState<ReportStatKey | null>(null);
 
@@ -573,9 +663,14 @@ export function ReportsView({
         onDelete={onDeleteAsset}
       />
 
+      <BucketsOverviewSection buckets={buckets} />
+
       {familyMembers.length > 0 && (
         <div>
-          <h2 className="reports-section-title">Net Worth by Member</h2>
+          <div className="card-head">
+            <h2 className="reports-section-title">Net Worth by Member</h2>
+            <PinToDashboardButton widgetId="net_worth_by_member" layoutWidgets={layoutWidgets} onPin={onPinWidget} />
+          </div>
           <table className="ledger">
             <thead>
               <tr>
@@ -601,6 +696,8 @@ export function ReportsView({
           </table>
         </div>
       )}
+
+      <SavingsRateTrendSection transactions={transactions} />
 
       <div className="card clickable-row" onClick={onOpenBudget} title="Go to the Budget tab">
         <span className="category-link">This month's budget →</span>

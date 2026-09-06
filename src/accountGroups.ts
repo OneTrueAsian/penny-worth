@@ -39,3 +39,14 @@ export function netWorthContribution(a: Account): number {
   }
   return parseFloat(a.current_balance);
 }
+
+/** How much is actually owed on a debt account, as a positive number —
+ * the inverse framing of `netWorthContribution` (which is negative-signed
+ * for debt), used anywhere a debt is listed as a plain balance rather than
+ * netted into a total (the debt payoff planner, and its condensed
+ * Dashboard summary). */
+export function owedAmount(a: Account): number {
+  const group = groupOf(a.account_type);
+  if (group === "loan") return parseFloat(a.current_balance);
+  return parseFloat(a.starting_balance) - parseFloat(a.current_balance);
+}

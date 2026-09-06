@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AppSettings, Backup, LivePriceProviderId, LivePriceSettings, Profile } from "./types";
+import type { AppSettings, Backup, LivePriceProviderId, LivePriceSettings, Profile, ThemeStyle } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { CHANGELOG } from "./changelog";
 
@@ -262,6 +262,63 @@ function LivePricesSection({
   );
 }
 
+const THEME_STYLE_OPTIONS: { id: ThemeStyle; label: string; description: string }[] = [
+  {
+    id: "classic",
+    label: "Classic",
+    description:
+      "Penny Worth's original look, with its own Light/Dark/System toggle at the bottom of the sidebar.",
+  },
+  {
+    id: "aurora",
+    label: "Aurora",
+    description:
+      "A colorful reskin — navy backgrounds with lavender, mint, and coral accents. Always dark, regardless of the sidebar's Light/Dark/System setting.",
+  },
+  {
+    id: "midnight_emerald",
+    label: "Midnight Emerald",
+    description:
+      "A jewel-toned reskin — near-black green backgrounds with an emerald accent and warm copper/champagne highlights. Always dark, regardless of the sidebar's Light/Dark/System setting.",
+  },
+];
+
+function AppearanceSection({
+  themeStyle,
+  onSetThemeStyle,
+}: {
+  themeStyle: ThemeStyle;
+  onSetThemeStyle: (style: ThemeStyle) => void;
+}) {
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">Appearance</span>
+      </div>
+      <p className="modal-message-secondary">
+        Choose Penny Worth's visual theme. This only changes colors, fonts, and shapes — nothing about how the app
+        works.
+      </p>
+      <div className="feature-toggle-list" role="radiogroup" aria-label="Theme">
+        {THEME_STYLE_OPTIONS.map((opt) => (
+          <label key={opt.id} className="feature-toggle-row">
+            <input
+              type="radio"
+              name="theme-style"
+              checked={themeStyle === opt.id}
+              onChange={() => onSetThemeStyle(opt.id)}
+            />
+            <span className="feature-toggle-text">
+              <span className="feature-toggle-label">{opt.label}</span>
+              <span className="modal-message-secondary">{opt.description}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FeatureTogglesSection({
   appSettings,
   onSetApplyToDebtEnabled,
@@ -518,6 +575,8 @@ export function SettingsView({
   onSetApplyToDebtEnabled,
   onSetSplitPurchasesEnabled,
   onSetEnvelopeCapsEnabled,
+  themeStyle,
+  onSetThemeStyle,
 }: {
   appVersion: string | null;
   dataFileLocation: string | null;
@@ -538,9 +597,12 @@ export function SettingsView({
   onSetApplyToDebtEnabled: (enabled: boolean) => void;
   onSetSplitPurchasesEnabled: (enabled: boolean) => void;
   onSetEnvelopeCapsEnabled: (enabled: boolean) => void;
+  themeStyle: ThemeStyle;
+  onSetThemeStyle: (style: ThemeStyle) => void;
 }) {
   return (
     <div className="reports-view">
+      <AppearanceSection themeStyle={themeStyle} onSetThemeStyle={onSetThemeStyle} />
       <ProfilesSection
         profiles={profiles}
         onCreateProfile={onCreateProfile}

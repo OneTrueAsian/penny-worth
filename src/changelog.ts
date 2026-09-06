@@ -88,4 +88,12 @@ export const CHANGELOG: Record<string, string[]> = {
     "Budget categories can now opt into a stricter 90% warning threshold instead of the default 80%, via a \"Cap\" checkbox on each row.",
     "Settings has a new \"Feature toggles\" section — turn Apply to Debt, Split purchases, or Envelope Caps off to hide them everywhere they appear; nothing already stored is lost, and turning a feature back on picks up right where it left off.",
   ],
+  "1.2.2": [
+    "Buckets can now be color-coded — pick a color when creating or editing one, and it carries through to that bucket's card and the new \"Buckets overview\" report.",
+    "The Dashboard is now customizable: reorder or remove widgets, add report sections pinned from Cash Flow, Investments, and Reports, and switch between Default, Bills Focus, and Investor Focus layouts — or build your own.",
+    "Two new reports: \"Buckets overview\" (every bucket's progress at a glance) and \"Savings rate trend\" (income minus expenses, as a percentage, charted by month).",
+    "Two new visual themes in Settings ▸ Appearance, alongside Classic: Aurora (navy with lavender, mint, and coral) and Midnight Emerald (slate and emerald). Both are dark-only, so the sidebar's Light/Dark/System toggle steps aside while one is active.",
+    "A new \"Ask your ledger\" box on the Dashboard answers questions typed in plain English — spending by category or merchant over a time period, runway what-ifs, account/net worth/debt lookups, subscription totals, bucket progress, savings rate, and month-over-month comparisons — computed entirely from your own local data, never sent anywhere.",
+    "Fixed: the Dashboard's Debt tile could show red even while a debt was actively being paid down. It now tracks the actual amount owed, so paying down debt shows green with a downward trend line, and only rising debt shows red.",
+  ],
 };

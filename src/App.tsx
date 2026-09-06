@@ -8,6 +8,7 @@ import { toCsv } from "./csv";
 import { buildSetupTemplate } from "./setupTemplate";
 import { CHANGELOG } from "./changelog";
 import {
+  AddWidgetDialog,
   CategoryTransactionsDialog,
   ConfirmInvertDialog,
   ManageCategoriesDialog,
@@ -20,6 +21,7 @@ import {
   WelcomeDialog,
   WhatsNewDialog,
 } from "./Modal";
+import { loadDashboardLayout, saveDashboardLayout, type WidgetId } from "./dashboardLayout";
 import { AccountsView } from "./AccountsView";
 import { BucketsView } from "./BucketsView";
 import { ProfileSwitcher } from "./ProfileSwitcher";
@@ -72,6 +74,7 @@ import type {
   SetupImportPreview,
   SetupImportSummary,
   SinkingFundContribution,
+  ThemeStyle,
   Transaction,
   TransactionSplit,
   YoyCashFlow,
@@ -233,6 +236,7 @@ const PINNED_NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
 ];
 
 const THEME_STORAGE_KEY = "meadow-theme";
+const THEME_STYLE_STORAGE_KEY = "meadow-theme-style";
 const NAV_ORDER_STORAGE_KEY = "meadow-nav-order";
 const SAVED_FILTERS_STORAGE_KEY = "meadow-saved-ledger-filters";
 
@@ -362,8 +366,17 @@ function App({
       return "system";
     }
   });
+  const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => {
+    try {
+      return (localStorage.getItem(THEME_STYLE_STORAGE_KEY) as ThemeStyle | null) ?? "classic";
+    } catch {
+      return "classic";
+    }
+  });
   const [navOrder, setNavOrder] = useState<Tab[]>(loadNavOrder);
   const [dragNavTab, setDragNavTab] = useState<Tab | null>(null);
+  const [layoutWidgets, setLayoutWidgetsState] = useState<WidgetId[]>(loadDashboardLayout);
+  const [addWidgetModalOpen, setAddWidgetModalOpen] = useState(false);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [anomalyFlags, setAnomalyFlags] = useState<AnomalyFlag[]>([]);
   const [searchText, setSearchText] = useState("");
@@ -867,6 +880,41 @@ function App({
     setThemeState(next);
   }
 
+  useEffect(() => {
+    const root = document.documentElement;
+    if (themeStyle === "classic") {
+      root.removeAttribute("data-palette");
+    } else {
+      root.setAttribute("data-palette", themeStyle);
+    }
+    try {
+      localStorage.setItem(THEME_STYLE_STORAGE_KEY, themeStyle);
+    } catch {
+      // per-viewer preference only — fine to skip if storage is unavailable
+    }
+  }, [themeStyle]);
+
+  function setThemeStyle(next: ThemeStyle) {
+    setThemeStyleState(next);
+  }
+
+  function setLayoutWidgets(next: WidgetId[]) {
+    setLayoutWidgetsState(next);
+    saveDashboardLayout(next);
+  }
+
+  /** Shared by the "+ Add widget" modal and every "Pin to Dashboard" button
+   * (Cash Flow's Top merchants/Debt Payoff Planner, Investments' Allocation,
+   * Reports' Net Worth by Member) — both are the same action, just reached
+   * from a different starting page. A widget already on the layout is a
+   * no-op, matching the modal's "Added" (not a second copy). */
+  function addWidgetToDashboard(id: WidgetId, announce: boolean) {
+    if (!layoutWidgets.includes(id)) {
+      setLayoutWidgets([...layoutWidgets, id]);
+    }
+    if (announce) setStatus("Pinned to Dashboard.", "success");
+  }
+
   const orderedNavItems = navOrder.map((id) => NAV_ITEMS.find((item) => item.id === id)!);
 
   function handleNavDrop(targetId: Tab) {
@@ -1067,8 +1115,13 @@ function App({
     if (activeTab === "cashflow") {
       refreshCashFlow(cashFlowRange).catch((e) => setStatus(String(e)));
       if (compareLastYear) refreshYoy(cashFlowRange).catch((e) => setStatus(String(e)));
-      refreshTopCategories(topCategoriesMonth.year, topCategoriesMonth.month).catch((e) => setStatus(String(e)));
       refreshForecast(forecastDays).catch((e) => setStatus(String(e)));
+    }
+    // "Top merchants" also needs this data when pinned to the Dashboard —
+    // same fetch, just triggered from a second tab, and it always shows
+    // `topCategoriesMonth`'s (default: current month) figures either way.
+    if (activeTab === "cashflow" || (activeTab === "dashboard" && layoutWidgets.includes("top_merchants"))) {
+      refreshTopCategories(topCategoriesMonth.year, topCategoriesMonth.month).catch((e) => setStatus(String(e)));
     }
   }, [
     activeTab,
@@ -1076,6 +1129,7 @@ function App({
     compareLastYear,
     topCategoriesMonth,
     forecastDays,
+    layoutWidgets,
     refreshCashFlow,
     refreshYoy,
     refreshTopCategories,
@@ -1466,9 +1520,10 @@ function App({
     accountId: number | null,
     memberId: number | null,
     sinkingAmount: string | null,
+    color: string | null,
   ) {
     try {
-      const id = await invoke<number>("create_bucket", { name, targetAmount, targetDate, accountId, sinkingAmount });
+      const id = await invoke<number>("create_bucket", { name, targetAmount, targetDate, accountId, sinkingAmount, color });
       if (memberId !== null) {
         await invoke("set_bucket_member", { id, memberId });
       }
@@ -1491,9 +1546,10 @@ function App({
     targetDate: string | null,
     accountId: number | null,
     sinkingAmount: string | null,
+    color: string | null,
   ) {
     try {
-      await invoke("update_bucket_details", { id, targetAmount, targetDate, accountId, sinkingAmount });
+      await invoke("update_bucket_details", { id, targetAmount, targetDate, accountId, sinkingAmount, color });
       await refreshBuckets();
       // Same reasoning as handleCreateBucket: a sinking amount just added
       // (or changed) here was invisible to the launch-time check, so catch
@@ -2492,17 +2548,21 @@ function App({
         </nav>
         <div className="sidebar-foot">
           {appVersion && <p className="sidebar-version">v{appVersion}</p>}
-          <div className="theme-toggle" role="group" aria-label="Theme">
-            {(["light", "dark", "system"] as Theme[]).map((t) => (
-              <button
-                key={t}
-                className={theme === t ? "theme-toggle-active" : ""}
-                onClick={() => setTheme(t)}
-              >
-                {t[0].toUpperCase() + t.slice(1)}
-              </button>
-            ))}
-          </div>
+          {themeStyle !== "classic" ? (
+            <p className="sidebar-theme-note">This theme is always dark</p>
+          ) : (
+            <div className="theme-toggle" role="group" aria-label="Theme">
+              {(["light", "dark", "system"] as Theme[]).map((t) => (
+                <button
+                  key={t}
+                  className={theme === t ? "theme-toggle-active" : ""}
+                  onClick={() => setTheme(t)}
+                >
+                  {t[0].toUpperCase() + t.slice(1)}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </aside>
 
@@ -2630,9 +2690,21 @@ function App({
           insights={dashboardInsights}
           avgMonthlySpend={avgMonthlySpend}
           assetsTotal={assets.reduce((s, a) => s + parseFloat(a.value), 0)}
+          assets={assets}
+          holdings={holdings}
+          familyMembers={familyMembers}
+          buckets={buckets}
+          categories={usedCategories}
+          topCategoriesData={topCategoriesData}
+          layoutWidgets={layoutWidgets}
+          onSetLayoutWidgets={setLayoutWidgets}
+          onOpenAddWidget={() => setAddWidgetModalOpen(true)}
           onOpenLedger={() => setActiveTab("ledger")}
           onOpenRecurring={() => setActiveTab("recurring")}
           onOpenBudget={() => setActiveTab("budget")}
+          onOpenCashFlow={() => setActiveTab("cashflow")}
+          onOpenInvestments={() => setActiveTab("investments")}
+          onOpenReports={() => setActiveTab("reports")}
         />
       )}
 
@@ -3395,6 +3467,8 @@ function App({
           onDelete={handleDeleteHolding}
           livePricesEnabled={livePriceSettings?.enabled ?? false}
           onFetchQuote={handleFetchLiveQuote}
+          layoutWidgets={layoutWidgets}
+          onPinWidget={(id) => addWidgetToDashboard(id, true)}
         />
       )}
 
@@ -3420,6 +3494,8 @@ function App({
           onSetAccountInterestRate={handleSetAccountInterestRate}
           onCalculateDebtPayoff={handleCalculateDebtPayoff}
           onSetAccountExcludedFromDebtPayoff={handleSetAccountExcludedFromDebtPayoff}
+          layoutWidgets={layoutWidgets}
+          onPinWidget={(id) => addWidgetToDashboard(id, true)}
         />
       )}
 
@@ -3670,6 +3746,8 @@ function App({
           onSetAssetMember={handleSetAssetMember}
           onDeleteAsset={handleDeleteAsset}
           onOpenBudget={() => setActiveTab("budget")}
+          layoutWidgets={layoutWidgets}
+          onPinWidget={(id) => addWidgetToDashboard(id, true)}
         />
       )}
 
@@ -3694,6 +3772,8 @@ function App({
           onSetApplyToDebtEnabled={handleSetApplyToDebtEnabled}
           onSetSplitPurchasesEnabled={handleSetSplitPurchasesEnabled}
           onSetEnvelopeCapsEnabled={handleSetEnvelopeCapsEnabled}
+          themeStyle={themeStyle}
+          onSetThemeStyle={setThemeStyle}
         />
       )}
 
@@ -3732,6 +3812,13 @@ function App({
             dialog.resolve(true);
             setDialog(null);
           }}
+        />
+      )}
+      {addWidgetModalOpen && (
+        <AddWidgetDialog
+          currentWidgets={layoutWidgets}
+          onAdd={(id) => addWidgetToDashboard(id, false)}
+          onCancel={() => setAddWidgetModalOpen(false)}
         />
       )}
       {manageCategoriesOpen && (

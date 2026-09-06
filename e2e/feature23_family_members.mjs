@@ -112,7 +112,10 @@ try {
     throw new Error(`expected the panel to show Alex with $50.00, got:\n${panelText}`);
   }
 
-  const netWorthSection = await app.browser.$("//div[h2[contains(.,'Net Worth by Member')]]");
+  // The heading now sits inside its own .card-head row (alongside a "Pin
+  // to Dashboard" button), one level deeper than it used to — go up to the
+  // div that also contains the table, not just the card-head row itself.
+  const netWorthSection = await app.browser.$("//div[div/h2[contains(.,'Net Worth by Member')]]");
   await netWorthSection.waitForExist({ timeout: 5000 });
   const netWorthText = await netWorthSection.getText();
   console.log("net worth by member section:", netWorthText);

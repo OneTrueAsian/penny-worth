@@ -4,6 +4,31 @@ import { ProgressRing } from "./charts";
 import { formatAmount, toLocalIsoDate } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 
+const BUCKET_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9", "#B0526A", "#5FA85E"];
+
+function ColorPicker({ value, onChange }: { value: string | null; onChange: (color: string | null) => void }) {
+  return (
+    <div className="bucket-color-picker" role="group" aria-label="Card color">
+      <button
+        type="button"
+        className={value === null ? "bucket-color-swatch bucket-color-swatch-none bucket-color-swatch-active" : "bucket-color-swatch bucket-color-swatch-none"}
+        title="No color"
+        onClick={() => onChange(null)}
+      />
+      {BUCKET_COLORS.map((c) => (
+        <button
+          type="button"
+          key={c}
+          className={value === c ? "bucket-color-swatch bucket-color-swatch-active" : "bucket-color-swatch"}
+          style={{ background: c }}
+          title={c}
+          onClick={() => onChange(c)}
+        />
+      ))}
+    </div>
+  );
+}
+
 function daysLeft(targetDate: string): number {
   const target = new Date(targetDate + "T00:00:00");
   const today = new Date(toLocalIsoDate() + "T00:00:00");
@@ -24,6 +49,7 @@ function NewBucketForm({
     accountId: number | null,
     memberId: number | null,
     sinkingAmount: string | null,
+    color: string | null,
   ) => void;
 }) {
   const [name, setName] = useState("");
@@ -32,6 +58,7 @@ function NewBucketForm({
   const [accountId, setAccountId] = useState("");
   const [memberId, setMemberId] = useState("");
   const [sinkingAmount, setSinkingAmount] = useState("");
+  const [color, setColor] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
   function handleSubmit(e: FormEvent) {
@@ -44,6 +71,7 @@ function NewBucketForm({
       accountId ? Number(accountId) : null,
       memberId ? Number(memberId) : null,
       sinkingAmount.trim() ? sinkingAmount.trim() : null,
+      color,
     );
     setName("");
     setTarget("");
@@ -51,6 +79,7 @@ function NewBucketForm({
     setAccountId("");
     setMemberId("");
     setSinkingAmount("");
+    setColor(null);
     setOpen(false);
   }
 
@@ -92,6 +121,7 @@ function NewBucketForm({
         placeholder="Auto-contribute monthly (optional)"
         title="Automatically add this amount once a month, for an irregular annual cost like insurance or gifts"
       />
+      <ColorPicker value={color} onChange={setColor} />
       <div className="bucket-new-form-actions">
         <button type="submit" disabled={!name.trim()}>
           Create
@@ -112,13 +142,20 @@ function EditBucketForm({
 }: {
   bucket: Bucket;
   accounts: Account[];
-  onSave: (targetAmount: string | null, targetDate: string | null, accountId: number | null, sinkingAmount: string | null) => void;
+  onSave: (
+    targetAmount: string | null,
+    targetDate: string | null,
+    accountId: number | null,
+    sinkingAmount: string | null,
+    color: string | null,
+  ) => void;
   onCancel: () => void;
 }) {
   const [target, setTarget] = useState(bucket.target_amount ?? "");
   const [targetDate, setTargetDate] = useState(bucket.target_date ?? "");
   const [accountId, setAccountId] = useState(bucket.account_id !== null ? String(bucket.account_id) : "");
   const [sinkingAmount, setSinkingAmount] = useState(bucket.sinking_amount ?? "");
+  const [color, setColor] = useState<string | null>(bucket.color);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -127,6 +164,7 @@ function EditBucketForm({
       targetDate.trim() ? targetDate.trim() : null,
       accountId ? Number(accountId) : null,
       sinkingAmount.trim() ? sinkingAmount.trim() : null,
+      color,
     );
   }
 
@@ -153,6 +191,7 @@ function EditBucketForm({
         placeholder="Auto-contribute monthly (optional)"
         title="Automatically add this amount once a month, for an irregular annual cost like insurance or gifts"
       />
+      <ColorPicker value={color} onChange={setColor} />
       <div className="bucket-new-form-actions">
         <button type="submit">Save</button>
         <button type="button" className="modal-secondary" onClick={onCancel}>
@@ -216,6 +255,7 @@ export function BucketsView({
     accountId: number | null,
     memberId: number | null,
     sinkingAmount: string | null,
+    color: string | null,
   ) => void;
   onUpdateBucketDetails: (
     id: number,
@@ -223,6 +263,7 @@ export function BucketsView({
     targetDate: string | null,
     accountId: number | null,
     sinkingAmount: string | null,
+    color: string | null,
   ) => void;
   onAddContribution: (bucketId: number, date: string, amount: string, note: string | null) => void;
   onDeleteBucket: (id: number) => void;
@@ -242,10 +283,10 @@ export function BucketsView({
           const target = b.target_amount ? parseFloat(b.target_amount) : null;
           const pct = target && target > 0 ? Math.min(100, Math.max(0, (saved / target) * 100)) : null;
           return (
-            <div key={b.id} className="bucket-card">
+            <div key={b.id} className="bucket-card" style={b.color ? { borderTop: `3px solid ${b.color}` } : undefined}>
               <div className="bucket-card-header-row">
                 {pct !== null ? (
-                  <ProgressRing pct={pct} size={64} />
+                  <ProgressRing pct={pct} size={64} color={b.color ?? undefined} />
                 ) : (
                   <div className="goal-ring-wrap" style={{ width: 64, height: 64 }} />
                 )}
@@ -295,8 +336,8 @@ export function BucketsView({
                   bucket={b}
                   accounts={accounts}
                   onCancel={() => setEditingId(null)}
-                  onSave={(targetAmount, targetDate, accountId, sinkingAmount) => {
-                    onUpdateBucketDetails(b.id, targetAmount, targetDate, accountId, sinkingAmount);
+                  onSave={(targetAmount, targetDate, accountId, sinkingAmount, color) => {
+                    onUpdateBucketDetails(b.id, targetAmount, targetDate, accountId, sinkingAmount, color);
                     setEditingId(null);
                   }}
                 />

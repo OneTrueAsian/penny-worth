@@ -3,6 +3,8 @@ import type { Account, CashFlow, CategoryAmount, DebtPayoffPlan, ForecastPoint, 
 import { BarChart, DonutChart, LineChart, fmtMoneyShort } from "./charts";
 import { formatAmount } from "./format";
 import { DebtPayoffPlannerSection } from "./ReportsView";
+import { PinToDashboardButton } from "./PinToDashboardButton";
+import type { WidgetId } from "./dashboardLayout";
 
 const CATEGORY_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9"];
 const FORECAST_DAY_OPTIONS = [30, 60, 90];
@@ -26,6 +28,8 @@ export function CashFlowView({
   onSetAccountInterestRate,
   onCalculateDebtPayoff,
   onSetAccountExcludedFromDebtPayoff,
+  layoutWidgets,
+  onPinWidget,
 }: {
   cashFlow: CashFlow | null;
   range: number;
@@ -60,6 +64,11 @@ export function CashFlowView({
     minimums: { accountId: number; minimumPayment: string }[],
   ) => Promise<DebtPayoffPlan | null>;
   onSetAccountExcludedFromDebtPayoff: (accountId: number, excluded: boolean) => void;
+  /** The Dashboard's current widget layout, and a way to add to it — powers
+   * the "Pin to Dashboard" button next to Top merchants and, further down,
+   * the Debt Payoff Planner. */
+  layoutWidgets: WidgetId[];
+  onPinWidget: (id: WidgetId) => void;
 }) {
   // Local to this view (like `expandedStat`/`showBudgetAlerts` on the
   // Dashboard) rather than lifted to App.tsx — a per-view UI concern, not
@@ -284,18 +293,21 @@ export function CashFlowView({
             <div className="card">
               <div className="card-head">
                 <span className="reports-section-title">Top merchants</span>
-                <select
-                  className="month-select"
-                  value={topCategoriesMonth.month}
-                  onChange={(e) => onSetTopCategoriesMonth(topCategoriesMonth.year, Number(e.target.value))}
-                  title="Also changes the Top categories chart"
-                >
-                  {monthOptions.map((opt) => (
-                    <option key={opt.month} value={opt.month}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <select
+                    className="month-select"
+                    value={topCategoriesMonth.month}
+                    onChange={(e) => onSetTopCategoriesMonth(topCategoriesMonth.year, Number(e.target.value))}
+                    title="Also changes the Top categories chart"
+                  >
+                    {monthOptions.map((opt) => (
+                      <option key={opt.month} value={opt.month}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <PinToDashboardButton widgetId="top_merchants" layoutWidgets={layoutWidgets} onPin={onPinWidget} />
+                </div>
               </div>
               {!topCategoriesData ? (
                 <p className="empty-state">Loading…</p>
@@ -367,6 +379,8 @@ export function CashFlowView({
           onSetAccountInterestRate={onSetAccountInterestRate}
           onCalculateDebtPayoff={onCalculateDebtPayoff}
           onSetAccountExcludedFromDebtPayoff={onSetAccountExcludedFromDebtPayoff}
+          layoutWidgets={layoutWidgets}
+          onPinWidget={onPinWidget}
         />
       )}
     </div>

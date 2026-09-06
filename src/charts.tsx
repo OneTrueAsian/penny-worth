@@ -11,7 +11,17 @@ export function fmtMoneyShort(n: number): string {
   return (n < 0 ? "-" : "") + "$" + s;
 }
 
-export function ProgressRing({ pct, size = 64, stroke = 7 }: { pct: number; size?: number; stroke?: number }) {
+export function ProgressRing({
+  pct,
+  size = 64,
+  stroke = 7,
+  color = "var(--accent)",
+}: {
+  pct: number;
+  size?: number;
+  stroke?: number;
+  color?: string;
+}) {
   const r = (size - stroke) / 2;
   const cx = size / 2;
   const cy = size / 2;
@@ -26,7 +36,7 @@ export function ProgressRing({ pct, size = 64, stroke = 7 }: { pct: number; size
           cy={cy}
           r={r}
           fill="none"
-          stroke="var(--accent)"
+          stroke={color}
           strokeWidth={stroke}
           strokeLinecap="round"
           strokeDasharray={`${dash} ${circ - dash}`}
@@ -289,11 +299,16 @@ export function LineChart({
   width = 560,
   height = 200,
   color = "var(--accent)",
+  formatValue = fmtMoneyShort,
 }: {
   points: { label: string; value: number }[];
   width?: number;
   height?: number;
   color?: string;
+  /** Axis/tooltip value formatter — defaults to money since every point on
+   * this chart has been a dollar amount so far, but a non-currency trend
+   * (e.g. a percentage) needs its own. */
+  formatValue?: (v: number) => string;
 }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
@@ -357,7 +372,7 @@ export function LineChart({
           <g key={i}>
             <line x1={padL} y1={gy} x2={width - padR} y2={gy} stroke="var(--border)" strokeWidth={1} />
             <text x={padL - 8} y={gy + 3} textAnchor="end" className="axis-label">
-              {fmtMoneyShort(val)}
+              {formatValue(val)}
             </text>
           </g>
         );
@@ -426,7 +441,7 @@ export function LineChart({
             {hovered.label}
           </text>
           <text x={tooltipX + tooltipPadding} y={tooltipY + tooltipPadding + tooltipLineH + 9} className="chart-tooltip-text">
-            {fmtMoneyShort(hovered.value)}
+            {formatValue(hovered.value)}
           </text>
         </g>
       )}

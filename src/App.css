@@ -136,6 +136,105 @@
   color-scheme: dark;
 }
 
+/* Aurora — an optional reskin selectable in Settings ▸ Appearance
+   (App.tsx's `data-palette` attribute). Same token names as the default
+   theme above, so every component that already reads `var(--*)` picks
+   this up for free. Aurora is dark-only by design (unlike the default
+   theme, it doesn't have a light variant), so it's a single block that
+   doesn't respond to `data-theme`/`prefers-color-scheme` at all. */
+:root[data-palette="aurora"] {
+  --bg: #0f131c;
+  --surface: #1c2028;
+  --surface-2: #262a33;
+  --surface-hover: #31353e;
+  --sidebar-bg: #0a0d15;
+  --sidebar-bg-hover: #151927;
+  --sidebar-bg-active: #1c2136;
+  --sidebar-text: #a6acc9;
+  --sidebar-text-dim: #666c8a;
+  --sidebar-text-active: #ffffff;
+  --sidebar-border: #1a1e2c;
+
+  --text: #eef0fa;
+  --text-muted: #a2a8c9;
+  --text-faint: #7d83a3;
+  --border: #262b38;
+  --border-strong: #383e50;
+
+  --accent: #b6b7ff;
+  --accent-strong: #d3d4ff;
+  --accent-soft: #23263f;
+  --accent-soft-text: #c7c8ff;
+
+  --positive: #4edea3;
+  --negative: #ff8a94;
+  --negative-soft: #3a2129;
+  --warning: #f0c374;
+  --warning-soft: #3a301c;
+  --info: #7dd3fc;
+  --info-soft: #16283a;
+
+  --shadow-sm: 0 1px 2px rgba(5, 7, 13, 0.4);
+  --shadow-md: 0 6px 20px rgba(5, 7, 13, 0.45);
+  --shadow-lg: 0 16px 40px rgba(5, 7, 13, 0.55);
+
+  --font-display: "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+
+  color-scheme: dark;
+}
+
+/* Midnight Emerald — the second optional reskin, built on the named
+   "Midnight Emerald (Dark)" palette (#0F172A / #1E293B / #10B981 /
+   #38BDF8 / #F8FAFC — Tailwind's slate-900/800, emerald-500, sky-400, and
+   slate-50) rather than an invented one: bg, surface, accent, info, and
+   text below are those five colors verbatim, with the rest of the token
+   set filled in from the same slate/emerald/red/amber families so it
+   reads as one deliberate palette rather than five fixed points and a lot
+   of guessing. Same dark-only structure as Aurora above (a single
+   unconditional block, no light variant), and — like Aurora — deliberately
+   leaves --font-* untouched, inheriting the default theme's own
+   typography so the two reskins don't end up typographically identical. */
+:root[data-palette="midnight_emerald"] {
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --surface-2: #263449;
+  --surface-hover: #334155;
+  --sidebar-bg: #0b1120;
+  --sidebar-bg-hover: #16213a;
+  --sidebar-bg-active: #1e293b;
+  --sidebar-text: #94a3b8;
+  --sidebar-text-dim: #64748b;
+  --sidebar-text-active: #f8fafc;
+  --sidebar-border: #1e293b;
+
+  --text: #f8fafc;
+  --text-muted: #94a3b8;
+  --text-faint: #64748b;
+  --border: #263449;
+  --border-strong: #334155;
+
+  --accent: #10b981;
+  --accent-strong: #34d399;
+  --accent-soft: #0f3b2e;
+  --accent-soft-text: #34d399;
+
+  --positive: #10b981;
+  --negative: #f87171;
+  --negative-soft: #3b1219;
+  --warning: #fbbf24;
+  --warning-soft: #3a2e0f;
+  --info: #38bdf8;
+  --info-soft: #0c2a3d;
+
+  --shadow-sm: 0 1px 2px rgba(2, 6, 15, 0.4);
+  --shadow-md: 0 6px 20px rgba(2, 6, 15, 0.45);
+  --shadow-lg: 0 16px 40px rgba(2, 6, 15, 0.55);
+
+  color-scheme: dark;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -294,6 +393,14 @@ body {
   font-size: 11px;
   color: var(--sidebar-text-dim);
   margin: 0 0 8px 0;
+}
+
+.sidebar-theme-note {
+  text-align: center;
+  font-size: 11px;
+  color: var(--sidebar-text-dim);
+  margin: 0;
+  padding: 6px 4px;
 }
 
 .theme-toggle {
@@ -1035,6 +1142,11 @@ button:disabled {
   font-weight: 600;
 }
 
+.report-good {
+  color: var(--positive);
+  font-weight: 600;
+}
+
 .buckets-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -1065,6 +1177,72 @@ button:disabled {
 
 .add-tile-plus {
   font-size: 18px;
+  line-height: 1;
+}
+
+.buckets-overview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.buckets-overview-row-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  margin-bottom: 6px;
+}
+
+.pin-widget-pinned {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--positive);
+  white-space: nowrap;
+}
+
+.ledger-qa-card .category-create-form {
+  margin: 0;
+}
+
+.ledger-qa-answer {
+  margin: 12px 0 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 13.5px;
+}
+
+.ledger-qa-answer-unmatched {
+  color: var(--text-muted);
+}
+
+.dashboard-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dashboard-widget-customizing {
+  border: 1.5px dashed var(--border-strong);
+  border-radius: 16px;
+  padding: 10px;
+  cursor: grab;
+}
+
+.dashboard-widget-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.dashboard-widget-controls button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  font-size: 13px;
   line-height: 1;
 }
 
@@ -1509,6 +1687,39 @@ button:disabled {
 .bucket-new-form .bucket-new-form-actions {
   display: flex;
   gap: 8px;
+}
+
+.bucket-color-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bucket-color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.bucket-color-swatch-active {
+  border-color: var(--text);
+}
+
+.bucket-color-swatch-none {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  position: relative;
+}
+
+.bucket-color-swatch-none::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-top: 2px solid var(--text-muted);
+  transform: rotate(45deg);
 }
 
 .bucket-new-form input,
@@ -3141,6 +3352,15 @@ button:disabled {
 .category-create-form button {
   padding: 0.4em 0.9em;
   font-size: 0.9em;
+}
+
+.widget-group-title {
+  font-weight: 600;
+  margin: 14px 0 6px 0;
+}
+
+.widget-group-title:first-child {
+  margin-top: 0;
 }
 
 .category-manage-list {

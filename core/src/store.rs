@@ -144,6 +144,7 @@ pub struct StoredBucket {
     pub member_id: Option<i64>,
     pub member_name: Option<String>,
     pub sinking_amount: Option<Decimal>,
+    pub color: Option<String>,
 }
 
 /// A budgeted category's monthly target and which group it's organized
@@ -598,6 +599,7 @@ impl Store {
         self.migrate_add_cap_enabled_to_budgets_if_missing()?;
         self.migrate_add_bucket_extras_if_missing()?;
         self.migrate_add_bucket_sinking_amount_if_missing()?;
+        self.migrate_add_bucket_color_if_missing()?;
         self.migrate_add_member_id_to_accounts_if_missing()?;
         self.migrate_add_member_id_to_transactions_if_missing()?;
         self.migrate_add_member_id_to_recurring_if_missing()?;
@@ -722,6 +724,36 @@ impl Store {
         }
 
         self.conn.execute("ALTER TABLE buckets ADD COLUMN sinking_amount TEXT", [])?;
+        Ok(())
+    }
+
+    /// Same pattern once more: an optional hex color (e.g. `"#8A5FB0"`) a
+    /// bucket can be tagged with, purely for the UI to color-code its card
+    /// and any report that lists buckets by — not validated at this layer
+    /// (matching this schema's existing lenient-raw-string convention for
+    /// things like `cadence`/`budget_group`), since the frontend only ever
+    /// offers a fixed palette. `NULL` (the default for every pre-existing
+    /// row) means "no color chosen," same convention as the other optional
+    /// bucket columns above.
+    fn migrate_add_bucket_color_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(buckets)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "color" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE buckets ADD COLUMN color TEXT", [])?;
         Ok(())
     }
 
@@ -1503,7 +1535,7 @@ impl Store {
                 }
                 None => None,
             };
-            match self.create_bucket(&row.name, row.target_amount, row.target_date, account_id, None) {
+            match self.create_bucket(&row.name, row.target_amount, row.target_date, account_id, None, None) {
                 Ok(_) => outcome.buckets_created += 1,
                 Err(rusqlite::Error::SqliteFailure(e, _))
                     if e.code == rusqlite::ErrorCode::ConstraintViolation =>
@@ -2636,24 +2668,27 @@ impl Store {
         target_date: Option<NaiveDate>,
         account_id: Option<i64>,
         sinking_amount: Option<Decimal>,
+        color: Option<&str>,
     ) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO buckets (name, target_amount, target_date, account_id, sinking_amount) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO buckets (name, target_amount, target_date, account_id, sinking_amount, color) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 name,
                 target_amount.map(|a| a.to_string()),
                 target_date.map(|d| d.to_string()),
                 account_id,
                 sinking_amount.map(|a| a.to_string()),
+                color,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Updates a bucket's target amount, target date, linked account, and
-    /// sinking-fund auto-contribution amount (all optional/nullable — the
-    /// linked account is purely informational, it doesn't feed into any
-    /// balance calculation). An unknown id is a harmless no-op.
+    /// Updates a bucket's target amount, target date, linked account,
+    /// sinking-fund auto-contribution amount, and color (all
+    /// optional/nullable — the linked account and color are purely
+    /// informational, neither feeds into any balance calculation). An
+    /// unknown id is a harmless no-op.
     pub fn update_bucket_details(
         &self,
         id: i64,
@@ -2661,14 +2696,16 @@ impl Store {
         target_date: Option<NaiveDate>,
         account_id: Option<i64>,
         sinking_amount: Option<Decimal>,
+        color: Option<&str>,
     ) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE buckets SET target_amount = ?1, target_date = ?2, account_id = ?3, sinking_amount = ?4 WHERE id = ?5",
+            "UPDATE buckets SET target_amount = ?1, target_date = ?2, account_id = ?3, sinking_amount = ?4, color = ?5 WHERE id = ?6",
             params![
                 target_amount.map(|a| a.to_string()),
                 target_date.map(|d| d.to_string()),
                 account_id,
                 sinking_amount.map(|a| a.to_string()),
+                color,
                 id,
             ],
         )?;
@@ -2692,7 +2729,7 @@ impl Store {
     pub fn list_buckets(&self) -> rusqlite::Result<Vec<StoredBucket>> {
         let mut stmt = self.conn.prepare(
             "SELECT b.id, b.name, b.target_amount, b.target_date, b.account_id, a.name,
-                    GROUP_CONCAT(c.amount, '|'), b.member_id, fm.name, b.sinking_amount
+                    GROUP_CONCAT(c.amount, '|'), b.member_id, fm.name, b.sinking_amount, b.color
              FROM buckets b
              LEFT JOIN accounts a ON a.id = b.account_id
              LEFT JOIN bucket_contributions c ON c.bucket_id = b.id
@@ -2712,12 +2749,13 @@ impl Store {
                 row.get::<_, Option<i64>>(7)?,
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
             ))
         })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (id, name, target_amount, target_date, account_id, account_name, contributions, member_id, member_name, sinking_amount) = row?;
+            let (id, name, target_amount, target_date, account_id, account_name, contributions, member_id, member_name, sinking_amount, color) = row?;
             let saved_amount = contributions
                 .map(|joined| {
                     joined
@@ -2741,6 +2779,7 @@ impl Store {
                 member_name,
                 sinking_amount: sinking_amount
                     .map(|a| Decimal::from_str(&a).expect("amount stored by this crate must be valid")),
+                color,
             });
         }
         Ok(result)
@@ -6099,7 +6138,7 @@ mod tests {
     fn delete_family_member_nulls_member_id_on_the_buckets_it_owns() {
         let store = Store::open_in_memory().unwrap();
         let member = store.create_family_member("Alex").unwrap();
-        let bucket_id = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
+        let bucket_id = store.create_bucket("Emergency Fund", None, None, None, None, None).unwrap();
         store.set_bucket_member(bucket_id, Some(member)).unwrap();
 
         store.delete_family_member(member).unwrap();
@@ -6216,7 +6255,7 @@ mod tests {
     fn set_bucket_member_assigns_and_clears_a_member() {
         let store = Store::open_in_memory().unwrap();
         let member = store.create_family_member("Alex").unwrap();
-        let bucket_id = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
+        let bucket_id = store.create_bucket("Emergency Fund", None, None, None, None, None).unwrap();
 
         store.set_bucket_member(bucket_id, Some(member)).unwrap();
         assert_eq!(store.list_buckets().unwrap()[0].member_id, Some(member));
@@ -6305,7 +6344,7 @@ mod tests {
     fn list_buckets_includes_its_members_name() {
         let store = Store::open_in_memory().unwrap();
         let member = store.create_family_member("Alex").unwrap();
-        let bucket_id = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
+        let bucket_id = store.create_bucket("Emergency Fund", None, None, None, None, None).unwrap();
         store.set_bucket_member(bucket_id, Some(member)).unwrap();
 
         let buckets = store.list_buckets().unwrap();
@@ -7489,7 +7528,7 @@ mod tests {
     fn a_fresh_bucket_has_zero_saved_and_the_target_it_was_given() {
         let store = Store::open_in_memory().unwrap();
         let id = store
-            .create_bucket("Emergency Fund", Some("1000.00".parse().unwrap()), None, None, None)
+            .create_bucket("Emergency Fund", Some("1000.00".parse().unwrap()), None, None, None, None)
             .unwrap();
 
         let buckets = store.list_buckets().unwrap();
@@ -7505,7 +7544,7 @@ mod tests {
     #[test]
     fn a_bucket_with_no_target_has_none() {
         let store = Store::open_in_memory().unwrap();
-        store.create_bucket("Rainy Day", None, None, None, None).unwrap();
+        store.create_bucket("Rainy Day", None, None, None, None, None).unwrap();
 
         assert_eq!(store.list_buckets().unwrap()[0].target_amount, None);
     }
@@ -7517,7 +7556,7 @@ mod tests {
         let target_date: NaiveDate = "2027-04-15".parse().unwrap();
 
         store
-            .create_bucket("Japan Trip", Some("6000.00".parse().unwrap()), Some(target_date), Some(savings), None)
+            .create_bucket("Japan Trip", Some("6000.00".parse().unwrap()), Some(target_date), Some(savings), None, None)
             .unwrap();
 
         let bucket = &store.list_buckets().unwrap()[0];
@@ -7529,12 +7568,12 @@ mod tests {
     #[test]
     fn update_bucket_details_changes_target_and_linked_account() {
         let store = Store::open_in_memory().unwrap();
-        let id = store.create_bucket("Japan Trip", None, None, None, None).unwrap();
+        let id = store.create_bucket("Japan Trip", None, None, None, None, None).unwrap();
         let savings = store.get_or_create_account("Nest Egg", AccountType::Savings).unwrap();
         let target_date: NaiveDate = "2027-04-15".parse().unwrap();
 
         store
-            .update_bucket_details(id, Some("6000.00".parse().unwrap()), Some(target_date), Some(savings), None)
+            .update_bucket_details(id, Some("6000.00".parse().unwrap()), Some(target_date), Some(savings), None, None)
             .unwrap();
 
         let bucket = &store.list_buckets().unwrap()[0];
@@ -7546,13 +7585,31 @@ mod tests {
     #[test]
     fn update_bucket_details_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
-        store.update_bucket_details(999, Some("100.00".parse().unwrap()), None, None, None).unwrap();
+        store.update_bucket_details(999, Some("100.00".parse().unwrap()), None, None, None, None).unwrap();
+    }
+
+    #[test]
+    fn a_bucket_created_with_a_color_reports_it_back() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_bucket("Vacation", None, None, None, None, Some("#8A5FB0")).unwrap();
+
+        assert_eq!(store.list_buckets().unwrap()[0].color, Some("#8A5FB0".to_string()));
+    }
+
+    #[test]
+    fn update_bucket_details_changes_the_color() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.create_bucket("Vacation", None, None, None, None, Some("#8A5FB0")).unwrap();
+
+        store.update_bucket_details(id, None, None, None, None, Some("#4E8FC9")).unwrap();
+
+        assert_eq!(store.list_buckets().unwrap()[0].color, Some("#4E8FC9".to_string()));
     }
 
     #[test]
     fn contributions_accumulate_into_the_saved_amount_withdrawals_included() {
         let store = Store::open_in_memory().unwrap();
-        let id = store.create_bucket("Vacation", None, None, None, None).unwrap();
+        let id = store.create_bucket("Vacation", None, None, None, None, None).unwrap();
 
         store
             .add_bucket_contribution(id, "2026-08-01".parse().unwrap(), "200.00".parse().unwrap(), None)
@@ -7578,8 +7635,8 @@ mod tests {
     #[test]
     fn each_buckets_saved_amount_is_independent() {
         let store = Store::open_in_memory().unwrap();
-        let vacation = store.create_bucket("Vacation", None, None, None, None).unwrap();
-        let emergency = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
+        let vacation = store.create_bucket("Vacation", None, None, None, None, None).unwrap();
+        let emergency = store.create_bucket("Emergency Fund", None, None, None, None, None).unwrap();
 
         store
             .add_bucket_contribution(vacation, "2026-08-01".parse().unwrap(), "200.00".parse().unwrap(), None)
@@ -7598,7 +7655,7 @@ mod tests {
     #[test]
     fn deleting_a_bucket_removes_its_contributions_too() {
         let store = Store::open_in_memory().unwrap();
-        let id = store.create_bucket("Vacation", None, None, None, None).unwrap();
+        let id = store.create_bucket("Vacation", None, None, None, None, None).unwrap();
         store
             .add_bucket_contribution(id, "2026-08-01".parse().unwrap(), "200.00".parse().unwrap(), None)
             .unwrap();
@@ -7607,7 +7664,7 @@ mod tests {
 
         assert_eq!(store.list_buckets().unwrap().len(), 0);
         // re-creating a bucket of the same name must not resurrect the old contributions
-        let new_id = store.create_bucket("Vacation", None, None, None, None).unwrap();
+        let new_id = store.create_bucket("Vacation", None, None, None, None, None).unwrap();
         assert_eq!(store.list_buckets().unwrap()[0].saved_amount, "0".parse().unwrap());
         assert_ne!(id, new_id);
     }
@@ -7615,7 +7672,7 @@ mod tests {
     #[test]
     fn a_bucket_with_no_sinking_amount_is_left_untouched_by_apply_sinking_fund_contributions() {
         let store = Store::open_in_memory().unwrap();
-        store.create_bucket("Vacation", None, None, None, None).unwrap();
+        store.create_bucket("Vacation", None, None, None, None, None).unwrap();
 
         let applied = store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
 
@@ -7627,7 +7684,7 @@ mod tests {
     fn sinking_fund_contribution_is_a_no_op_the_second_time_in_the_same_month() {
         let store = Store::open_in_memory().unwrap();
         store
-            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()))
+            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()), None)
             .unwrap();
 
         let first = store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
@@ -7643,7 +7700,7 @@ mod tests {
     fn a_sinking_fund_contribution_still_allows_a_manual_contribution_the_same_month() {
         let store = Store::open_in_memory().unwrap();
         let id = store
-            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()))
+            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()), None)
             .unwrap();
 
         store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
@@ -7658,7 +7715,7 @@ mod tests {
     fn deleting_a_bucket_also_clears_its_auto_contribution_guard() {
         let store = Store::open_in_memory().unwrap();
         let id = store
-            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()))
+            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()), None)
             .unwrap();
         store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
 
@@ -7668,7 +7725,7 @@ mod tests {
         // auto-contribute this exact month again — proving the old
         // bucket's guard row didn't survive the delete.
         let new_id = store
-            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()))
+            .create_bucket("Car Insurance", None, None, None, Some("50.00".parse().unwrap()), None)
             .unwrap();
         let applied = store.apply_sinking_fund_contributions("2026-09-04".parse().unwrap()).unwrap();
         assert_eq!(applied.len(), 1);
@@ -7887,8 +7944,8 @@ mod tests {
     #[test]
     fn total_saved_sums_contributions_across_every_bucket() {
         let store = Store::open_in_memory().unwrap();
-        let vacation = store.create_bucket("Vacation", None, None, None, None).unwrap();
-        let emergency = store.create_bucket("Emergency Fund", None, None, None, None).unwrap();
+        let vacation = store.create_bucket("Vacation", None, None, None, None, None).unwrap();
+        let emergency = store.create_bucket("Emergency Fund", None, None, None, None, None).unwrap();
         store
             .add_bucket_contribution(vacation, "2026-08-01".parse().unwrap(), "200.00".parse().unwrap(), None)
             .unwrap();
