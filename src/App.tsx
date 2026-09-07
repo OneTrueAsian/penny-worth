@@ -57,6 +57,7 @@ import type {
   FamilyMember,
   ForecastPoint,
   Holding,
+  AccountContributionDelta,
   Insight,
   LivePriceProviderId,
   LivePriceRefreshSummary,
@@ -1137,6 +1138,7 @@ function App({
   ]);
 
   const [netWorthHistory, setNetWorthHistory] = useState<NetWorthPoint[]>([]);
+  const [accountContributionDeltas, setAccountContributionDeltas] = useState<AccountContributionDelta[]>([]);
   const [spendingThisMonth, setSpendingThisMonth] = useState<CategoryAmount[]>([]);
   const [dashboardBudgetAlerts, setDashboardBudgetAlerts] = useState<BudgetAlert[]>([]);
   const [dashboardInsights, setDashboardInsights] = useState<Insight[]>([]);
@@ -1156,6 +1158,19 @@ function App({
     setDashboardBudgetAlerts(alerts);
     setDashboardInsights(insights);
     setAvgMonthlySpend(avgSpend);
+    // "What changed" behind each stat card's trend, over the same span the
+    // sparkline itself covers — a follow-up call (not part of the
+    // Promise.all above) since it needs the history's own endpoint dates.
+    if (nw.length >= 2) {
+      invoke<AccountContributionDelta[]>("account_contribution_deltas", {
+        from: nw[0].as_of,
+        to: nw[nw.length - 1].as_of,
+      })
+        .then(setAccountContributionDeltas)
+        .catch((e) => setStatus(String(e)));
+    } else {
+      setAccountContributionDeltas([]);
+    }
   }, []);
 
   useEffect(() => {
@@ -2682,6 +2697,7 @@ function App({
         <DashboardView
           accounts={accounts}
           netWorthHistory={netWorthHistory}
+          accountContributionDeltas={accountContributionDeltas}
           spendingThisMonth={spendingThisMonth}
           report={report}
           recurring={recurring}

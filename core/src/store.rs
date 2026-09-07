@@ -3498,6 +3498,22 @@ impl Store {
     ///    projected as "$2,405.94 / 6 days-elapsed * 30 days-in-month" a
     ///    nonsensical $12,029.70 "on pace to exceed" warning for a bill
     ///    that was already paid in full the moment it posted.
+    ///
+    ///    A `budget_group` alone doesn't catch every lump-sum category,
+    ///    though — a category like "Pet Care" is legitimately flexible
+    ///    (vet visits, grooming, a new leash) but in practice often posts
+    ///    as one irregular annual-ish charge rather than many small ones
+    ///    across the month, which the linear formula still misreads as
+    ///    "$298.60 by day 2, so $1,493 by month end." `budget_group` can't
+    ///    tell "one-off vet bill" apart from "the first of many restaurant
+    ///    charges this month" — only the category's own history can, so
+    ///    `average_spend_days_per_active_month` looks at the trailing 3
+    ///    calendar months and skips pacing when that category has
+    ///    historically landed on fewer than 2 distinct days per month it
+    ///    was used at all. A category with no history yet (new, or simply
+    ///    unused in those 3 months) falls back to the permissive default
+    ///    of still pacing — "no data" must never be mistaken for "always a
+    ///    lump sum," or a front-loaded grocery haul would stop warning too.
     /// 2. **Category jump**: reuses `spending_by_category` to compare this
     ///    month-to-date against the *same number of days* at the start of
     ///    the previous month (not the previous month's full total — that
@@ -3509,6 +3525,55 @@ impl Store {
     ///
     /// Warnings sort before info, capped at 5 total so the Dashboard card
     /// never turns into another full list to scroll through.
+    /// The average number of distinct calendar days with any spend in
+    /// `category`, across whichever of the `lookback_months` calendar
+    /// months strictly before `before` actually had activity in that
+    /// category. Months with no activity at all are excluded rather than
+    /// counted as zero — a category that's simply new shouldn't be judged
+    /// from an empty month. Returns `None` when none of the lookback
+    /// months had any activity, so `dashboard_insights` can fall back to
+    /// its existing permissive pace-projection behavior instead of
+    /// treating "no history yet" as "always a lump sum."
+    fn average_spend_days_per_active_month(
+        &self,
+        category: &str,
+        before: NaiveDate,
+        lookback_months: u32,
+    ) -> rusqlite::Result<Option<f64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT COUNT(DISTINCT date) FROM (
+                SELECT date FROM transactions
+                WHERE category = ?1 AND substr(date, 1, 7) = ?2
+                      AND id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
+                      AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                      AND deleted_at IS NULL
+                UNION ALL
+                SELECT t.date FROM transaction_splits ts
+                JOIN transactions t ON t.id = ts.transaction_id
+                WHERE ts.category = ?1 AND substr(t.date, 1, 7) = ?2
+                      AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                      AND t.deleted_at IS NULL
+             )",
+        )?;
+
+        let (mut year, mut month) = (before.year(), before.month());
+        let mut active_month_days = Vec::new();
+        for _ in 0..lookback_months {
+            (year, month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
+            let month_key = format!("{year:04}-{month:02}");
+            let days: i64 = stmt.query_row(params![category, month_key], |row| row.get(0))?;
+            if days > 0 {
+                active_month_days.push(days as f64);
+            }
+        }
+
+        if active_month_days.is_empty() {
+            return Ok(None);
+        }
+        let sum: f64 = active_month_days.iter().sum();
+        Ok(Some(sum / active_month_days.len() as f64))
+    }
+
     pub fn dashboard_insights(&self, today: NaiveDate) -> rusqlite::Result<Vec<Insight>> {
         let year = today.year();
         let month = today.month();
@@ -3522,6 +3587,15 @@ impl Store {
             for actual in self.monthly_budget_actuals(year, month)? {
                 if actual.budget_group != "flexible" || actual.budgeted <= Decimal::ZERO {
                     continue;
+                }
+                if let Some(avg_days) = self.average_spend_days_per_active_month(&actual.category, first_of_month, 3)? {
+                    if avg_days < 2.0 {
+                        // Historically a single lump-sum charge a month
+                        // (e.g. an occasional vet bill under "Pet Care") —
+                        // linear day-of-month extrapolation only makes
+                        // sense for spend that actually accrues gradually.
+                        continue;
+                    }
                 }
                 let projected = actual.actual * Decimal::from(days_in_month) / Decimal::from(days_elapsed);
                 let threshold = actual.budgeted * Decimal::new(11, 1); // 1.1x
@@ -4643,15 +4717,34 @@ impl Store {
     /// (credit + loan combined) is negative-signed, matching how it's
     /// displayed everywhere else in the app.
     pub fn net_worth_breakdown_as_of(&self, as_of: NaiveDate) -> rusqlite::Result<NetWorthBreakdown> {
-        let mut stmt = self.conn.prepare("SELECT id, account_type, starting_balance FROM accounts")?;
-        let accounts: Vec<(i64, String, String)> = stmt
+        let mut breakdown = NetWorthBreakdown::default();
+        for account in self.account_contributions_as_of(as_of)? {
+            breakdown.net_worth += account.contribution;
+            match account.group.as_str() {
+                "cash" => breakdown.cash += account.contribution,
+                "credit" | "loan" => breakdown.debt += account.contribution,
+                "investment" => breakdown.investments += account.contribution,
+                _ => {}
+            }
+        }
+        Ok(breakdown)
+    }
+
+    /// Every account's own net-worth contribution as of `as_of`, alongside
+    /// its name and group — the same per-account values
+    /// `net_worth_breakdown_as_of` sums together, kept separate here so a
+    /// caller can see which *account* a total is made of, not just the
+    /// total itself.
+    fn account_contributions_as_of(&self, as_of: NaiveDate) -> rusqlite::Result<Vec<AccountContribution>> {
+        let mut stmt = self.conn.prepare("SELECT id, name, account_type, starting_balance FROM accounts")?;
+        let accounts: Vec<(i64, String, String, String)> = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        let mut breakdown = NetWorthBreakdown::default();
-        for (id, account_type, starting_balance_str) in accounts {
+        let mut result = Vec::with_capacity(accounts.len());
+        for (id, name, account_type, starting_balance_str) in accounts {
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
             let balance = self.account_balance_as_of(id, starting_balance, as_of)?;
@@ -4663,15 +4756,50 @@ impl Store {
                 "loan" => -balance,
                 _ => balance,
             };
-            breakdown.net_worth += contribution;
-            match group {
-                "cash" => breakdown.cash += contribution,
-                "credit" | "loan" => breakdown.debt += contribution,
-                "investment" => breakdown.investments += contribution,
-                _ => {}
-            }
+            result.push(AccountContribution { account_id: id, name, group: group.to_string(), contribution });
         }
-        Ok(breakdown)
+        Ok(result)
+    }
+
+    /// Per-account movement in net-worth contribution between two dates —
+    /// the "what changed" behind a Dashboard stat card's trend: when the
+    /// Debt tile shows "on pace up $500 over 6mo," this is how the app
+    /// knows whether that was the car loan or the credit card, rather than
+    /// leaving the total unexplained. Sorted by the size of the move
+    /// (largest absolute delta first); an account with no change between
+    /// the two dates is dropped rather than shown as a $0.00 row.
+    pub fn account_contribution_deltas(
+        &self,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> rusqlite::Result<Vec<AccountContributionDelta>> {
+        let from_amounts: std::collections::HashMap<i64, Decimal> = self
+            .account_contributions_as_of(from)?
+            .into_iter()
+            .map(|a| (a.account_id, a.contribution))
+            .collect();
+
+        let mut result: Vec<AccountContributionDelta> = self
+            .account_contributions_as_of(to)?
+            .into_iter()
+            .filter_map(|a| {
+                let from_amount = from_amounts.get(&a.account_id).copied().unwrap_or(Decimal::ZERO);
+                let delta = a.contribution - from_amount;
+                if delta == Decimal::ZERO {
+                    return None;
+                }
+                Some(AccountContributionDelta {
+                    account_id: a.account_id,
+                    name: a.name,
+                    group: a.group,
+                    from_amount,
+                    to_amount: a.contribution,
+                    delta,
+                })
+            })
+            .collect();
+        result.sort_by(|a, b| b.delta.abs().cmp(&a.delta.abs()));
+        Ok(result)
     }
 }
 
@@ -4683,6 +4811,25 @@ pub struct NetWorthBreakdown {
     pub cash: Decimal,
     pub debt: Decimal,
     pub investments: Decimal,
+}
+
+/// See `Store::account_contributions_as_of`.
+struct AccountContribution {
+    account_id: i64,
+    name: String,
+    group: String,
+    contribution: Decimal,
+}
+
+/// See `Store::account_contribution_deltas`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountContributionDelta {
+    pub account_id: i64,
+    pub name: String,
+    pub group: String,
+    pub from_amount: Decimal,
+    pub to_amount: Decimal,
+    pub delta: Decimal,
 }
 
 /// Same transaction imported twice into the same account (even from a
@@ -8920,6 +9067,78 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_insights_skips_pace_projection_for_a_flexible_category_whose_history_is_a_single_lump_sum_each_month() {
+        // Reproduces a real report: "Pet Care" is budgeted flexible, but
+        // in practice it's one irregular vet/grooming charge a month, not
+        // many small ones — its own history says so. A single $298.60
+        // charge on day 2 must not be extrapolated into a nonsensical
+        // month-end projection.
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Pet Care", "2026-09", "150.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-06-03", "Vet Clinic", "-120.00"),
+                    tx("2026-07-14", "Vet Clinic", "-140.00"),
+                    tx("2026-08-02", "Vet Clinic", "-130.00"),
+                    tx("2026-09-02", "Vet Clinic", "-298.60"),
+                ],
+            )
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Pet Care", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-09-06".parse().unwrap()).unwrap();
+
+        assert!(
+            !insights.iter().any(|i| i.kind == "pace" && i.message.contains("Pet Care")),
+            "expected no pace insight for a category that's historically one lump sum a month: {insights:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_insights_still_pace_projects_a_flexible_category_whose_history_shows_spend_spread_across_many_days() {
+        // Contrast case: a category that's historically many small
+        // charges spread across the month (typical Dining Out) must keep
+        // getting paced even when, this month, it happens to front-load
+        // onto one big early charge — the history-based skip must not
+        // become "skip pacing for anything paid early" either.
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Dining Out", "2026-09", "200.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-06-03", "Cafe", "-20.00"),
+                    tx("2026-06-10", "Cafe", "-20.00"),
+                    tx("2026-06-18", "Cafe", "-20.00"),
+                    tx("2026-07-04", "Cafe", "-20.00"),
+                    tx("2026-07-12", "Cafe", "-20.00"),
+                    tx("2026-07-20", "Cafe", "-20.00"),
+                    tx("2026-08-02", "Cafe", "-20.00"),
+                    tx("2026-08-09", "Cafe", "-20.00"),
+                    tx("2026-08-17", "Cafe", "-20.00"),
+                    tx("2026-09-01", "Fancy Dinner", "-250.00"),
+                ],
+            )
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Dining Out", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-09-06".parse().unwrap()).unwrap();
+
+        assert!(
+            insights.iter().any(|i| i.kind == "pace" && i.message.contains("Dining Out")),
+            "expected a pace insight for a historically-recurring category even when front-loaded: {insights:?}"
+        );
+    }
+
+    #[test]
     fn dashboard_insights_flags_a_month_over_month_category_jump() {
         let store = Store::open_in_memory().unwrap();
         let account = test_account(&store);
@@ -10346,6 +10565,70 @@ mod tests {
         // 1000 cash - 300 owed - 15000 owed + 5000 investments = -9300
         assert_eq!(breakdown.net_worth, "-9300.00".parse().unwrap());
         assert_eq!(breakdown.net_worth, store.net_worth_as_of("2026-08-31".parse().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn account_contribution_deltas_flags_the_account_that_actually_changed() {
+        let store = Store::open_in_memory().unwrap();
+        let card = store.get_or_create_account("Sapphire Rewards", AccountType::Credit).unwrap();
+        store.set_account_starting_balance(card, "2000.00".parse().unwrap()).unwrap(); // limit
+        let loan = store.get_or_create_account("Auto Loan", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "15000.00".parse().unwrap()).unwrap();
+        // Only the card gets a new charge between the two dates; the loan sits untouched.
+        store.save_transactions(card, &[tx("2026-08-05", "Grocery Store", "-300.00")]).unwrap();
+
+        let deltas = store
+            .account_contribution_deltas("2026-07-31".parse().unwrap(), "2026-08-31".parse().unwrap())
+            .unwrap();
+
+        assert_eq!(deltas.len(), 1, "expected only the card to show a change: {deltas:?}");
+        assert_eq!(deltas[0].name, "Sapphire Rewards");
+        assert_eq!(deltas[0].group, "credit");
+        // Owing $300 more is a $300 drop in net-worth contribution.
+        assert_eq!(deltas[0].delta, "-300.00".parse().unwrap());
+    }
+
+    #[test]
+    fn account_contribution_deltas_excludes_an_account_with_no_net_change() {
+        let store = Store::open_in_memory().unwrap();
+        let card = store.get_or_create_account("Sapphire Rewards", AccountType::Credit).unwrap();
+        store.set_account_starting_balance(card, "2000.00".parse().unwrap()).unwrap();
+        // Charged, then paid back in full before the "to" date — net change is zero.
+        store
+            .save_transactions(
+                card,
+                &[tx("2026-08-05", "Grocery Store", "-300.00"), tx("2026-08-10", "Payment", "300.00")],
+            )
+            .unwrap();
+
+        let deltas = store
+            .account_contribution_deltas("2026-07-31".parse().unwrap(), "2026-08-31".parse().unwrap())
+            .unwrap();
+
+        assert!(deltas.is_empty(), "a net-zero change shouldn't be reported: {deltas:?}");
+    }
+
+    #[test]
+    fn account_contribution_deltas_sums_to_the_same_change_the_aggregate_breakdown_reports() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+        let card = store.get_or_create_account("Sapphire Rewards", AccountType::Credit).unwrap();
+        store.set_account_starting_balance(card, "2000.00".parse().unwrap()).unwrap();
+        let loan = store.get_or_create_account("Auto Loan", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "15000.00".parse().unwrap()).unwrap();
+        store.save_transactions(card, &[tx("2026-08-05", "Grocery Store", "-300.00")]).unwrap();
+        store.save_transactions(loan, &[tx("2026-08-10", "Loan Payment", "-500.00")]).unwrap();
+
+        let from: NaiveDate = "2026-07-31".parse().unwrap();
+        let to: NaiveDate = "2026-08-31".parse().unwrap();
+        let deltas = store.account_contribution_deltas(from, to).unwrap();
+        let breakdown_from = store.net_worth_breakdown_as_of(from).unwrap();
+        let breakdown_to = store.net_worth_breakdown_as_of(to).unwrap();
+
+        let debt_delta_sum: Decimal =
+            deltas.iter().filter(|d| d.group == "credit" || d.group == "loan").map(|d| d.delta).sum();
+        assert_eq!(debt_delta_sum, breakdown_to.debt - breakdown_from.debt);
     }
 
     #[test]

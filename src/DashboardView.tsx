@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import type {
   Account,
+  AccountContributionDelta,
   Asset,
   Bucket,
   BudgetAlert,
@@ -124,6 +125,7 @@ const STAT_LABELS: Record<StatKey, string> = {
 export function DashboardView({
   accounts,
   netWorthHistory,
+  accountContributionDeltas,
   spendingThisMonth,
   report,
   recurring,
@@ -150,6 +152,11 @@ export function DashboardView({
 }: {
   accounts: Account[];
   netWorthHistory: NetWorthPoint[];
+  /** Per-account "what changed" behind each stat card's own trend, spanning
+   * the same two dates the sparkline/delta above it covers (see App.tsx's
+   * `refreshDashboard`) — lets the Debt tile explain *which* account moved,
+   * not just that the total did. */
+  accountContributionDeltas: AccountContributionDelta[];
   spendingThisMonth: CategoryAmount[];
   report: Report | null;
   recurring: Recurring[];
@@ -287,6 +294,34 @@ export function DashboardView({
     cash: cashAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
     debt: debtAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
     investments: investmentAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
+  };
+
+  // "What changed" rows for each stat card's own detail panel — which
+  // account(s) actually drove the trend shown above, not just the total.
+  // Sorted by size of the move, capped at 5 like every other Dashboard
+  // list. `toRows` covers Net Worth (every account) and each group's own
+  // filtered slice; `sign` flips Debt to the same "amount owed" magnitude
+  // debtSpark/debtDelta use above, since a growing loan balance should
+  // read as a positive change (bad), not the negative net-worth-
+  // contribution delta it actually is.
+  const toRows = (deltas: AccountContributionDelta[], sign = 1) =>
+    deltas
+      .map((d) => ({ name: d.name, delta: sign * parseFloat(d.delta) }))
+      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+      .slice(0, 5);
+  const changeBreakdowns: Record<StatKey, { name: string; delta: number }[]> = {
+    networth: toRows(accountContributionDeltas),
+    cash: toRows(accountContributionDeltas.filter((d) => d.group === "cash")),
+    debt: toRows(accountContributionDeltas.filter((d) => d.group === "credit" || d.group === "loan"), -1),
+    investments: toRows(accountContributionDeltas.filter((d) => d.group === "investment")),
+  };
+  // Which arrow direction reads as "good" for each card's change rows —
+  // inverted for Debt, same as debtTrendingDown/debtSpark above.
+  const changeGoodDirection: Record<StatKey, "up" | "down"> = {
+    networth: "up",
+    cash: "up",
+    debt: "down",
+    investments: "up",
   };
 
   function toggleStat(key: StatKey) {
@@ -433,6 +468,9 @@ export function DashboardView({
           isOpen={expandedStat !== null}
           title={expandedStat ? STAT_LABELS[expandedStat] : null}
           rows={expandedStat ? breakdowns[expandedStat] : null}
+          changeRows={expandedStat ? changeBreakdowns[expandedStat] : null}
+          changeLabel={monthsSpan > 1 ? `over ${monthsSpan}mo` : undefined}
+          changeGoodDirection={expandedStat ? changeGoodDirection[expandedStat] : "up"}
           emptyMessage="No accounts contribute to this yet."
           onClose={() => setExpandedStat(null)}
         />

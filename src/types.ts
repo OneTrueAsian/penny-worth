@@ -270,6 +270,19 @@ export type NetWorthPoint = {
   cash: string;
   debt: string;
   investments: string;
+  as_of: string;
+};
+
+/** Per-account movement in net-worth contribution between two `NetWorthPoint.as_of`
+ * dates — the "what changed" behind a Dashboard stat card's trend. See
+ * `Store::account_contribution_deltas` on the backend. */
+export type AccountContributionDelta = {
+  account_id: number;
+  name: string;
+  group: string;
+  from_amount: string;
+  to_amount: string;
+  delta: string;
 };
 
 export type Report = {

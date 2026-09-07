@@ -2070,6 +2070,11 @@ button:disabled {
   color: var(--negative);
 }
 
+.stat-detail-divider {
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+
 .stat-clickable {
   font-family: inherit;
   color: inherit;

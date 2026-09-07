@@ -2895,6 +2895,10 @@ pub struct NetWorthPointDto {
     pub cash: String,
     pub debt: String,
     pub investments: String,
+    /// The exact date this point was valued as of — lets the frontend ask
+    /// `account_contribution_deltas` for "what changed" between any two
+    /// points on this same series without re-deriving the date math here.
+    pub as_of: String,
 }
 
 /// Net worth for each of the trailing `months` months (including the
@@ -2936,9 +2940,47 @@ pub fn net_worth_history(months: u32, state: tauri::State<AppStateHandle>) -> Re
             cash: breakdown.cash.to_string(),
             debt: breakdown.debt.to_string(),
             investments: breakdown.investments.to_string(),
+            as_of: as_of.to_string(),
         });
     }
     Ok(points)
+}
+
+#[derive(Serialize)]
+pub struct AccountContributionDeltaDto {
+    pub account_id: i64,
+    pub name: String,
+    pub group: String,
+    pub from_amount: String,
+    pub to_amount: String,
+    pub delta: String,
+}
+
+/// "What changed" behind a Dashboard stat card's trend — see
+/// `Store::account_contribution_deltas`. `from`/`to` are expected to be
+/// two `as_of` dates off a `net_worth_history` response, but any two
+/// dates work.
+#[tauri::command]
+pub fn account_contribution_deltas(
+    from: String,
+    to: String,
+    state: tauri::State<AppStateHandle>,
+) -> Result<Vec<AccountContributionDeltaDto>, String> {
+    let from = chrono::NaiveDate::parse_from_str(&from, "%Y-%m-%d").map_err(|e| e.to_string())?;
+    let to = chrono::NaiveDate::parse_from_str(&to, "%Y-%m-%d").map_err(|e| e.to_string())?;
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let deltas = state.store.account_contribution_deltas(from, to).map_err(|e| e.to_string())?;
+    Ok(deltas
+        .into_iter()
+        .map(|d| AccountContributionDeltaDto {
+            account_id: d.account_id,
+            name: d.name,
+            group: d.group,
+            from_amount: d.from_amount.to_string(),
+            to_amount: d.to_amount.to_string(),
+            delta: d.delta.to_string(),
+        })
+        .collect())
 }
 
 /// Spending by category for the current calendar month only — feeds the

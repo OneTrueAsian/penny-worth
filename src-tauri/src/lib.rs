@@ -191,6 +191,7 @@ pub fn run() {
             commands::cash_flow_forecast,
             commands::average_monthly_spend,
             commands::net_worth_history,
+            commands::account_contribution_deltas,
             commands::spending_this_month,
             commands::check_monthly_rollover,
             commands::check_sinking_fund_contributions,
