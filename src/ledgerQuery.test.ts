@@ -108,7 +108,7 @@ describe("runQuery — sign", () => {
     expect(result.count).toBe(1);
   });
 
-  it("'expense' means any negative amount, regardless of category", () => {
+  it("'expense' means any negative amount, except Transfer", () => {
     const result = runQuery({ metric: "sum", sign: "expense" }, c);
     expect(result.value).toBeCloseTo(60);
     expect(result.count).toBe(1);
@@ -117,6 +117,32 @@ describe("runQuery — sign", () => {
   it("'both' applies no sign filtering at all", () => {
     const result = runQuery({ metric: "count", sign: "both" }, c);
     expect(result.count).toBe(3);
+  });
+});
+
+describe("runQuery — Transfer exclusion", () => {
+  // Money moving between the household's own accounts isn't spending —
+  // matches the same exclusion Store::monthly_totals applies on the
+  // backend (see core/src/store.rs). Regression coverage for a real
+  // production case: a $6,000 internal transfer was inflating "how much
+  // did I spend" answers before this exclusion existed.
+  const c = ctx({
+    transactions: [
+      tx({ date: "2026-07-10", amount: "-6000.00", category: "Transfer", description: "To Savings" }),
+      tx({ date: "2026-07-10", amount: "-60.00", category: "Dining Out" }),
+    ],
+  });
+
+  it("excludes a Transfer-categorized transaction from a general 'how much did I spend' total", () => {
+    const result = runQuery({ metric: "sum", sign: "expense" }, c);
+    expect(result.value).toBeCloseTo(60);
+    expect(result.count).toBe(1);
+  });
+
+  it("still reports it when the question is specifically about the Transfer category", () => {
+    const result = runQuery({ metric: "sum", sign: "expense", subject: { type: "category", value: "Transfer" } }, c);
+    expect(result.value).toBeCloseTo(6000);
+    expect(result.count).toBe(1);
   });
 });
 

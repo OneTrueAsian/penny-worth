@@ -9,12 +9,14 @@ export type MemberAmount = { name: string; amount: number };
  * double-counting; an unattributed transaction is left out entirely
  * rather than lumped into a catch-all "Unassigned" bucket — this answers
  * "how much did each named person spend," not "how complete is our
- * attribution." */
+ * attribution." Transactions categorized "Transfer" are excluded — moving
+ * money between the household's own accounts isn't spending, matching the
+ * same exclusion `Store::monthly_totals` applies on the backend. */
 export function spendingByMember(transactions: Transaction[]): MemberAmount[] {
   const totals = new Map<string, number>();
   for (const t of transactions) {
     const amount = parseFloat(t.amount);
-    if (amount >= 0 || !t.member_name) continue;
+    if (amount >= 0 || !t.member_name || t.category === "Transfer") continue;
     totals.set(t.member_name, (totals.get(t.member_name) ?? 0) + Math.abs(amount));
   }
   return Array.from(totals, ([name, amount]) => ({ name, amount }));
@@ -22,12 +24,12 @@ export function spendingByMember(transactions: Transaction[]): MemberAmount[] {
 
 /** All-time income grouped by family member — the symmetric counterpart
  * to `spendingByMember` (inflows instead of outflows), same
- * drop-unattributed convention. */
+ * drop-unattributed and Transfer-exclusion conventions. */
 export function incomeByMember(transactions: Transaction[]): MemberAmount[] {
   const totals = new Map<string, number>();
   for (const t of transactions) {
     const amount = parseFloat(t.amount);
-    if (amount <= 0 || !t.member_name) continue;
+    if (amount <= 0 || !t.member_name || t.category === "Transfer") continue;
     totals.set(t.member_name, (totals.get(t.member_name) ?? 0) + amount);
   }
   return Array.from(totals, ([name, amount]) => ({ name, amount }));

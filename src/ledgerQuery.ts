@@ -169,8 +169,16 @@ function aggregate(matches: Transaction[], metric: Metric, sign: Sign): number {
 }
 
 export function runQuery(query: Query, ctx: QaContext): QueryResult {
+  const askedAboutTransferDirectly = query.subject?.type === "category" && query.subject.value === "Transfer";
   const matches = ctx.transactions.filter((t) => {
-    if (query.sign === "expense" && parseFloat(t.amount) >= 0) return false;
+    if (query.sign === "expense") {
+      if (parseFloat(t.amount) >= 0) return false;
+      // Money moving between the household's own accounts isn't spending —
+      // excluded here the same way `Store::monthly_totals` excludes it on
+      // the backend, unless the question is specifically about the
+      // Transfer category itself.
+      if (t.category === "Transfer" && !askedAboutTransferDirectly) return false;
+    }
     if (query.sign === "income" && t.category !== "Income") return false;
     if (query.subject && !matchesSubject(t, query.subject)) return false;
     if (query.period && !inRange(t.date, query.period)) return false;

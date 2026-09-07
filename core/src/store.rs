@@ -4752,13 +4752,19 @@ impl Store {
     /// in the given month — unlike `monthly_budget_actuals`, not scoped to
     /// budgeted categories, since a cash-flow chart cares about the whole
     /// picture. Excludes `apply_debt_payment`'s generated transactions,
-    /// same as `all_transactions` — see its doc comment.
+    /// same as `all_transactions` — see its doc comment. Also excludes
+    /// anything categorized "Transfer": money moving between the user's own
+    /// accounts is neither income nor spending, but with no category
+    /// exclusion here it was silently counted as both (once on each side of
+    /// the transfer) — inflating this month's income, expense, and any
+    /// per-person breakdown built on top of it.
     pub fn monthly_totals(&self, year: i32, month: u32) -> rusqlite::Result<(Decimal, Decimal)> {
         let (first, next_first) = month_bounds(year, month);
         let mut stmt = self.conn.prepare(
             "SELECT amount FROM transactions
              WHERE date >= ?1 AND date < ?2
                    AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND (category IS NULL OR category <> 'Transfer')
                    AND deleted_at IS NULL",
         )?;
         let rows = stmt.query_map(params![first.to_string(), next_first.to_string()], |row| row.get::<_, String>(0))?;
@@ -4797,6 +4803,7 @@ impl Store {
             "SELECT date, amount FROM transactions
              WHERE date >= ?1 AND date < ?2
                    AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND (category IS NULL OR category <> 'Transfer')
                    AND deleted_at IS NULL",
         )?;
         let rows = stmt.query_map(params![range_start.to_string(), range_end.to_string()], |row| {
@@ -11033,6 +11040,28 @@ mod tests {
     }
 
     #[test]
+    fn monthly_totals_excludes_transactions_categorized_transfer_on_both_sides() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-08-01", "Payroll Deposit", "3000.00"),
+                    tx("2026-08-05", "Green Leaf Grocers", "-80.00"),
+                    Transaction { category: Some("Transfer".to_string()), ..tx("2026-08-10", "To Savings", "-6000.00") },
+                    Transaction { category: Some("Transfer".to_string()), ..tx("2026-08-10", "From Checking", "6000.00") },
+                ],
+            )
+            .unwrap();
+
+        let (income, expense) = store.monthly_totals(2026, 8).unwrap();
+
+        assert_eq!(income, "3000.00".parse().unwrap(), "the $6,000 transfer-in must not count as income");
+        assert_eq!(expense, "80.00".parse().unwrap(), "the $6,000 transfer-out must not count as spending");
+    }
+
+    #[test]
     fn monthly_totals_for_range_matches_calling_monthly_totals_once_per_month() {
         let store = Store::open_in_memory().unwrap();
         let account = test_account(&store);
@@ -11060,6 +11089,26 @@ mod tests {
             assert_eq!(actual, expected, "mismatch for {year}-{month:02}");
         }
         assert!(!batched.contains_key(&(2026, 8)), "a zero-activity month should have no entry, not a (0,0) row");
+    }
+
+    #[test]
+    fn monthly_totals_for_range_also_excludes_transfer_categorized_transactions() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-06-01", "Payroll Deposit", "3000.00"),
+                    Transaction { category: Some("Transfer".to_string()), ..tx("2026-06-15", "To Savings", "-500.00") },
+                    Transaction { category: Some("Transfer".to_string()), ..tx("2026-06-15", "From Checking", "500.00") },
+                ],
+            )
+            .unwrap();
+
+        let batched = store.monthly_totals_for_range(2026, 6, 2026, 6).unwrap();
+
+        assert_eq!(batched.get(&(2026, 6)).copied().unwrap(), ("3000.00".parse().unwrap(), Decimal::ZERO));
     }
 
     #[test]

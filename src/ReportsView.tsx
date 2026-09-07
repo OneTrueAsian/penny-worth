@@ -286,7 +286,9 @@ function BucketsOverviewSection({ buckets }: { buckets: Bucket[] }) {
  * over the same `transactions` this page already has (matching this file's
  * own existing convention for "income" — the literal "Income" category, see
  * `incomeByAccount` above — and for "expense" — any negative amount, see
- * `tagTotals` above), so it needed no new prop or fetch. Cash Flow's
+ * `tagTotals` above, except "Transfer" — money moving between the
+ * household's own accounts, same exclusion `Store::monthly_totals` applies
+ * on the backend), so it needed no new prop or fetch. Cash Flow's
  * "Income vs. expenses" chart shows one month's totals in dollars; this is
  * the trend those totals form over time, as a rate. */
 function SavingsRateTrendSection({ transactions }: { transactions: Transaction[] }) {
@@ -296,7 +298,7 @@ function SavingsRateTrendSection({ transactions }: { transactions: Transaction[]
     const entry = monthly.get(month) ?? { income: 0, expense: 0 };
     const amount = parseFloat(t.amount);
     if (t.category === "Income") entry.income += amount;
-    else if (amount < 0) entry.expense += Math.abs(amount);
+    else if (amount < 0 && t.category !== "Transfer") entry.expense += Math.abs(amount);
     monthly.set(month, entry);
   }
   const points = Array.from(monthly.entries())
