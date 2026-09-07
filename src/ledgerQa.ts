@@ -1,22 +1,22 @@
 import * as chrono from "chrono-node";
-import Fuse from "fuse.js";
-import type { Account, Bucket, Recurring, Transaction } from "./types";
+import type { Bucket, Recurring } from "./types";
 import { groupOf, netWorthContribution, owedAmount } from "./accountGroups";
-import { formatAmount, toLocalIsoDate } from "./format";
+import { formatAmount } from "./format";
+import {
+  compareQuery,
+  findAccount,
+  fuzzyFind,
+  resolveSubject,
+  runQuery,
+  type DateRange,
+  type Metric,
+  type QaContext,
+} from "./ledgerQuery";
 
-/** Everything a question might need — all of it already sitting in App.tsx
- * state, so answering a question is a pure client-side computation, never
- * a network or even a fresh Tauri call. Answers are only ever as current
- * as this data already is (whatever the Dashboard last fetched). */
-export type QaContext = {
-  transactions: Transaction[];
-  categories: string[];
-  accounts: Account[];
-  buckets: Bucket[];
-  recurring: Recurring[];
-  avgMonthlySpend: string;
-  today: Date;
-};
+// Re-exported so existing imports of `QaContext` from this module (e.g.
+// ledgerQa.test.ts) keep working — the type itself now lives in
+// ledgerQuery.ts alongside the engine that operates on it.
+export type { QaContext };
 
 export type QaResult = {
   answer: string;
@@ -49,40 +49,11 @@ function match(result: RegExpMatchArray | null): RegExpMatchArray | null {
 }
 
 // ---------------------------------------------------------------------------
-// Fuzzy matching — typo-tolerant lookups against the app's own real,
-// user-curated names (categories, accounts, bucket names, merchants),
-// replacing a hand-rolled exact-then-substring check. Fuse does lexical
-// fuzzy matching (edit-distance-ish), not synonyms — "dinning" finds
-// "Dining Out", but "restaurant" won't, since that's a meaning match, not
-// a typo. A single shared low threshold keeps every lookup's tolerance
-// consistent.
-const FUSE_OPTIONS = { includeScore: true, threshold: 0.4 };
-
-function fuzzyFind<T>(phrase: string, items: T[], key: (item: T) => string): T | null {
-  const trimmed = phrase.trim();
-  if (!trimmed || items.length === 0) return null;
-  const exact = items.find((item) => key(item).toLowerCase() === trimmed.toLowerCase());
-  if (exact) return exact;
-  const fuse = new Fuse(items.map(key), FUSE_OPTIONS);
-  const hit = fuse.search(trimmed)[0];
-  return hit ? items[hit.refIndex] : null;
-}
-
-function findCategory(phrase: string, categories: string[]): string | null {
-  return fuzzyFind(phrase, categories, (c) => c);
-}
-
-function findAccount(phrase: string, accounts: Account[]): Account | null {
-  return fuzzyFind(phrase, accounts, (a) => a.name);
-}
-
+// Bucket lookup — the one fuzzy-find consumer not part of the transaction
+// query engine (bucket progress isn't a transaction-aggregate question),
+// so it stays here reusing the shared `fuzzyFind` from ledgerQuery.ts.
 function findBucket(phrase: string, buckets: Bucket[]): Bucket | null {
   return fuzzyFind(phrase, buckets, (b) => b.name);
-}
-
-function findMerchant(phrase: string, transactions: Transaction[]): string | null {
-  const descriptions = Array.from(new Set(transactions.map((t) => t.description)));
-  return fuzzyFind(phrase, descriptions, (d) => d);
 }
 
 const ACCOUNT_GROUP_WORDS: Record<string, string> = {
@@ -101,7 +72,6 @@ const ACCOUNT_GROUP_WORDS: Record<string, string> = {
 // all; "last week" resolves to a single day (same weekday, one week back)
 // rather than the 7-day week; and "the past N months"/"since X" resolve to
 // a single reference point rather than a range running through today.
-export type DateRange = { from: Date; to: Date };
 
 function monthRange(year: number, month1to12: number): DateRange {
   return { from: new Date(year, month1to12 - 1, 1), to: new Date(year, month1to12, 0) };
@@ -172,10 +142,6 @@ export function parsePeriod(phrase: string, today: Date): DateRange | null {
   return rangeFromComponent(r.start);
 }
 
-function inRange(dateStr: string, range: DateRange): boolean {
-  return dateStr >= toLocalIsoDate(range.from) && dateStr <= toLocalIsoDate(range.to);
-}
-
 function periodLabel(phrase: string): string {
   return phrase.trim();
 }
@@ -223,31 +189,88 @@ const INTENTS: Intent[] = [
       const subjectPhrase = m[1].trim();
       const periodPhrase = m[4] ?? (m[3] ? (m[2] === "since" ? `since ${m[3]}` : m[3]) : undefined);
 
+      const lookup = resolveSpendQuery(subjectPhrase, periodPhrase, "sum", ctx);
+      if (!lookup.ok) {
+        // "how much did I spend in the past 3 months" has no real subject at
+        // all — the lazy match above swallows "the past 3 months" whole as
+        // `subjectPhrase` (it's a valid split point too, from the regex's
+        // point of view), so category/merchant lookup fails here even
+        // though the question is perfectly sensible. Once a genuine subject
+        // lookup has already failed, check whether the "subject" is itself
+        // a parseable period — if so, this was actually a no-subject
+        // total-spend question with an "in/during/since" connector, not an
+        // unrecognized category. Only tried when no *separate* period was
+        // already captured, so "how much did I spend on typo this month"
+        // still reports the typo, not a period reinterpretation.
+        if (!periodPhrase) {
+          const asPeriod = parsePeriod(subjectPhrase, ctx.today);
+          if (asPeriod) {
+            const result = runQuery({ metric: "sum", sign: "expense", period: asPeriod }, ctx);
+            const when = periodLabel(subjectPhrase);
+            return result.count > 0
+              ? `You spent ${formatAmount(-result.value)} (${when}), across ${result.count} transaction${result.count === 1 ? "" : "s"}.`
+              : `No spending found (${when}).`;
+          }
+        }
+        return lookup.error;
+      }
+      const { subject, when, result } = lookup;
+      return result.count > 0
+        ? `You spent ${formatAmount(-result.value)} on ${subject.value} (${when}), across ${result.count} transaction${result.count === 1 ? "" : "s"}.`
+        : `No ${subject.value} spending found (${when}).`;
+    },
+  },
+  {
+    // "how much did I spend [this month/last year/total/...]" — no
+    // "on/in/at <subject>" at all, contrasting with the intent above. Kept
+    // to the bare relative-period keywords (not a general chrono phrase, no
+    // "in/during/since" connector) specifically so this can never swallow a
+    // legitimate "spend on/in/at <category>" question — there's no wildcard
+    // here that could absorb " on groceries" the way the intent above's
+    // lazy subject match can, so the two patterns never compete for the
+    // same input.
+    pattern:
+      /how much (?:did i|have i) spen[dt](?: in total| total| overall)?(?: (this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
+    handle: (m, ctx) => {
+      const periodPhrase = m[1];
       let range: DateRange | null = null;
       if (periodPhrase) {
         range = parsePeriod(periodPhrase, ctx.today);
         if (!range) return `I couldn't figure out what time period "${periodPhrase}" means.`;
       }
-
-      const category = findCategory(subjectPhrase, ctx.categories);
-      const merchant = category ? null : findMerchant(subjectPhrase, ctx.transactions);
-      if (!category && !merchant) {
-        return `I couldn't find a category or merchant matching "${subjectPhrase}".`;
-      }
-
-      const matches = ctx.transactions.filter((t) => {
-        if (parseFloat(t.amount) >= 0) return false;
-        if (category && t.category !== category) return false;
-        if (merchant && t.description !== merchant) return false;
-        if (range && !inRange(t.date, range)) return false;
-        return true;
-      });
-      const total = matches.reduce((s, t) => s + Math.abs(parseFloat(t.amount)), 0);
-      const subject = category ?? merchant!;
+      const result = runQuery({ metric: "sum", sign: "expense", period: range ?? undefined }, ctx);
       const when = periodPhrase ? periodLabel(periodPhrase) : "all time";
-      return matches.length > 0
-        ? `You spent ${formatAmount(-total)} on ${subject} (${when}), across ${matches.length} transaction${matches.length === 1 ? "" : "s"}.`
-        : `No ${subject} spending found (${when}).`;
+      return result.count > 0
+        ? `You spent ${formatAmount(-result.value)} in total (${when}), across ${result.count} transaction${result.count === 1 ? "" : "s"}.`
+        : `No spending found (${when}).`;
+    },
+  },
+  {
+    pattern:
+      /(?:what'?s|what is|what was) my average spend (?:on|for|in|at) (.+?)(?: (in|during|since) (.+)|(this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
+    handle: (m, ctx) => {
+      const subjectPhrase = m[1].trim();
+      const periodPhrase = m[4] ?? (m[3] ? (m[2] === "since" ? `since ${m[3]}` : m[3]) : undefined);
+      const lookup = resolveSpendQuery(subjectPhrase, periodPhrase, "avg", ctx);
+      if (!lookup.ok) return lookup.error;
+      const { subject, when, result } = lookup;
+      return result.count > 0
+        ? `Your average spend on ${subject.value} (${when}) was ${formatAmount(-result.value)}, across ${result.count} transaction${result.count === 1 ? "" : "s"}.`
+        : `No ${subject.value} spending found (${when}).`;
+    },
+  },
+  {
+    pattern:
+      /(?:(?:what'?s|what is|what was) my income|what my income (?:is|was)|how much income did i (?:make|have|earn))(?: (?:in|during|for|since) (.+)| (this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
+    handle: (m, ctx) => {
+      const periodPhrase = (m[1] ?? m[2])?.trim();
+      const range = periodPhrase ? parsePeriod(periodPhrase, ctx.today) : monthRange(ctx.today.getFullYear(), ctx.today.getMonth() + 1);
+      if (!range) return `I couldn't figure out what time period "${periodPhrase}" means.`;
+      const result = runQuery({ metric: "sum", sign: "income", period: range }, ctx);
+      const when = periodPhrase ? periodLabel(periodPhrase) : "this month";
+      return result.count > 0
+        ? `Your income for ${when} was ${formatAmount(result.value)}, across ${result.count} transaction${result.count === 1 ? "" : "s"}.`
+        : `No income found for ${when}.`;
     },
   },
   {
@@ -340,7 +363,8 @@ const INTENTS: Intent[] = [
       const periodPhrase = m[1]?.trim();
       const range = periodPhrase ? parsePeriod(periodPhrase, ctx.today) : monthRange(ctx.today.getFullYear(), ctx.today.getMonth() + 1);
       if (!range) return `I couldn't figure out what time period "${periodPhrase}" means.`;
-      const { income, expense } = incomeAndExpense(ctx.transactions, range);
+      const income = runQuery({ metric: "sum", sign: "income", period: range }, ctx).value;
+      const expense = runQuery({ metric: "sum", sign: "expense", period: range }, ctx).value;
       if (income <= 0) return `No income found for ${periodPhrase ? periodLabel(periodPhrase) : "this month"}, so a savings rate isn't meaningful yet.`;
       const rate = ((income - expense) / income) * 100;
       return `Your savings rate for ${periodPhrase ? periodLabel(periodPhrase) : "this month"} is ${rate.toFixed(0)}% (${formatAmount(income)} income, ${formatAmount(expense)} spent).`;
@@ -354,7 +378,102 @@ const INTENTS: Intent[] = [
     pattern: /compare (.+?) (?:to|with|and) (.+?)$/,
     handle: (m, ctx) => compareSpendAnswer(m[1], m[2], ctx),
   },
+  {
+    // Same trailing period clause (preposition-led or a bare relative
+    // keyword) as the main spend intent above — needed here too, since
+    // "what did I spend the most on this month" has no preposition at all
+    // before "this month" (the "on" belongs to the fixed "spend the most
+    // on" idiom, not to the period).
+    pattern:
+      /(?:what(?:'?s| is| was) my (?:biggest|top|highest) spending category|what did i spend the most (?:money )?on|where did i spend the most(?: money)?)(?: (in|during|for|since) (.+)| (this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
+    handle: (m, ctx) => {
+      const periodPhrase = m[3] ?? (m[2] ? (m[1] === "since" ? `since ${m[2]}` : m[2]) : undefined);
+      const range = periodPhrase ? parsePeriod(periodPhrase, ctx.today) : monthRange(ctx.today.getFullYear(), ctx.today.getMonth() + 1);
+      if (!range) return `I couldn't figure out what time period "${periodPhrase}" means.`;
+      const result = runQuery({ metric: "sum", sign: "expense", period: range, groupBy: "category" }, ctx);
+      const when = periodPhrase ? periodLabel(periodPhrase) : "this month";
+      if (!result.groups || result.groups.length === 0) return `No spending found for ${when}.`;
+      const top = result.groups[0];
+      return `Your biggest spending category for ${when} was ${top.label} at ${formatAmount(top.value)}, across ${top.count} transaction${top.count === 1 ? "" : "s"}.`;
+    },
+  },
+  {
+    pattern:
+      /what(?:'?s| was| is) my (?:biggest|largest) (?:purchase|transaction|expense)(?: (in|during|for|since) (.+)| (this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
+    handle: (m, ctx) => {
+      const periodPhrase = m[3] ?? (m[2] ? (m[1] === "since" ? `since ${m[2]}` : m[2]) : undefined);
+      let range: DateRange | null = null;
+      if (periodPhrase) {
+        range = parsePeriod(periodPhrase, ctx.today);
+        if (!range) return `I couldn't figure out what time period "${periodPhrase}" means.`;
+      }
+      const result = runQuery({ metric: "max", sign: "expense", period: range ?? undefined }, ctx);
+      const when = periodPhrase ? periodLabel(periodPhrase) : "all time";
+      if (result.count === 0) return `No spending found (${when}).`;
+      const biggest = result.matches.reduce((a, b) => (Math.abs(parseFloat(a.amount)) >= Math.abs(parseFloat(b.amount)) ? a : b));
+      return `Your biggest expense (${when}) was ${biggest.description} for ${formatAmount(-Math.abs(parseFloat(biggest.amount)))} on ${biggest.date}.`;
+    },
+  },
+  {
+    pattern:
+      /how many transactions (?:do i have |were there )?(?:in|for) (.+?)(?: (in|during|since) (.+)|(this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
+    handle: (m, ctx) => {
+      const subjectPhrase = m[1].trim();
+      const periodPhrase = m[4] ?? (m[3] ? (m[2] === "since" ? `since ${m[3]}` : m[3]) : undefined);
+      const lookup = resolveSpendQuery(subjectPhrase, periodPhrase, "count", ctx);
+      if (!lookup.ok) return lookup.error;
+      const { subject, when, result } = lookup;
+      return `You had ${result.count} ${subject.value} transaction${result.count === 1 ? "" : "s"} (${when}).`;
+    },
+  },
+  {
+    // "did (?!i|we|you)" excludes the pronouns already owned by the main
+    // spend intent above ("how much did I/have I spend...") — without this
+    // guard, "how much did I spend on groceries" would also syntactically
+    // match here (with "I" mistaken for a family member's name) and, if
+    // this intent were ever tried first, would shadow the far more common
+    // question it's not meant to touch.
+    pattern:
+      /how much did (?!i\b|we\b|you\b)(.+?) spen[dt](?: (in|during|since) (.+)|(this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
+    handle: (m, ctx) => {
+      const memberPhrase = m[1].trim();
+      const periodPhrase = m[4] ?? (m[3] ? (m[2] === "since" ? `since ${m[3]}` : m[3]) : undefined);
+      let range: DateRange | null = null;
+      if (periodPhrase) {
+        range = parsePeriod(periodPhrase, ctx.today);
+        if (!range) return `I couldn't figure out what time period "${periodPhrase}" means.`;
+      }
+      const subject = resolveSubject("member", memberPhrase, ctx);
+      if (!subject) return `I couldn't find a family member matching "${memberPhrase}".`;
+      const result = runQuery({ metric: "sum", sign: "expense", subject, period: range ?? undefined }, ctx);
+      const when = periodPhrase ? periodLabel(periodPhrase) : "all time";
+      return result.count > 0
+        ? `${subject.value} spent ${formatAmount(-result.value)} (${when}), across ${result.count} transaction${result.count === 1 ? "" : "s"}.`
+        : `No spending found for ${subject.value} (${when}).`;
+    },
+  },
 ];
+
+/** Shared subject/period resolution behind every "spend on/for/in/at
+ * <subject> [period]" style question (total spend, average spend, and any
+ * future metric of the same shape) — resolves the category/merchant and
+ * the optional period once, runs the query, and hands back either the
+ * result or a ready-to-return error message, so each intent's handler only
+ * has to decide how to *phrase* its answer. */
+type SpendLookup = { ok: true; subject: NonNullable<ReturnType<typeof resolveSubject>>; when: string; result: ReturnType<typeof runQuery> } | { ok: false; error: string };
+
+function resolveSpendQuery(subjectPhrase: string, periodPhrase: string | undefined, metric: Metric, ctx: QaContext): SpendLookup {
+  let range: DateRange | null = null;
+  if (periodPhrase) {
+    range = parsePeriod(periodPhrase, ctx.today);
+    if (!range) return { ok: false, error: `I couldn't figure out what time period "${periodPhrase}" means.` };
+  }
+  const subject = resolveSubject("category", subjectPhrase, ctx) ?? resolveSubject("merchant", subjectPhrase, ctx);
+  if (!subject) return { ok: false, error: `I couldn't find a category or merchant matching "${subjectPhrase}".` };
+  const result = runQuery({ metric, sign: "expense", subject, period: range ?? undefined }, ctx);
+  const when = periodPhrase ? periodLabel(periodPhrase) : "all time";
+  return { ok: true, subject, when, result };
+}
 
 function bucketProgressAnswer(phrase: string, ctx: QaContext): string {
   const b = findBucket(phrase, ctx.buckets);
@@ -364,35 +483,16 @@ function bucketProgressAnswer(phrase: string, ctx: QaContext): string {
   return `${b.name} has ${formatAmount(b.saved_amount)} saved of its ${formatAmount(b.target_amount)} target (${pct.toFixed(0)}%).`;
 }
 
-function totalSpend(transactions: Transaction[], range: DateRange): number {
-  return transactions
-    .filter((t) => parseFloat(t.amount) < 0 && inRange(t.date, range))
-    .reduce((s, t) => s + Math.abs(parseFloat(t.amount)), 0);
-}
-
-function incomeAndExpense(transactions: Transaction[], range: DateRange): { income: number; expense: number } {
-  let income = 0;
-  let expense = 0;
-  for (const t of transactions) {
-    if (!inRange(t.date, range)) continue;
-    const amount = parseFloat(t.amount);
-    if (t.category === "Income") income += amount;
-    else if (amount < 0) expense += Math.abs(amount);
-  }
-  return { income, expense };
-}
-
 function compareSpendAnswer(phraseA: string, phraseB: string, ctx: QaContext): string {
   const rangeA = parsePeriod(phraseA, ctx.today);
   const rangeB = parsePeriod(phraseB, ctx.today);
   if (!rangeA) return `I couldn't figure out what time period "${phraseA.trim()}" means.`;
   if (!rangeB) return `I couldn't figure out what time period "${phraseB.trim()}" means.`;
-  const spendA = totalSpend(ctx.transactions, rangeA);
-  const spendB = totalSpend(ctx.transactions, rangeB);
-  const diff = spendA - spendB;
+  const { a, b } = compareQuery({ metric: "sum", sign: "expense" }, rangeA, rangeB, ctx);
+  const diff = a.value - b.value;
   const direction = diff > 0 ? "more" : diff < 0 ? "less" : "the same amount";
   return (
-    `You spent ${formatAmount(spendA)} during ${periodLabel(phraseA)} and ${formatAmount(spendB)} during ${periodLabel(phraseB)}` +
+    `You spent ${formatAmount(a.value)} during ${periodLabel(phraseA)} and ${formatAmount(b.value)} during ${periodLabel(phraseB)}` +
     (diff === 0 ? " — " : ` — that's ${formatAmount(Math.abs(diff))} ${direction} `) +
     `during ${periodLabel(phraseA)}.`
   );

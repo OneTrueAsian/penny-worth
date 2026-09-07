@@ -160,6 +160,145 @@ describe("spend by category or merchant", () => {
     expect(r.matched).toBe(true);
     expect(r.answer.toLowerCase()).toContain("time period");
   });
+
+  it("reinterprets a period-only 'subject' as a no-subject total-spend question (reported gap: \"how much did I spend in the past 3 months\")", () => {
+    const c = ctx({
+      transactions: [
+        tx({ date: "2026-08-01", amount: "-120.00", category: "Groceries" }),
+        tx({ date: "2026-07-10", amount: "-80.00", category: "Dining Out" }),
+        tx({ date: "2026-05-01", amount: "-999.00", category: "Groceries" }), // outside the window
+      ],
+    });
+    const r = ask("how much did I spend in the past 3 months", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).not.toContain("couldn't find");
+    expect(r.answer).toContain("$200.00");
+    expect(r.answer).toContain("2 transactions");
+  });
+
+  it("still reports a genuine unmatched category, even with no separate period captured", () => {
+    // Guards the fallback above: a typo'd category must not get quietly
+    // reinterpreted as some accidental period phrase.
+    const r = ask("how much did I spend on flying cars", ctx());
+    expect(r.matched).toBe(true);
+    expect(r.answer.toLowerCase()).toContain("couldn't find");
+  });
+});
+
+describe("total spend (no subject)", () => {
+  it("totals spend for a bare relative period with no 'on/in/at' subject at all", () => {
+    const c = ctx({
+      today: new Date(2026, 6, 20),
+      transactions: [
+        tx({ date: "2026-07-05", amount: "-60.00", category: "Dining Out" }),
+        tx({ date: "2026-07-12", amount: "-35.00", category: "Groceries" }),
+        tx({ date: "2026-08-01", amount: "-20.00", category: "Dining Out" }), // outside July
+      ],
+    });
+    const r = ask("how much did I spend this month", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("$95.00");
+    expect(r.answer).toContain("2 transactions");
+  });
+
+  it("totals all-time spend for a completely bare question", () => {
+    const c = ctx({
+      transactions: [tx({ date: "2026-07-05", amount: "-60.00" }), tx({ date: "2025-01-01", amount: "-40.00" })],
+    });
+    const r = ask("how much did I spend", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("$100.00");
+  });
+
+  it("does not shadow a genuine 'spend on <category>' question", () => {
+    const c = ctx({
+      today: new Date(2026, 6, 20),
+      transactions: [tx({ date: "2026-07-05", amount: "-60.00", category: "Dining Out" })],
+    });
+    const r = ask("how much did I spend on dining out this month", c);
+    expect(r.answer).toContain("Dining Out");
+    expect(r.answer).toContain("$60.00");
+  });
+});
+
+describe("average spend", () => {
+  it("averages matching expenses instead of summing them", () => {
+    const c = ctx({
+      transactions: [
+        tx({ date: "2026-07-05", amount: "-20.00", category: "Groceries" }),
+        tx({ date: "2026-07-12", amount: "-50.00", category: "Groceries" }),
+        tx({ date: "2026-07-20", amount: "-80.00", category: "Groceries" }),
+      ],
+    });
+    const r = ask("what's my average spend on groceries in July", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("$50.00");
+    expect(r.answer).toContain("3 transactions");
+  });
+
+  it("gives a specific miss when neither a category nor a merchant matches", () => {
+    const r = ask("what's my average spend on flying cars", ctx());
+    expect(r.matched).toBe(true);
+    expect(r.answer.toLowerCase()).toContain("couldn't find");
+  });
+});
+
+describe("income", () => {
+  it("sums income-categorized transactions for the named period", () => {
+    const c = ctx({
+      transactions: [
+        tx({ date: "2026-07-01", amount: "4000.00", category: "Income", description: "Paycheck" }),
+        tx({ date: "2026-07-15", amount: "4000.00", category: "Income", description: "Paycheck" }),
+        tx({ date: "2026-06-01", amount: "4000.00", category: "Income", description: "Paycheck" }), // outside July
+      ],
+    });
+    const r = ask("what was my income for July", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("$8,000.00");
+    expect(r.answer).toContain("2 transactions");
+  });
+
+  it("defaults to this month when no period is given", () => {
+    const c = ctx({
+      today: new Date(2026, 6, 20),
+      transactions: [tx({ date: "2026-07-01", amount: "4000.00", category: "Income" })],
+    });
+    const r = ask("what's my income", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer.toLowerCase()).toContain("this month");
+    expect(r.answer).toContain("$4,000.00");
+  });
+
+  it("reports no income found rather than a division-by-zero rate", () => {
+    const r = ask("how much income did I make in July", ctx());
+    expect(r.matched).toBe(true);
+    expect(r.answer.toLowerCase()).toContain("no income found");
+  });
+
+  it("understands a bare relative period with no preposition at all", () => {
+    const c = ctx({
+      today: new Date(2026, 6, 20),
+      transactions: [
+        tx({ date: "2026-07-01", amount: "4000.00", category: "Income" }),
+        tx({ date: "2026-06-01", amount: "4000.00", category: "Income" }), // outside this month
+      ],
+    });
+    const r = ask("what's my income this month", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("$4,000.00");
+  });
+
+  it("understands the exact reported phrasing: \"what my income was for the past 3 months\"", () => {
+    const c = ctx({
+      transactions: [
+        tx({ date: "2026-08-01", amount: "4000.00", category: "Income" }),
+        tx({ date: "2026-05-01", amount: "4000.00", category: "Income" }), // outside the 3-month window
+      ],
+    });
+    const r = ask("tell me what my income was for the past 3 months", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("$4,000.00");
+  });
 });
 
 describe("period parsing (via the spend intent)", () => {
@@ -337,6 +476,115 @@ describe("spend comparison", () => {
     const r = ask("compare this month to last month", c);
     expect(r.answer).toContain("$300.00");
     expect(r.answer).toContain("$500.00");
+  });
+});
+
+describe("highest-spending category", () => {
+  it("finds the category with the largest total for the period", () => {
+    const c = ctx({
+      today: new Date(2026, 6, 20),
+      transactions: [
+        tx({ date: "2026-07-05", amount: "-40.00", category: "Groceries" }),
+        tx({ date: "2026-07-10", amount: "-40.00", category: "Groceries" }),
+        tx({ date: "2026-07-15", amount: "-90.00", category: "Dining Out" }),
+      ],
+    });
+    const r = ask("what did I spend the most on this month", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("Dining Out");
+    expect(r.answer).toContain("$90.00");
+  });
+
+  it("reports no spending found for a quiet period", () => {
+    const r = ask("what's my biggest spending category", ctx({ today: new Date(2026, 6, 20) }));
+    expect(r.matched).toBe(true);
+    expect(r.answer.toLowerCase()).toContain("no spending found");
+  });
+});
+
+describe("biggest single transaction", () => {
+  it("finds the single largest expense in the period", () => {
+    const c = ctx({
+      transactions: [
+        tx({ date: "2026-07-05", description: "Costco", amount: "-40.00" }),
+        tx({ date: "2026-07-15", description: "New Laptop", amount: "-899.00" }),
+        tx({ date: "2026-08-01", description: "Outside window", amount: "-5000.00" }),
+      ],
+    });
+    const r = ask("what was my biggest purchase in July", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("New Laptop");
+    expect(r.answer).toContain("$899.00");
+    expect(r.answer).not.toContain("5,000.00");
+  });
+
+  it("reports no spending found rather than crashing on an empty match set", () => {
+    const r = ask("what's my largest transaction in July", ctx());
+    expect(r.matched).toBe(true);
+    expect(r.answer.toLowerCase()).toContain("no spending found");
+  });
+
+  it("understands a bare relative period with no preposition at all", () => {
+    const c = ctx({
+      today: new Date(2026, 6, 20),
+      transactions: [tx({ date: "2026-07-05", description: "New Laptop", amount: "-899.00" })],
+    });
+    const r = ask("what was my biggest purchase this month", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("New Laptop");
+  });
+});
+
+describe("transaction count", () => {
+  it("counts matching transactions for a category and period", () => {
+    const c = ctx({
+      transactions: [
+        tx({ date: "2026-07-05", category: "Dining Out" }),
+        tx({ date: "2026-07-12", category: "Dining Out" }),
+        tx({ date: "2026-08-01", category: "Dining Out" }), // outside July
+      ],
+    });
+    const r = ask("how many transactions do I have in Dining Out in July", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("2");
+    expect(r.answer).toContain("Dining Out");
+  });
+
+  it("gives a specific miss when the category/merchant doesn't resolve", () => {
+    const r = ask("how many transactions were there for flying cars", ctx());
+    expect(r.matched).toBe(true);
+    expect(r.answer.toLowerCase()).toContain("couldn't find");
+  });
+});
+
+describe("spend by family member", () => {
+  it("sums a specific member's spend for a period", () => {
+    const c = ctx({
+      transactions: [
+        tx({ date: "2026-07-05", amount: "-40.00", member_id: 1, member_name: "Alex" }),
+        tx({ date: "2026-07-12", amount: "-25.00", member_id: 1, member_name: "Alex" }),
+        tx({ date: "2026-07-20", amount: "-90.00", member_id: 2, member_name: "Jordan" }),
+      ],
+    });
+    const r = ask("how much did Alex spend in July", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("Alex");
+    expect(r.answer).toContain("$65.00");
+    expect(r.answer).not.toContain("$90.00");
+  });
+
+  it("gives a specific miss when no member matches", () => {
+    const r = ask("how much did Zorblax spend", ctx());
+    expect(r.matched).toBe(true);
+    expect(r.answer.toLowerCase()).toContain("couldn't find");
+  });
+
+  it("must not shadow 'how much did I spend on <category>' — the pronoun guard", () => {
+    const c = ctx({ transactions: [tx({ date: "2026-07-05", amount: "-60.00", category: "Dining Out" })] });
+    const r = ask("how much did I spend on dining out in July", c);
+    expect(r.answer).toContain("Dining Out");
+    expect(r.answer).toContain("$60.00");
+    expect(r.answer.toLowerCase()).not.toContain("couldn't find a family member");
   });
 });
 

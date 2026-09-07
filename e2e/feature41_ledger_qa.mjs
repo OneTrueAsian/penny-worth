@@ -48,6 +48,14 @@ try {
     throw new Error(`expected the answer to mention Dining Out and $95.00 (60+35), got "${spendAnswer}"`);
   }
 
+  // New in the primitive-query-engine pass — confirms `resolveSpendQuery`/
+  // `runQuery` are wired through the real UI, not just unit-tested.
+  const avgAnswer = await ask(app, "what's my average spend on dining out in July");
+  console.log("average spend question:", avgAnswer);
+  if (!avgAnswer.includes("$47.50") || !avgAnswer.includes("Dining Out")) {
+    throw new Error(`expected the average to mention Dining Out and $47.50 ((60+35)/2), got "${avgAnswer}"`);
+  }
+
   const runwayAnswer = await ask(app, "what's my runway if rent goes up by $200");
   console.log("runway question:", runwayAnswer);
   if (!runwayAnswer.includes("runway is") || !runwayAnswer.includes("drop to")) {
