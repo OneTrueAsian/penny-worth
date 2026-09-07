@@ -1966,10 +1966,21 @@ pub fn get_stats(state: tauri::State<AppStateHandle>) -> Result<Stats, String> {
         uncategorized: 0,
     };
     for t in &all {
-        match t.category_source {
-            Some(CategorySource::User) => stats.user_confirmed += 1,
-            Some(CategorySource::Rule) | Some(CategorySource::Classifier) => stats.auto_categorized += 1,
-            None => stats.uncategorized += 1,
+        // "Needs a category" must mean exactly that — no category name at
+        // all — not "no recorded source for whatever category it has".
+        // A transaction imported with a category already attached (a QFX/
+        // OFX file's own categorization, or a bulk setup-data import) gets
+        // a real `category` but no `category_source`, since it was never
+        // run through this app's own rule/classifier/user-confirm path;
+        // counting it as "uncategorized" anyway (as this used to) made the
+        // Ledger's "Needs a category" stat overcount, disagreeing with its
+        // own "Uncategorized" filter, which correctly checks `category`.
+        if t.transaction.category.is_none() {
+            stats.uncategorized += 1;
+        } else if t.category_source == Some(CategorySource::User) {
+            stats.user_confirmed += 1;
+        } else {
+            stats.auto_categorized += 1;
         }
     }
     Ok(stats)
