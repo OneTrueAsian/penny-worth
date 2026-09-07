@@ -281,6 +281,12 @@ const THEME_STYLE_OPTIONS: { id: ThemeStyle; label: string; description: string 
     description:
       "A jewel-toned reskin — near-black green backgrounds with an emerald accent and warm copper/champagne highlights. Always dark, regardless of the sidebar's Light/Dark/System setting.",
   },
+  {
+    id: "futuristic",
+    label: "Futuristic",
+    description:
+      "A neon cyberpunk reskin — electric cyan, violet, and magenta-red accents, plus Orbitron and Share Tech Mono type, and its own angular sidebar icon set. Unlike Aurora and Midnight Emerald, it has both a light and a dark mode, following the sidebar's Light/Dark/System toggle below.",
+  },
 ];
 
 function AppearanceSection({

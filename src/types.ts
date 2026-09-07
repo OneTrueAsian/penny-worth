@@ -56,7 +56,7 @@ export type AppSettings = {
  * in localStorage, never sent to the backend. Every style but "classic" is
  * dark-only by design, so it ignores the sidebar's separate Light/Dark/
  * System toggle. */
-export type ThemeStyle = "classic" | "aurora" | "midnight_emerald";
+export type ThemeStyle = "classic" | "aurora" | "midnight_emerald" | "futuristic";
 
 export type Insight = {
   severity: "warning" | "info";

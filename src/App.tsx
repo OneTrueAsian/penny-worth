@@ -2548,7 +2548,7 @@ function App({
         </nav>
         <div className="sidebar-foot">
           {appVersion && <p className="sidebar-version">v{appVersion}</p>}
-          {themeStyle !== "classic" ? (
+          {themeStyle === "aurora" || themeStyle === "midnight_emerald" ? (
             <p className="sidebar-theme-note">This theme is always dark</p>
           ) : (
             <div className="theme-toggle" role="group" aria-label="Theme">

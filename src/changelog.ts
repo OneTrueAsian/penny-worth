@@ -96,4 +96,8 @@ export const CHANGELOG: Record<string, string[]> = {
     "A new \"Ask your ledger\" box on the Dashboard answers questions typed in plain English — spending by category or merchant over a time period, runway what-ifs, account/net worth/debt lookups, subscription totals, bucket progress, savings rate, and month-over-month comparisons — computed entirely from your own local data, never sent anywhere.",
     "Fixed: the Dashboard's Debt tile could show red even while a debt was actively being paid down. It now tracks the actual amount owed, so paying down debt shows green with a downward trend line, and only rising debt shows red.",
   ],
+  "1.2.3": [
+    "A fourth visual theme, Futuristic, joins Aurora and Midnight Emerald in Settings ▸ Appearance — a neon cyberpunk look with electric cyan, violet, and magenta-red accents, plus Orbitron and Share Tech Mono type. Unlike the other two reskins, Futuristic has a light mode as well as dark, and follows the sidebar's Light/Dark/System toggle.",
+    "Futuristic also swaps in its own angular, HUD-style sidebar icon set in place of the app's default icons.",
+  ],
 };
