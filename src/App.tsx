@@ -250,6 +250,10 @@ const THEME_STORAGE_KEY = "meadow-theme";
 const THEME_STYLE_STORAGE_KEY = "meadow-theme-style";
 const NAV_ORDER_STORAGE_KEY = "meadow-nav-order";
 const SAVED_FILTERS_STORAGE_KEY = "meadow-saved-ledger-filters";
+/** Sentinel `filterCategory` value meaning "no category assigned" — kept
+ * distinct from any real category name the same way the per-row category
+ * `<select>`s already use `"__new__"` for "+ New category…". */
+const UNCATEGORIZED_FILTER = "__uncategorized__";
 
 /** A named snapshot of the Ledger's filter bar — a per-viewer shortcut,
  * same localStorage tier as theme/nav order. `filterAccountIds`/
@@ -842,7 +846,11 @@ function App({
         if (searchText.trim() && !t.description.toLowerCase().includes(searchText.trim().toLowerCase())) {
           return false;
         }
-        if (filterCategory !== "all" && t.category !== filterCategory) return false;
+        if (filterCategory === UNCATEGORIZED_FILTER) {
+          if (t.category) return false;
+        } else if (filterCategory !== "all" && t.category !== filterCategory) {
+          return false;
+        }
         if (filterAccountIds !== "all" && !filterAccountIds.has(t.account_id)) return false;
         if (filterMemberIds !== "all" && (t.member_id === null || !filterMemberIds.has(t.member_id))) return false;
         if (filterFrom && t.date < filterFrom) return false;
@@ -2982,10 +2990,15 @@ function App({
             <span className="stat-value">{stats.user_confirmed}</span>
             <span className="stat-label">Corrected by you</span>
           </div>
-          <div className="stat">
+          <button
+            type="button"
+            className={filterCategory === UNCATEGORIZED_FILTER ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+            onClick={() => setFilterCategory((c) => (c === UNCATEGORIZED_FILTER ? "all" : UNCATEGORIZED_FILTER))}
+            title="Filter the ledger to only transactions that need a category"
+          >
             <span className="stat-value">{stats.uncategorized}</span>
             <span className="stat-label">Needs a category</span>
-          </div>
+          </button>
         </div>
       )}
 
@@ -3000,6 +3013,7 @@ function App({
           />
           <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)}>
             <option value="all">All categories</option>
+            <option value={UNCATEGORIZED_FILTER}>Uncategorized</option>
             {categoryOptions.map((c) => (
               <option key={c} value={c}>
                 {c}
