@@ -143,6 +143,10 @@ function BudgetRow({
   onDragOver,
   onDrop,
   onDragEnd,
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
 }: {
   line: ReportBudgetLine;
   alertLevel: "warning" | "over" | undefined;
@@ -161,6 +165,14 @@ function BudgetRow({
   onDragOver: (e: DragEvent) => void;
   onDrop: (e: DragEvent) => void;
   onDragEnd: () => void;
+  /** Keyboard-accessible alternative to the drag handle — reorders within
+   * this category's own group, same as dragging does, for anyone who'd
+   * rather click than drag (same pairing as the Dashboard widget
+   * customizer's ↑/↓ buttons). */
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
 }) {
   const isIncome = line.budget_group === "income";
   // Turning the feature off suspends the 90% tier everywhere it's shown,
@@ -217,6 +229,14 @@ function BudgetRow({
       <div className="cat-row-name">
         <span className="drag-handle" title="Drag to reorder">
           ⠿
+        </span>
+        <span className="cat-row-move-buttons">
+          <button type="button" className="modal-secondary" onClick={onMoveUp} disabled={!canMoveUp} aria-label="Move up">
+            ↑
+          </button>
+          <button type="button" className="modal-secondary" onClick={onMoveDown} disabled={!canMoveDown} aria-label="Move down">
+            ↓
+          </button>
         </span>
         <span className="cat-row-name-stack">
           <span
@@ -374,22 +394,48 @@ export function BudgetView({
     categoryOrder,
   );
 
-  function handleDrop(targetCategory: string) {
-    if (!dragCategory || dragCategory === targetCategory) {
-      setDragCategory(null);
-      return;
-    }
-    // Reorder within the *full* known set (stored order plus this
-    // month's categories), not just this month's subset — otherwise
-    // saving would silently drop the positions of categories that only
-    // appear in a different month.
+  // Reorder within the *full* known set (stored order plus this month's
+  // categories), not just this month's subset — otherwise saving would
+  // silently drop the positions of categories that only appear in a
+  // different month. Shared by both drag-and-drop and the ↑/↓ buttons
+  // below — they only differ in how `targetCategory` gets picked.
+  function reorderCategory(category: string, targetCategory: string) {
+    if (category === targetCategory) return;
     const allKnown = Array.from(new Set([...categoryOrder, ...budgetActuals.map((b) => b.category)]));
     const effective = sortByCustomOrder(allKnown, categoryOrder);
-    const next = effective.filter((c) => c !== dragCategory);
-    next.splice(next.indexOf(targetCategory), 0, dragCategory);
+    const next = effective.filter((c) => c !== category);
+    next.splice(next.indexOf(targetCategory), 0, category);
     setCategoryOrder(next);
     saveCategoryOrder(next);
+  }
+
+  function handleDrop(targetCategory: string) {
+    if (dragCategory) reorderCategory(dragCategory, targetCategory);
     setDragCategory(null);
+  }
+
+  // Reordering is scoped to the category's own group — Budget renders one
+  // group at a time, so "up"/"down" here means relative to the other
+  // categories in the *same* group, not a global position. A direct swap
+  // of the two positions, not `reorderCategory`'s "insert before target"
+  // (that's the right model for a drag-and-drop *drop*, but moving "down"
+  // one slot via a button needs to land *after* its neighbor, not before
+  // it — "insert before" would just put it right back where it started).
+  function moveCategoryWithinGroup(category: string, dir: -1 | 1) {
+    const group = lineByCategory.get(category)?.budget_group;
+    const groupCategories = orderedCategories.filter((c) => lineByCategory.get(c)?.budget_group === group);
+    const index = groupCategories.indexOf(category);
+    const targetIndex = index + dir;
+    if (targetIndex < 0 || targetIndex >= groupCategories.length) return;
+    const neighbor = groupCategories[targetIndex];
+
+    const allKnown = Array.from(new Set([...categoryOrder, ...budgetActuals.map((b) => b.category)]));
+    const next = sortByCustomOrder(allKnown, categoryOrder);
+    const i = next.indexOf(category);
+    const j = next.indexOf(neighbor);
+    [next[i], next[j]] = [next[j], next[i]];
+    setCategoryOrder(next);
+    saveCategoryOrder(next);
   }
 
   // One summary per non-empty group — computed once and shared by both the
@@ -468,7 +514,7 @@ export function BudgetView({
               </span>
             </h2>
             <div className="cat-list">
-              {groupLines.map((line) => (
+              {groupLines.map((line, i) => (
                 <BudgetRow
                   key={line.category}
                   line={line}
@@ -502,6 +548,10 @@ export function BudgetView({
                     handleDrop(line.category);
                   }}
                   onDragEnd={() => setDragCategory(null)}
+                  canMoveUp={i > 0}
+                  canMoveDown={i < groupLines.length - 1}
+                  onMoveUp={() => moveCategoryWithinGroup(line.category, -1)}
+                  onMoveDown={() => moveCategoryWithinGroup(line.category, 1)}
                 />
               ))}
             </div>

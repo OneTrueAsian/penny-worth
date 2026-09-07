@@ -356,6 +356,7 @@ export function InvestmentsView({
         </div>
         <div className="stat">
           <span className={totalGain < 0 ? "stat-value report-over-budget" : "stat-value"}>
+            {totalGain > 0 ? "+" : ""}
             {formatAmount(totalGain.toFixed(2))}
           </span>
           <span className="stat-label">Total gain/loss</span>
@@ -479,6 +480,7 @@ export function InvestmentsView({
                     </td>
                     <td className="amount-col">{formatAmount(h.value)}</td>
                     <td className={gain < 0 ? "amount-col report-over-budget" : "amount-col"}>
+                      {gain > 0 ? "+" : ""}
                       {formatAmount(h.gain_loss)}
                     </td>
                     <td className="actions-col">

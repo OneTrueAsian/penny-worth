@@ -556,6 +556,11 @@ impl Store {
                 amount TEXT NOT NULL,
                 date TEXT NOT NULL
             );
+            -- `source_transaction_id` already has an implicit index via its
+            -- own UNIQUE constraint; `generated_transaction_id` doesn't and
+            -- is filtered via `NOT IN (SELECT generated_transaction_id ...)`
+            -- in nearly every reporting query.
+            CREATE INDEX IF NOT EXISTS idx_debt_payments_generated_transaction_id ON debt_payments(generated_transaction_id);
             CREATE TABLE IF NOT EXISTS transaction_splits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 transaction_id INTEGER NOT NULL REFERENCES transactions(id),
@@ -563,6 +568,7 @@ impl Store {
                 amount TEXT NOT NULL,
                 note TEXT
             );
+            CREATE INDEX IF NOT EXISTS idx_transaction_splits_transaction_id ON transaction_splits(transaction_id);
             CREATE TABLE IF NOT EXISTS transaction_tags (
                 transaction_id INTEGER NOT NULL REFERENCES transactions(id),
                 tag TEXT NOT NULL COLLATE NOCASE,
@@ -611,6 +617,31 @@ impl Store {
         self.migrate_add_deleted_at_if_missing()?;
         self.migrate_add_holdings_prev_close_if_missing()?;
         self.migrate_fix_stale_manual_balance_override_reset_dates()?;
+        // These reference columns only guaranteed to exist once every
+        // migration above has run — a database from before those columns
+        // existed has a table the initial `CREATE TABLE IF NOT EXISTS` up
+        // top left untouched (it already existed, just without the
+        // column), so an index on that column placed in that same batch
+        // would fail with "no such column" exactly like the migrations
+        // above had to work around for the columns themselves.
+        // `deleted_at` (transactions): only exists after
+        // `migrate_add_deleted_at_if_missing` runs, above. Partial indexes
+        // matching the `deleted_at IS NULL` predicate nearly every
+        // production query already filters on, covering the three ways
+        // transactions get looked up: per account (balance-as-of), per
+        // category (budget actuals), and by date alone (monthly totals,
+        // large-expense range scans).
+        // `period` (budgets): only exists after
+        // `migrate_budgets_to_period_scoped_if_missing`, above — the
+        // table's own PRIMARY KEY is (category, period), which can't serve
+        // a period-only lookup (`list_budgets`) efficiently since category
+        // leads it.
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_transactions_account_date ON transactions(account_id, date) WHERE deleted_at IS NULL;
+             CREATE INDEX IF NOT EXISTS idx_transactions_category_date ON transactions(category, date) WHERE deleted_at IS NULL;
+             CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date) WHERE deleted_at IS NULL;
+             CREATE INDEX IF NOT EXISTS idx_budgets_period ON budgets(period);",
+        )?;
         self.seed_categories_if_missing()
     }
 
@@ -3039,36 +3070,46 @@ impl Store {
     pub fn monthly_budget_actuals(&self, year: i32, month: u32) -> rusqlite::Result<Vec<BudgetActual>> {
         let month_key = format!("{year:04}-{month:02}");
         let budgets = self.list_budgets(&month_key)?;
+        let (first, next_first) = month_bounds(year, month);
 
+        // One query covering every category at once (previously one query
+        // *per budgeted category*) — summed in Rust with `Decimal`, not
+        // SQL `SUM()`, since `amount` is stored as TEXT and SQLite's SUM
+        // would do the addition in floating point rather than exact
+        // decimal arithmetic.
         let mut stmt = self.conn.prepare(
-            "SELECT amount FROM transactions
-             WHERE category = ?1 AND substr(date, 1, 7) = ?2
+            "SELECT category, amount FROM transactions
+             WHERE date >= ?1 AND date < ?2
                    AND id NOT IN (SELECT DISTINCT transaction_id FROM transaction_splits)
                    AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
                    AND deleted_at IS NULL
              UNION ALL
-             SELECT ts.amount FROM transaction_splits ts
+             SELECT ts.category, ts.amount FROM transaction_splits ts
              JOIN transactions t ON t.id = ts.transaction_id
-             WHERE ts.category = ?1 AND substr(t.date, 1, 7) = ?2
+             WHERE t.date >= ?1 AND t.date < ?2
                    AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
                    AND t.deleted_at IS NULL",
         )?;
+        let rows = stmt.query_map(params![first.to_string(), next_first.to_string()], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut raw_by_category: std::collections::HashMap<String, Decimal> = std::collections::HashMap::new();
+        for row in rows {
+            let (category, amount_str) = row?;
+            let Some(category) = category else { continue };
+            let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
+            *raw_by_category.entry(category).or_insert(Decimal::ZERO) += amount;
+        }
+
         let mut result = Vec::with_capacity(budgets.len());
         for line in budgets {
-            let rows = stmt.query_map(params![line.category, month_key], |row| row.get::<_, String>(0))?;
-            let mut spent = Decimal::ZERO;
-            for row in rows {
-                let amount = Decimal::from_str(&row?).expect("amount stored by this crate must be valid");
-                // Expense transactions are stored negative, so negating
-                // reports a positive "amount spent" — but income
-                // transactions are stored positive already and must not
-                // be flipped, or a real deposit reads as negative "actual".
-                if line.budget_group == "income" {
-                    spent += amount;
-                } else {
-                    spent -= amount;
-                }
-            }
+            let raw = raw_by_category.get(&line.category).copied().unwrap_or(Decimal::ZERO);
+            // Expense transactions are stored negative, so negating
+            // reports a positive "amount spent" — but income transactions
+            // are stored positive already and must not be flipped, or a
+            // real deposit reads as negative "actual".
+            let spent = if line.budget_group == "income" { raw } else { -raw };
             result.push(BudgetActual {
                 category: line.category,
                 budget_group: line.budget_group,
@@ -3384,59 +3425,91 @@ impl Store {
 
         let mut result = Vec::new();
 
+        // "Large": comparing every transaction against a full linear scan
+        // of every other transaction is O(n²). Instead, group by category
+        // and sort each group by date, then walk it once with a
+        // sliding window (`lo`/`hi` below) tracking exactly the same set
+        // the original filter did — every same-category row with
+        // `date` in `[row.date - 180 days, row.date)` (strictly *before*
+        // `row`, so same-day transactions never count toward each other's
+        // baseline) — as a running sum instead of re-scanning it. Both
+        // pointers only ever move forward as `row.date` advances through
+        // the sorted group, so each group is O(n) after its one sort:
+        // O(n log n) overall instead of O(n²).
+        let mut by_category: std::collections::HashMap<&str, Vec<&Row>> = std::collections::HashMap::new();
         for row in &all {
-            let Some(category) = &row.category else { continue };
-            let window_start = row.date - chrono::Duration::days(180);
-            let history: Vec<&Row> = all
-                .iter()
-                .filter(|r| {
-                    r.id != row.id
-                        && r.category.as_deref() == Some(category.as_str())
-                        && r.date >= window_start
-                        && r.date < row.date
-                })
-                .collect();
-            if history.len() < 3 {
-                continue;
+            if let Some(category) = &row.category {
+                by_category.entry(category.as_str()).or_default().push(row);
             }
-            let baseline: Decimal =
-                history.iter().map(|r| r.amount.abs()).sum::<Decimal>() / Decimal::from(history.len());
-            let threshold = baseline * Decimal::new(25, 1); // 2.5x
-            if row.amount.abs() > threshold && row.amount.abs() > Decimal::from(50) {
-                result.push(AnomalyFlag {
-                    transaction_id: row.id,
-                    kind: "large".to_string(),
-                    detail: format!(
-                        "Unusually large for {category} — {} vs a recent average of {baseline:.2}",
-                        row.amount.abs()
-                    ),
-                });
+        }
+        for (category, mut rows) in by_category {
+            rows.sort_by_key(|r| r.date);
+            let (mut lo, mut hi) = (0usize, 0usize);
+            let (mut window_sum, mut window_count) = (Decimal::ZERO, 0usize);
+            for row in &rows {
+                let window_start = row.date - chrono::Duration::days(180);
+                while hi < rows.len() && rows[hi].date < row.date {
+                    window_sum += rows[hi].amount.abs();
+                    window_count += 1;
+                    hi += 1;
+                }
+                while lo < hi && rows[lo].date < window_start {
+                    window_sum -= rows[lo].amount.abs();
+                    window_count -= 1;
+                    lo += 1;
+                }
+                if window_count < 3 {
+                    continue;
+                }
+                let baseline = window_sum / Decimal::from(window_count);
+                let threshold = baseline * Decimal::new(25, 1); // 2.5x
+                if row.amount.abs() > threshold && row.amount.abs() > Decimal::from(50) {
+                    result.push(AnomalyFlag {
+                        transaction_id: row.id,
+                        kind: "large".to_string(),
+                        detail: format!(
+                            "Unusually large for {category} — {} vs a recent average of {baseline:.2}",
+                            row.amount.abs()
+                        ),
+                    });
+                }
             }
         }
 
-        for i in 0..all.len() {
-            for j in (i + 1)..all.len() {
-                let a = &all[i];
-                let b = &all[j];
-                if a.amount != b.amount {
-                    continue;
+        // "Duplicate": amount and normalized description must match
+        // exactly, so bucketing by that pair first turns an O(n²)
+        // all-pairs scan of the whole ledger into all-pairs scans of just
+        // the (typically tiny) groups that could possibly match — the
+        // ±3-day date check is the only thing still checked pairwise,
+        // and only within a bucket. `amount.to_string()` (not `amount`
+        // itself) is the hash key purely to sidestep ever needing to
+        // reason about `Decimal`'s own `Hash` impl — two rows here always
+        // come from independently-parsed stored strings, so equal values
+        // produce equal strings regardless.
+        let mut buckets: std::collections::HashMap<(String, String), Vec<&Row>> = std::collections::HashMap::new();
+        for row in &all {
+            let key = (row.amount.to_string(), normalize_description(&row.description));
+            buckets.entry(key).or_default().push(row);
+        }
+        for group in buckets.values() {
+            for i in 0..group.len() {
+                for j in (i + 1)..group.len() {
+                    let a = group[i];
+                    let b = group[j];
+                    if (a.date - b.date).num_days().abs() > 3 {
+                        continue;
+                    }
+                    result.push(AnomalyFlag {
+                        transaction_id: a.id,
+                        kind: "duplicate".to_string(),
+                        detail: format!("Possible duplicate of the {} transaction on {}", b.description, b.date),
+                    });
+                    result.push(AnomalyFlag {
+                        transaction_id: b.id,
+                        kind: "duplicate".to_string(),
+                        detail: format!("Possible duplicate of the {} transaction on {}", a.description, a.date),
+                    });
                 }
-                if (a.date - b.date).num_days().abs() > 3 {
-                    continue;
-                }
-                if normalize_description(&a.description) != normalize_description(&b.description) {
-                    continue;
-                }
-                result.push(AnomalyFlag {
-                    transaction_id: a.id,
-                    kind: "duplicate".to_string(),
-                    detail: format!("Possible duplicate of the {} transaction on {}", b.description, b.date),
-                });
-                result.push(AnomalyFlag {
-                    transaction_id: b.id,
-                    kind: "duplicate".to_string(),
-                    detail: format!("Possible duplicate of the {} transaction on {}", a.description, a.date),
-                });
             }
         }
 
@@ -3454,25 +3527,49 @@ impl Store {
         end_date: NaiveDate,
     ) -> rusqlite::Result<Vec<LargeExpense>> {
         let flags = self.anomaly_flags()?;
-        let all = self.all_transactions()?;
-        let by_id: std::collections::HashMap<i64, &StoredTransaction> =
-            all.iter().map(|t| (t.id, t)).collect();
+
+        // A lighter, range-scoped query than `all_transactions()` — this
+        // only ever needs these five fields to build a `LargeExpense`, not
+        // the splits/tags/debt-payment-application info `all_transactions()`
+        // also computes. `anomaly_flags()` itself still has to run over
+        // full history (a transaction inside the range can still need up
+        // to 180 days of *pre-range* history for its own baseline), so
+        // only this second fetch gets scoped down.
+        let mut stmt = self.conn.prepare(
+            "SELECT id, date, description, amount, category FROM transactions
+             WHERE date >= ?1 AND date <= ?2
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL",
+        )?;
+        let rows = stmt.query_map(params![start_date.to_string(), end_date.to_string()], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+        let mut by_id: std::collections::HashMap<i64, (NaiveDate, String, Decimal, Option<String>)> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (id, date_str, description, amount_str, category) = row?;
+            let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").expect("date stored by this crate must be valid");
+            let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
+            by_id.insert(id, (date, description, amount, category));
+        }
 
         let mut result: Vec<LargeExpense> = flags
             .into_iter()
             .filter(|f| f.kind == "large")
             .filter_map(|f| {
-                let stored = by_id.get(&f.transaction_id)?;
-                let date = stored.transaction.date;
-                if date < start_date || date > end_date {
-                    return None;
-                }
+                let (date, description, amount, category) = by_id.get(&f.transaction_id)?;
                 Some(LargeExpense {
                     transaction_id: f.transaction_id,
-                    date,
-                    description: stored.transaction.description.clone(),
-                    amount: stored.transaction.amount,
-                    category: stored.transaction.category.clone(),
+                    date: *date,
+                    description: description.clone(),
+                    amount: *amount,
+                    category: category.clone(),
                     detail: f.detail,
                 })
             })
@@ -3525,22 +3622,14 @@ impl Store {
     ///
     /// Warnings sort before info, capped at 5 total so the Dashboard card
     /// never turns into another full list to scroll through.
-    /// The average number of distinct calendar days with any spend in
-    /// `category`, across whichever of the `lookback_months` calendar
-    /// months strictly before `before` actually had activity in that
-    /// category. Months with no activity at all are excluded rather than
-    /// counted as zero — a category that's simply new shouldn't be judged
-    /// from an empty month. Returns `None` when none of the lookback
-    /// months had any activity, so `dashboard_insights` can fall back to
-    /// its existing permissive pace-projection behavior instead of
-    /// treating "no history yet" as "always a lump sum."
-    fn average_spend_days_per_active_month(
-        &self,
-        category: &str,
-        before: NaiveDate,
-        lookback_months: u32,
-    ) -> rusqlite::Result<Option<f64>> {
-        let mut stmt = self.conn.prepare(
+    /// The number of distinct calendar days with any spend in `category`
+    /// during one specific calendar month — shared by
+    /// `average_spend_days_per_active_month` (trailing months) and
+    /// `dashboard_insights` (the current month, when there's no trailing
+    /// history to lean on).
+    fn distinct_spend_days_in_month(&self, category: &str, year: i32, month: u32) -> rusqlite::Result<i64> {
+        let month_key = format!("{year:04}-{month:02}");
+        self.conn.query_row(
             "SELECT COUNT(DISTINCT date) FROM (
                 SELECT date FROM transactions
                 WHERE category = ?1 AND substr(date, 1, 7) = ?2
@@ -3554,14 +3643,31 @@ impl Store {
                       AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
                       AND t.deleted_at IS NULL
              )",
-        )?;
+            params![category, month_key],
+            |row| row.get(0),
+        )
+    }
 
+    /// The average number of distinct calendar days with any spend in
+    /// `category`, across whichever of the `lookback_months` calendar
+    /// months strictly before `before` actually had activity in that
+    /// category. Months with no activity at all are excluded rather than
+    /// counted as zero — a category that's simply new shouldn't be judged
+    /// from an empty month. Returns `None` when none of the lookback
+    /// months had any activity, so `dashboard_insights` can fall back to
+    /// its own no-history handling instead of treating "no history yet" as
+    /// "always a lump sum."
+    fn average_spend_days_per_active_month(
+        &self,
+        category: &str,
+        before: NaiveDate,
+        lookback_months: u32,
+    ) -> rusqlite::Result<Option<f64>> {
         let (mut year, mut month) = (before.year(), before.month());
         let mut active_month_days = Vec::new();
         for _ in 0..lookback_months {
             (year, month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
-            let month_key = format!("{year:04}-{month:02}");
-            let days: i64 = stmt.query_row(params![category, month_key], |row| row.get(0))?;
+            let days = self.distinct_spend_days_in_month(category, year, month)?;
             if days > 0 {
                 active_month_days.push(days as f64);
             }
@@ -3588,13 +3694,33 @@ impl Store {
                 if actual.budget_group != "flexible" || actual.budgeted <= Decimal::ZERO {
                     continue;
                 }
-                if let Some(avg_days) = self.average_spend_days_per_active_month(&actual.category, first_of_month, 3)? {
-                    if avg_days < 2.0 {
+                match self.average_spend_days_per_active_month(&actual.category, first_of_month, 3)? {
+                    Some(avg_days) if avg_days < 2.0 => {
                         // Historically a single lump-sum charge a month
                         // (e.g. an occasional vet bill under "Pet Care") —
                         // linear day-of-month extrapolation only makes
                         // sense for spend that actually accrues gradually.
                         continue;
+                    }
+                    Some(_) => {}
+                    None => {
+                        // No trailing history at all for this category —
+                        // the same ambiguity a genuinely new "Dining Out"
+                        // charge has, which must still pace-project off a
+                        // single data point (see
+                        // `dashboard_insights_flags_a_category_on_pace_to_exceed_its_budget`).
+                        // But when the *entire* month-to-date total came
+                        // from a single calendar day and already dwarfs
+                        // the whole monthly budget on its own, that reads
+                        // far more like a one-off big-ticket purchase (new
+                        // floors, an appliance) than the start of a
+                        // gradual pattern, even with no prior months to
+                        // confirm it either way.
+                        let single_day_so_far = self.distinct_spend_days_in_month(&actual.category, year, month)? < 2;
+                        let dwarfs_budget = actual.actual.abs() >= actual.budgeted * Decimal::from(3);
+                        if single_day_so_far && dwarfs_budget {
+                            continue;
+                        }
                     }
                 }
                 let projected = actual.actual * Decimal::from(days_in_month) / Decimal::from(days_elapsed);
@@ -4599,14 +4725,14 @@ impl Store {
     /// picture. Excludes `apply_debt_payment`'s generated transactions,
     /// same as `all_transactions` — see its doc comment.
     pub fn monthly_totals(&self, year: i32, month: u32) -> rusqlite::Result<(Decimal, Decimal)> {
-        let month_key = format!("{year:04}-{month:02}");
+        let (first, next_first) = month_bounds(year, month);
         let mut stmt = self.conn.prepare(
             "SELECT amount FROM transactions
-             WHERE substr(date, 1, 7) = ?1
+             WHERE date >= ?1 AND date < ?2
                    AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
                    AND deleted_at IS NULL",
         )?;
-        let rows = stmt.query_map(params![month_key], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map(params![first.to_string(), next_first.to_string()], |row| row.get::<_, String>(0))?;
 
         let mut income = Decimal::ZERO;
         let mut expense = Decimal::ZERO;
@@ -4619,6 +4745,48 @@ impl Store {
             }
         }
         Ok((income, expense))
+    }
+
+    /// Same computation as `monthly_totals`, batched across every month in
+    /// `[from_year/from_month, to_year/to_month]` (inclusive) in one query
+    /// instead of one query per month — used by the Cash Flow page's
+    /// trailing-window and custom-range views, both of which otherwise
+    /// looped calling `monthly_totals` once per month. A month in the
+    /// range with no transactions simply has no entry in the returned map
+    /// rather than a `(0, 0)` row — callers already default a missing key
+    /// to zero (matching `monthly_totals`'s own zero-activity behavior).
+    pub fn monthly_totals_for_range(
+        &self,
+        from_year: i32,
+        from_month: u32,
+        to_year: i32,
+        to_month: u32,
+    ) -> rusqlite::Result<std::collections::HashMap<(i32, u32), (Decimal, Decimal)>> {
+        let (range_start, _) = month_bounds(from_year, from_month);
+        let (_, range_end) = month_bounds(to_year, to_month);
+        let mut stmt = self.conn.prepare(
+            "SELECT date, amount FROM transactions
+             WHERE date >= ?1 AND date < ?2
+                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND deleted_at IS NULL",
+        )?;
+        let rows = stmt.query_map(params![range_start.to_string(), range_end.to_string()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut totals: std::collections::HashMap<(i32, u32), (Decimal, Decimal)> = std::collections::HashMap::new();
+        for row in rows {
+            let (date_str, amount_str) = row?;
+            let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").expect("date stored by this crate must be valid");
+            let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
+            let entry = totals.entry((date.year(), date.month())).or_insert((Decimal::ZERO, Decimal::ZERO));
+            if amount > Decimal::ZERO {
+                entry.0 += amount;
+            } else if amount < Decimal::ZERO {
+                entry.1 -= amount;
+            }
+        }
+        Ok(totals)
     }
 
     /// Total spend per category (as positive "spent" numbers) across every
@@ -4957,6 +5125,15 @@ fn annual_multiplier(cadence: &str) -> Decimal {
 /// between its first day and the next month's first day, rather than a
 /// hand-maintained 30/31/28 table, so leap Februaries fall out for free.
 fn days_in_month(year: i32, month: u32) -> i64 {
+    let (first, next_first) = month_bounds(year, month);
+    (next_first - first).num_days()
+}
+
+/// The first day of `year`/`month` and the first day of the month after
+/// it — an exclusive-upper-bound range (`date >= first AND date <
+/// next_first`) that, unlike `substr(date, 1, 7) = ?`, SQLite can actually
+/// use an index on `date` to satisfy.
+fn month_bounds(year: i32, month: u32) -> (NaiveDate, NaiveDate) {
     let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid first-of-month");
     let next_first = if month == 12 {
         NaiveDate::from_ymd_opt(year + 1, 1, 1)
@@ -4964,7 +5141,7 @@ fn days_in_month(year: i32, month: u32) -> i64 {
         NaiveDate::from_ymd_opt(year, month + 1, 1)
     }
     .expect("valid first-of-next-month");
-    (next_first - first).num_days()
+    (first, next_first)
 }
 
 /// Adds one calendar month, clamping the day into the target month if it
@@ -5065,6 +5242,28 @@ mod tests {
             .conn
             .query_row("SELECT member_id FROM transactions WHERE account_id = ?1", params![account_id], |row| row.get(0))
             .unwrap()
+    }
+
+    // Schema.
+
+    #[test]
+    fn init_schema_creates_every_performance_index_including_the_ones_added_after_migrations() {
+        let store = Store::open_in_memory().unwrap();
+        let mut stmt = store.conn.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").unwrap();
+        let names: std::collections::HashSet<String> =
+            stmt.query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+
+        for expected in [
+            "idx_transactions_fingerprint",
+            "idx_transactions_account_date",
+            "idx_transactions_category_date",
+            "idx_transactions_date",
+            "idx_budgets_period",
+            "idx_transaction_splits_transaction_id",
+            "idx_debt_payments_generated_transaction_id",
+        ] {
+            assert!(names.contains(expected), "expected index {expected} to exist, got {names:?}");
+        }
     }
 
     #[test]
@@ -8858,6 +9057,207 @@ mod tests {
         assert!(flags.iter().all(|f| f.kind != "duplicate"), "19 days apart is a normal monthly bill, got {flags:?}");
     }
 
+    // Boundary cases for the sliding-window/bucketed rewrite of
+    // `anomaly_flags` — a wrong rewrite here would silently change which
+    // transactions get flagged, so these exercise the exact edges of
+    // every threshold in its doc comment.
+
+    #[test]
+    fn flags_a_transaction_backed_by_history_exactly_180_days_back_but_not_181() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    // Exactly 180 days before 2026-08-01 is 2026-02-02 —
+                    // must still count (the window is `>=`, not `>`).
+                    tx("2026-02-02", "Cafe One", "-20.00"),
+                    tx("2026-03-01", "Cafe Two", "-20.00"),
+                    tx("2026-04-01", "Cafe Three", "-20.00"),
+                    tx("2026-08-01", "Fancy Steakhouse", "-200.00"),
+                ],
+            )
+            .unwrap();
+        let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
+        for id in &ids {
+            store.set_category(*id, "Dining Out", CategorySource::User, None).unwrap();
+        }
+
+        let flags = store.anomaly_flags().unwrap();
+        assert!(
+            flags.iter().any(|f| f.kind == "large" && f.transaction_id == *ids.last().unwrap()),
+            "a history item exactly 180 days back must still count: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn does_not_count_history_181_days_back_toward_the_baseline() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    // 181 days before 2026-08-01 is 2026-02-01 — one day
+                    // too old, so only 2 of these 3 fall in-window,
+                    // leaving too little history to judge (< 3).
+                    tx("2026-02-01", "Cafe Zero", "-20.00"),
+                    tx("2026-03-01", "Cafe Two", "-20.00"),
+                    tx("2026-04-01", "Cafe Three", "-20.00"),
+                    tx("2026-08-01", "Fancy Steakhouse", "-200.00"),
+                ],
+            )
+            .unwrap();
+        let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
+        for id in &ids {
+            store.set_category(*id, "Dining Out", CategorySource::User, None).unwrap();
+        }
+
+        let flags = store.anomaly_flags().unwrap();
+        assert!(
+            flags.iter().all(|f| f.transaction_id != *ids.last().unwrap()),
+            "only 2 of the 3 history items are in-window, too little to judge: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn the_50_dollar_floor_is_exclusive_49_dollars_99_never_flags_even_over_the_multiple() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        // Baseline is $10 (2.5x = $25) — small enough that the $50 floor,
+        // not the multiple, is the binding constraint being tested.
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-07-01", "Cafe One", "-10.00"),
+                    tx("2026-07-10", "Cafe Two", "-10.00"),
+                    tx("2026-07-20", "Cafe Three", "-10.00"),
+                    tx("2026-08-01", "Right At The Floor", "-49.99"),
+                ],
+            )
+            .unwrap();
+        let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
+        for id in &ids {
+            store.set_category(*id, "Dining Out", CategorySource::User, None).unwrap();
+        }
+
+        let flags = store.anomaly_flags().unwrap();
+        assert!(
+            flags.iter().all(|f| f.transaction_id != *ids.last().unwrap()),
+            "$49.99 is over the 2.5x multiple but under the $50 floor, must not flag: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn just_over_the_50_dollar_floor_does_flag() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-07-01", "Cafe One", "-10.00"),
+                    tx("2026-07-10", "Cafe Two", "-10.00"),
+                    tx("2026-07-20", "Cafe Three", "-10.00"),
+                    tx("2026-08-01", "Just Over The Floor", "-50.01"),
+                ],
+            )
+            .unwrap();
+        let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
+        for id in &ids {
+            store.set_category(*id, "Dining Out", CategorySource::User, None).unwrap();
+        }
+
+        let flags = store.anomaly_flags().unwrap();
+        assert!(
+            flags.iter().any(|f| f.kind == "large" && f.transaction_id == *ids.last().unwrap()),
+            "$50.01 clears both the multiple and the floor: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn flags_duplicates_exactly_3_days_apart_but_not_4() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[tx("2026-08-01", "Netflix", "-15.99"), tx("2026-08-04", "Netflix", "-15.99")],
+            )
+            .unwrap();
+
+        let flags = store.anomaly_flags().unwrap();
+        assert_eq!(
+            flags.iter().filter(|f| f.kind == "duplicate").count(),
+            2,
+            "exactly 3 days apart must still flag both sides: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn does_not_flag_duplicates_exactly_4_days_apart() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[tx("2026-08-01", "Netflix", "-15.99"), tx("2026-08-05", "Netflix", "-15.99")],
+            )
+            .unwrap();
+
+        let flags = store.anomaly_flags().unwrap();
+        assert!(flags.iter().all(|f| f.kind != "duplicate"), "4 days apart is one day past the window: {flags:?}");
+    }
+
+    #[test]
+    fn the_sliding_window_keeps_two_categories_independent_when_interleaved_out_of_date_order() {
+        // Regression guard for the rewrite specifically: rows are grouped
+        // by category and sorted by date *within* the rewrite, but stored
+        // (and originally iterated) in insertion/id order — this
+        // interleaves two categories' dates and inserts them out of
+        // chronological order within each category, so a grouping or
+        // sort bug would either cross-contaminate the two baselines or
+        // miscompute a window.
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-07-20", "Cafe Three", "-20.00"), // Dining Out, out of date order
+                    tx("2026-07-01", "Gas Station A", "-40.00"), // Transportation
+                    tx("2026-07-01", "Cafe One", "-20.00"),   // Dining Out
+                    tx("2026-07-15", "Gas Station B", "-40.00"), // Transportation
+                    tx("2026-07-10", "Cafe Two", "-20.00"),   // Dining Out
+                    tx("2026-07-25", "Gas Station C", "-40.00"), // Transportation
+                    tx("2026-08-01", "Fancy Steakhouse", "-200.00"), // Dining Out anomaly
+                    tx("2026-08-01", "Airport Car Rental", "-400.00"), // Transportation anomaly
+                ],
+            )
+            .unwrap();
+        let ids: Vec<i64> = store.all_transactions().unwrap().iter().map(|t| t.id).collect();
+        let dining_ids = [ids[0], ids[2], ids[4], ids[6]];
+        let transport_ids = [ids[1], ids[3], ids[5], ids[7]];
+        for id in dining_ids {
+            store.set_category(id, "Dining Out", CategorySource::User, None).unwrap();
+        }
+        for id in transport_ids {
+            store.set_category(id, "Transportation", CategorySource::User, None).unwrap();
+        }
+
+        let flags = store.anomaly_flags().unwrap();
+        let large_flags: std::collections::HashSet<i64> =
+            flags.iter().filter(|f| f.kind == "large").map(|f| f.transaction_id).collect();
+
+        assert_eq!(
+            large_flags,
+            std::collections::HashSet::from([ids[6], ids[7]]),
+            "each category's own anomaly must be flagged, with no cross-contamination: {flags:?}"
+        );
+    }
+
     // Large expenses in range (cash-flow chart's per-month drill-down).
 
     #[test]
@@ -9135,6 +9535,64 @@ mod tests {
         assert!(
             insights.iter().any(|i| i.kind == "pace" && i.message.contains("Dining Out")),
             "expected a pace insight for a historically-recurring category even when front-loaded: {insights:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_insights_skips_pace_projection_for_a_brand_new_category_dominated_by_one_outsized_purchase() {
+        // Reproduces a real report: "Household" (budgeted $100, flexible)
+        // had never been used before, then got a single $1,500 flooring
+        // charge on day 2. With zero trailing history,
+        // `average_spend_days_per_active_month` returns `None` — but
+        // unlike a modest first charge (see
+        // `dashboard_insights_flags_a_category_on_pace_to_exceed_its_budget`,
+        // which must still pace-project), a lone transaction that already
+        // dwarfs the entire monthly budget reads as a one-off big-ticket
+        // purchase even without prior months to confirm it.
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Household", "2026-09", "100.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(account, &[tx("2026-09-02", "Flooring Co", "-1500.00")])
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Household", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-09-07".parse().unwrap()).unwrap();
+
+        assert!(
+            !insights.iter().any(|i| i.kind == "pace" && i.message.contains("Household")),
+            "expected no pace insight for a brand-new category dominated by one outsized purchase: {insights:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_insights_still_pace_projects_a_brand_new_category_once_spend_spans_more_than_one_day() {
+        // Contrast case: the brand-new-category dampener above must not
+        // become "skip pacing for any big first month" — once a
+        // history-less category has spend on 2+ distinct days this month,
+        // it's no longer a single dominating purchase, so the existing
+        // permissive default (still project) applies even though the
+        // running total is well past the budget.
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Household", "2026-09", "100.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(
+                account,
+                &[tx("2026-09-02", "Flooring Co", "-800.00"), tx("2026-09-05", "Hardware Store", "-800.00")],
+            )
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Household", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-09-07".parse().unwrap()).unwrap();
+
+        assert!(
+            insights.iter().any(|i| i.kind == "pace" && i.message.contains("Household")),
+            "expected a pace insight once a brand-new category's spend spans more than one day: {insights:?}"
         );
     }
 
@@ -10436,6 +10894,36 @@ mod tests {
 
         assert_eq!(income, "3000.00".parse().unwrap());
         assert_eq!(expense, "120.00".parse().unwrap());
+    }
+
+    #[test]
+    fn monthly_totals_for_range_matches_calling_monthly_totals_once_per_month() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-06-01", "Payroll Deposit", "3000.00"),
+                    tx("2026-06-05", "Green Leaf Grocers", "-80.00"),
+                    tx("2026-07-01", "Payroll Deposit", "3000.00"),
+                    // August has zero transactions -- must still report as
+                    // (0, 0) via the caller's default, not be a crash or a
+                    // dropped month.
+                    tx("2026-09-01", "Payroll Deposit", "3000.00"),
+                    tx("2026-09-10", "Fresh Market", "-40.00"),
+                ],
+            )
+            .unwrap();
+
+        let batched = store.monthly_totals_for_range(2026, 6, 2026, 9).unwrap();
+
+        for (year, month) in [(2026, 6), (2026, 7), (2026, 8), (2026, 9)] {
+            let expected = store.monthly_totals(year, month).unwrap();
+            let actual = batched.get(&(year, month)).copied().unwrap_or((Decimal::ZERO, Decimal::ZERO));
+            assert_eq!(actual, expected, "mismatch for {year}-{month:02}");
+        }
+        assert!(!batched.contains_key(&(2026, 8)), "a zero-activity month should have no entry, not a (0,0) row");
     }
 
     #[test]

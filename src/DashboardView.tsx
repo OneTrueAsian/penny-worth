@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import type {
   Account,
   AccountContributionDelta,
@@ -18,7 +18,7 @@ import type {
 import { DonutChart, LineChart, ProgressRing, Sparkline, fmtMoneyShort } from "./charts";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
-import { groupOf, owedAmount } from "./accountGroups";
+import { groupOf, netWorthContribution, owedAmount } from "./accountGroups";
 import { netWorthByMember } from "./memberBreakdowns";
 import {
   LAYOUT_PRESETS,
@@ -42,6 +42,13 @@ function LedgerQaBox({
 }) {
   const [question, setQuestion] = useState("");
   const [result, setResult] = useState<QaResult | null>(null);
+  const [showExamples, setShowExamples] = useState(false);
+  // Picked once per mount, not re-randomized on every render — otherwise
+  // it'd shuffle out from under the user mid-interaction. Previously
+  // always showed the same one example, which (combined with no other
+  // hint of what the box can do) made a genuinely novel feature — natural-
+  // language questions answered entirely from local data — easy to miss.
+  const [placeholderExample] = useState(() => LEDGER_QA_EXAMPLES[Math.floor(Math.random() * LEDGER_QA_EXAMPLES.length)]);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -54,12 +61,26 @@ function LedgerQaBox({
     <div className="card ledger-qa-card">
       <div className="card-head">
         <span className="reports-section-title">Ask your ledger</span>
+        <button type="button" className="modal-secondary" onClick={() => setShowExamples((v) => !v)}>
+          {showExamples ? "Hide examples" : "See examples"}
+        </button>
       </div>
+      {showExamples && (
+        <ul className="ledger-qa-examples">
+          {LEDGER_QA_EXAMPLES.map((example) => (
+            <li key={example}>
+              <button type="button" onClick={() => setQuestion(example)}>
+                {example}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <form className="category-create-form" onSubmit={handleSubmit}>
         <input
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          placeholder={`e.g. "${LEDGER_QA_EXAMPLES[0]}"`}
+          placeholder={`e.g. "${placeholderExample}"`}
         />
         <button type="submit" disabled={!question.trim()}>
           Ask
@@ -93,25 +114,6 @@ const GROUP_LABELS: Record<string, string> = {
   flexible: "Flexible Spending",
   nonmonthly: "Non-Monthly",
 };
-
-function accountGroup(accountType: string): string {
-  if (accountType === "checking" || accountType === "savings") return "cash";
-  if (accountType === "credit") return "credit";
-  if (accountType === "loan") return "loan";
-  if (accountType === "investment") return "investment";
-  return "other";
-}
-
-/** Same convention as ReportsView's netWorthContribution: a credit
- * account's starting_balance is a limit (owed starts at $0); a loan's
- * starting_balance is the amount already owed (counts as debt in full
- * from the start); everything else is its balance as-is. */
-function netWorthContribution(a: Account): number {
-  const group = accountGroup(a.account_type);
-  if (group === "credit") return parseFloat(a.current_balance) - parseFloat(a.starting_balance);
-  if (group === "loan") return -parseFloat(a.current_balance);
-  return parseFloat(a.current_balance);
-}
 
 type StatKey = "networth" | "cash" | "debt" | "investments";
 
@@ -241,12 +243,19 @@ export function DashboardView({
   const netWorthDelta = netWorthHistory.length ? netWorth - parseFloat(netWorthHistory[0].value) : 0;
   const netWorthWithAssets = netWorth + assetsTotal;
 
-  const cashAccounts = accounts.filter((a) => accountGroup(a.account_type) === "cash");
-  const debtAccounts = accounts.filter((a) => {
-    const group = accountGroup(a.account_type);
-    return group === "credit" || group === "loan";
-  });
-  const investmentAccounts = accounts.filter((a) => accountGroup(a.account_type) === "investment");
+  const cashAccounts = useMemo(() => accounts.filter((a) => groupOf(a.account_type) === "cash"), [accounts]);
+  const debtAccounts = useMemo(
+    () =>
+      accounts.filter((a) => {
+        const group = groupOf(a.account_type);
+        return group === "credit" || group === "loan";
+      }),
+    [accounts],
+  );
+  const investmentAccounts = useMemo(
+    () => accounts.filter((a) => groupOf(a.account_type) === "investment"),
+    [accounts],
+  );
 
   const cash = cashAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
   const debt = debtAccounts.reduce((s, a) => s + netWorthContribution(a), 0);
@@ -286,15 +295,18 @@ export function DashboardView({
   const investmentsDelta = investmentsSpark.length ? investmentsSpark[investmentsSpark.length - 1] - investmentsSpark[0] : 0;
   const monthsSpan = netWorthHistory.length;
 
-  const breakdowns: Record<StatKey, { name: string; amount: number }[]> = {
-    networth: [
-      ...accounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
-      ...(assetsTotal !== 0 ? [{ name: "Property & Valuables", amount: assetsTotal }] : []),
-    ],
-    cash: cashAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
-    debt: debtAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
-    investments: investmentAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
-  };
+  const breakdowns: Record<StatKey, { name: string; amount: number }[]> = useMemo(
+    () => ({
+      networth: [
+        ...accounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
+        ...(assetsTotal !== 0 ? [{ name: "Property & Valuables", amount: assetsTotal }] : []),
+      ],
+      cash: cashAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
+      debt: debtAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
+      investments: investmentAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
+    }),
+    [accounts, assetsTotal, cashAccounts, debtAccounts, investmentAccounts],
+  );
 
   // "What changed" rows for each stat card's own detail panel — which
   // account(s) actually drove the trend shown above, not just the total.
@@ -304,17 +316,19 @@ export function DashboardView({
   // debtSpark/debtDelta use above, since a growing loan balance should
   // read as a positive change (bad), not the negative net-worth-
   // contribution delta it actually is.
-  const toRows = (deltas: AccountContributionDelta[], sign = 1) =>
-    deltas
-      .map((d) => ({ name: d.name, delta: sign * parseFloat(d.delta) }))
-      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-      .slice(0, 5);
-  const changeBreakdowns: Record<StatKey, { name: string; delta: number }[]> = {
-    networth: toRows(accountContributionDeltas),
-    cash: toRows(accountContributionDeltas.filter((d) => d.group === "cash")),
-    debt: toRows(accountContributionDeltas.filter((d) => d.group === "credit" || d.group === "loan"), -1),
-    investments: toRows(accountContributionDeltas.filter((d) => d.group === "investment")),
-  };
+  const changeBreakdowns: Record<StatKey, { name: string; delta: number }[]> = useMemo(() => {
+    const toRows = (deltas: AccountContributionDelta[], sign = 1) =>
+      deltas
+        .map((d) => ({ name: d.name, delta: sign * parseFloat(d.delta) }))
+        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+        .slice(0, 5);
+    return {
+      networth: toRows(accountContributionDeltas),
+      cash: toRows(accountContributionDeltas.filter((d) => d.group === "cash")),
+      debt: toRows(accountContributionDeltas.filter((d) => d.group === "credit" || d.group === "loan"), -1),
+      investments: toRows(accountContributionDeltas.filter((d) => d.group === "investment")),
+    };
+  }, [accountContributionDeltas]);
   // Which arrow direction reads as "good" for each card's change rows —
   // inverted for Debt, same as debtTrendingDown/debtSpark above.
   const changeGoodDirection: Record<StatKey, "up" | "down"> = {
@@ -328,26 +342,42 @@ export function DashboardView({
     setExpandedStat((prev) => (prev === key ? null : key));
   }
 
-  const donutData = spendingThisMonth.slice(0, 6).map((c, i) => ({
-    label: c.category,
-    value: parseFloat(c.amount),
-    color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-  }));
+  const donutData = useMemo(
+    () =>
+      spendingThisMonth.slice(0, 6).map((c, i) => ({
+        label: c.category,
+        value: parseFloat(c.amount),
+        color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
+      })),
+    [spendingThisMonth],
+  );
   // The center total matches what the ring itself visually sums to (the
   // top 6 categories charted), not spendingThisMonth's full, possibly
   // longer tail — so the number and the ring never disagree.
   const donutTotal = donutData.reduce((s, d) => s + d.value, 0);
 
-  const upcoming = recurring
-    .filter((r) => parseFloat(r.amount) < 0)
-    .slice()
-    .sort((a, b) => (a.next_date < b.next_date ? -1 : 1))
-    .slice(0, 5);
+  const upcoming = useMemo(
+    () =>
+      recurring
+        .filter((r) => parseFloat(r.amount) < 0)
+        .slice()
+        .sort((a, b) => (a.next_date < b.next_date ? -1 : 1))
+        .slice(0, 5),
+    [recurring],
+  );
 
-  const recent = transactions
-    .slice()
-    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id))
-    .slice(0, 8);
+  // Sorts the *entire* transaction list just to take the top 8 — the most
+  // expensive of this file's derived values for a multi-year ledger, and
+  // one with no dependency on which widgets are even on the layout, so
+  // memoizing it is a pure win with no tradeoff.
+  const recent = useMemo(
+    () =>
+      transactions
+        .slice()
+        .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id))
+        .slice(0, 8),
+    [transactions],
+  );
 
   // Pinned-report widgets — condensed, read-only summaries of the same
   // sections that live on Cash Flow/Investments/Reports, each linking back
@@ -355,25 +385,31 @@ export function DashboardView({
   const topMerchantsList = (topCategoriesData?.top_merchants ?? []).slice(0, 5);
   const maxTopMerchant = topMerchantsList.length ? Math.max(...topMerchantsList.map((m) => parseFloat(m.amount))) : 0;
 
-  const payoffDebtAccounts = accounts.filter((a) => {
-    const g = groupOf(a.account_type);
-    return (g === "credit" || g === "loan") && owedAmount(a) > 0 && !a.excluded_from_debt_payoff;
-  });
+  const payoffDebtAccounts = useMemo(
+    () =>
+      accounts.filter((a) => {
+        const g = groupOf(a.account_type);
+        return (g === "credit" || g === "loan") && owedAmount(a) > 0 && !a.excluded_from_debt_payoff;
+      }),
+    [accounts],
+  );
   const totalOwed = payoffDebtAccounts.reduce((s, a) => s + owedAmount(a), 0);
 
-  const holdingsByClass = new Map<string, number>();
-  for (const h of holdings) {
-    const key = h.asset_class ?? "Other";
-    holdingsByClass.set(key, (holdingsByClass.get(key) ?? 0) + parseFloat(h.value));
-  }
-  const allocationData = Array.from(holdingsByClass.entries()).map(([label, value], i) => ({
-    label,
-    value,
-    color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-  }));
+  const allocationData = useMemo(() => {
+    const holdingsByClass = new Map<string, number>();
+    for (const h of holdings) {
+      const key = h.asset_class ?? "Other";
+      holdingsByClass.set(key, (holdingsByClass.get(key) ?? 0) + parseFloat(h.value));
+    }
+    return Array.from(holdingsByClass.entries()).map(([label, value], i) => ({
+      label,
+      value,
+      color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
+    }));
+  }, [holdings]);
   const allocationTotal = allocationData.reduce((s, d) => s + d.value, 0);
 
-  const netWorthByMemberRows = netWorthByMember(accounts, assets);
+  const netWorthByMemberRows = useMemo(() => netWorthByMember(accounts, assets), [accounts, assets]);
 
   // Every widget's content, keyed by id — the layout array below just
   // decides which of these render, and in what order. Wrapping each

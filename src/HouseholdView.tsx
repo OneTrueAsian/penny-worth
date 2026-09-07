@@ -18,6 +18,8 @@ export function HouseholdView({
   familyMembers,
   memberBudgetActuals,
   monthLabel,
+  year,
+  month,
   onPrevMonth,
   onNextMonth,
 }: {
@@ -27,6 +29,12 @@ export function HouseholdView({
   familyMembers: FamilyMember[];
   memberBudgetActuals: MemberBudgetActual[];
   monthLabel: string;
+  /** Same year/month `monthLabel` and `memberBudgetActuals` are already
+   * scoped to (the Budget tab's own month cursor) — used to scope the
+   * spending/income cards below to the same month, so this page doesn't
+   * mix an all-time figure against a monthly one on the same screen. */
+  year: number;
+  month: number;
   onPrevMonth: () => void;
   onNextMonth: () => void;
 }) {
@@ -43,8 +51,10 @@ export function HouseholdView({
     );
   }
 
-  const spending = spendingByMember(transactions);
-  const income = incomeByMember(transactions);
+  const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+  const transactionsThisMonth = transactions.filter((t) => t.date.startsWith(monthKey));
+  const spending = spendingByMember(transactionsThisMonth);
+  const income = incomeByMember(transactionsThisMonth);
   const netWorth = netWorthByMember(accounts, assets);
 
   // Group this month's per-member actuals by category, preserving the
@@ -62,10 +72,20 @@ export function HouseholdView({
 
   return (
     <div className="reports-view">
+      <div className="month-nav">
+        <button type="button" className="modal-secondary" onClick={onPrevMonth} aria-label="Previous month">
+          ‹
+        </button>
+        <span className="month-label">{monthLabel}</span>
+        <button type="button" className="modal-secondary" onClick={onNextMonth} aria-label="Next month">
+          ›
+        </button>
+      </div>
+
       <div className="card">
-        <h2 className="reports-section-title">Spending by person (all-time)</h2>
+        <h2 className="reports-section-title">Spending by person ({monthLabel})</h2>
         {spending.length === 0 ? (
-          <p className="modal-message-secondary">No spending attributed to a specific person yet.</p>
+          <p className="modal-message-secondary">No spending attributed to a specific person this month.</p>
         ) : (
           <ul className="breakdown-list">
             {spending.map((row) => (
@@ -79,9 +99,9 @@ export function HouseholdView({
       </div>
 
       <div className="card">
-        <h2 className="reports-section-title">Income by person (all-time)</h2>
+        <h2 className="reports-section-title">Income by person ({monthLabel})</h2>
         {income.length === 0 ? (
-          <p className="modal-message-secondary">No income attributed to a specific person yet.</p>
+          <p className="modal-message-secondary">No income attributed to a specific person this month.</p>
         ) : (
           <ul className="breakdown-list">
             {income.map((row) => (
@@ -96,6 +116,7 @@ export function HouseholdView({
 
       <div className="card">
         <h2 className="reports-section-title">Net worth by person</h2>
+        <p className="modal-message-secondary">Always as of today — net worth isn't a monthly figure like the cards above.</p>
         <ul className="breakdown-list">
           {netWorth.map((row) => (
             <li key={row.name}>
@@ -107,15 +128,6 @@ export function HouseholdView({
       </div>
 
       <div className="card">
-        <div className="month-nav">
-          <button type="button" className="modal-secondary" onClick={onPrevMonth} aria-label="Previous month">
-            ‹
-          </button>
-          <span className="month-label">{monthLabel}</span>
-          <button type="button" className="modal-secondary" onClick={onNextMonth} aria-label="Next month">
-            ›
-          </button>
-        </div>
         <h2 className="reports-section-title">Budget, by category and person</h2>
         <p className="modal-message-secondary">
           Budgets are shared per category — there's no separate target per person, just each person's share of what's

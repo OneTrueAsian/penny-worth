@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Account, FamilyMember } from "./types";
+import type { Account, AccountContributionDelta, FamilyMember, NetWorthPoint } from "./types";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 import { GROUP_LABELS, GROUP_ORDER, groupOf, netWorthContribution } from "./accountGroups";
@@ -239,6 +239,8 @@ function AccountCard({
 export function AccountsView({
   accounts,
   manualAssetsTotal,
+  netWorthHistory,
+  accountContributionDeltas,
   onSetStartingBalance,
   onSetBalanceOverride,
   onUpdateAccountType,
@@ -253,6 +255,12 @@ export function AccountsView({
    * folded into the Total Assets / Net Worth stats here alongside real
    * accounts, same as before the two pages split apart. */
   manualAssetsTotal: number;
+  /** Same trailing-months series and per-account deltas the Dashboard's
+   * stat cards use for their own "what changed" section — fetched once in
+   * App.tsx for the Dashboard, reused here rather than a second backend
+   * call, since the underlying data is identical either way. */
+  netWorthHistory: NetWorthPoint[];
+  accountContributionDeltas: AccountContributionDelta[];
   onSetStartingBalance: (accountId: number, balance: string) => void;
   onSetBalanceOverride: (accountId: number, balance: string) => void;
   onUpdateAccountType: (accountId: number, accountType: string) => void;
@@ -286,6 +294,34 @@ export function AccountsView({
     liabilities: liabilityAccounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })),
     networth: [...accounts.map((a) => ({ name: a.name, amount: netWorthContribution(a) })), ...manualAssetsRow],
   };
+
+  // "What changed" rows for each stat's own detail panel — same
+  // computation as the Dashboard's stat cards (see DashboardView.tsx),
+  // just regrouped onto this page's assets/liabilities/net-worth split
+  // instead of Dashboard's cash/debt/investments one. `sign` flips
+  // liabilities to a plain "amount owed" magnitude, same reasoning as
+  // Dashboard's debt tile: a growing loan balance should read as a
+  // positive change (bad), not the negative net-worth-contribution delta
+  // it actually is.
+  const toChangeRows = (deltas: AccountContributionDelta[], sign = 1) =>
+    deltas
+      .map((d) => ({ name: d.name, delta: sign * parseFloat(d.delta) }))
+      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+      .slice(0, 5);
+  const changeBreakdowns: Record<AccountStatKey, { name: string; delta: number }[]> = {
+    assets: toChangeRows(accountContributionDeltas.filter((d) => d.group !== "credit" && d.group !== "loan")),
+    liabilities: toChangeRows(
+      accountContributionDeltas.filter((d) => d.group === "credit" || d.group === "loan"),
+      -1,
+    ),
+    networth: toChangeRows(accountContributionDeltas),
+  };
+  const changeGoodDirection: Record<AccountStatKey, "up" | "down"> = {
+    assets: "up",
+    liabilities: "down",
+    networth: "up",
+  };
+  const monthsSpan = netWorthHistory.length;
 
   const rowProps = {
     editing,
@@ -343,6 +379,9 @@ export function AccountsView({
         isOpen={expandedStat !== null}
         title={expandedStat ? ACCOUNT_STAT_LABELS[expandedStat] : null}
         rows={expandedStat ? accountBreakdowns[expandedStat] : null}
+        changeRows={expandedStat ? changeBreakdowns[expandedStat] : null}
+        changeLabel={monthsSpan > 1 ? `over ${monthsSpan}mo` : undefined}
+        changeGoodDirection={expandedStat ? changeGoodDirection[expandedStat] : "up"}
         emptyMessage="No accounts contribute to this yet."
         onClose={() => expandedStat && toggleStat(expandedStat)}
       />

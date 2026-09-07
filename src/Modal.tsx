@@ -8,7 +8,11 @@ import { WIDGET_CATALOG, type WidgetId } from "./dashboardLayout";
  * overlay (not the panel) cancels, matching how a native dialog behaves —
  * Escape does too, and focus moves onto the panel on open, since every
  * dialog in the app goes through this one component (fixing it here fixes
- * all of them, rather than needing this in each of the ~20 dialogs below). */
+ * all of them, rather than needing this in each of the ~20 dialogs below).
+ * Tab/Shift+Tab are trapped within the panel while it's open, and focus is
+ * restored to whatever had it beforehand once the dialog closes — without
+ * this, a keyboard or screen-reader user could Tab straight out of any
+ * dialog into the sidebar behind the overlay. */
 function ModalShell({
   title,
   onCancel,
@@ -24,8 +28,40 @@ function ModalShell({
 }) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  // Captured at construction time, before the panel (or any descendant
+  // `autoFocus` input) takes focus — reading `document.activeElement`
+  // inside the effect below would be too late, since React has already
+  // applied `autoFocus` by the time an effect runs.
+  const previouslyFocusedRef = useRef<HTMLElement | null>(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
+  // `onCancel` is a fresh inline closure from the caller on every render of
+  // *their* component (not this one) — if it were a dependency below, any
+  // unrelated re-render of the caller while the dialog is open would fire
+  // this effect's cleanup (restoring focus to whatever was focused before
+  // the dialog opened) and then immediately re-run the mount logic, which
+  // steals focus back onto the inert panel instead of the field the caller
+  // put `autoFocus` on. Reading it via a ref keeps the effect itself tied
+  // only to the dialog's own mount/unmount.
+  const onCancelRef = useRef(onCancel);
+  useEffect(() => {
+    onCancelRef.current = onCancel;
+  });
+
+  // In dev (`tauri dev`'s Vite dev server), `<StrictMode>` in main.tsx
+  // deliberately double-invokes every effect on mount — setup, cleanup,
+  // setup again — to surface exactly this kind of bug. Production builds
+  // (what the e2e suite drives) don't do this, which is why this only
+  // shows up when running against the dev server. Tracking any pending
+  // restore-focus call here, so a setup re-run can cancel it, is what
+  // makes the sequence below a no-op instead of stealing focus.
+  const pendingRestoreRef = useRef<number | null>(null);
 
   useEffect(() => {
+    if (pendingRestoreRef.current !== null) {
+      clearTimeout(pendingRestoreRef.current);
+      pendingRestoreRef.current = null;
+    }
     // Several dialogs have their own `autoFocus` input, which — being a
     // descendant — mounts and claims focus before this effect runs; only
     // take focus here if nothing inside the panel already has it, so this
@@ -34,11 +70,53 @@ function ModalShell({
       panelRef.current?.focus();
     }
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") {
+        onCancelRef.current();
+        return;
+      }
+      if (e.key !== "Tab" || !panelRef.current) return;
+      // A basic focus trap: Tab/Shift+Tab cycle within the dialog's own
+      // focusable elements instead of leaking into the page behind the
+      // overlay — queried fresh on every press since a dialog's own
+      // contents can change while it's open (a field appearing/disabling).
+      const focusable = panelRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      const atEdgeOrOutside = e.shiftKey
+        ? active === first || !panelRef.current.contains(active)
+        : active === last || !panelRef.current.contains(active);
+      if (atEdgeOrOutside) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      }
     }
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onCancel]);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      // Deferred rather than called inline: an inline call here would
+      // fire on StrictMode's simulated dev-only cleanup too, moving
+      // focus off the dialog's autoFocus field a tick before the setup
+      // above re-runs and — finding focus outside the panel — grabs it
+      // onto the inert panel div instead, permanently losing the
+      // autoFocus target even though the dialog never really closed.
+      // Scheduling it lets that re-run's `clearTimeout` above cancel it
+      // first on a false alarm; on a real close there's no re-run to
+      // cancel it, so it still fires, just one tick later.
+      pendingRestoreRef.current = window.setTimeout(() => {
+        pendingRestoreRef.current = null;
+        previouslyFocusedRef.current?.focus();
+      }, 0);
+    };
+    // Mount/unmount only — see the comment on `onCancelRef` above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="modal-overlay" onClick={onCancel}>

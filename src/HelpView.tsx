@@ -550,6 +550,19 @@ const FAQ_ENTRIES: FaqEntry[] = [
       </p>
     ),
   },
+  {
+    question: "Can I ask questions about my spending in plain English?",
+    tags: ["ask your ledger", "question", "search", "natural language", "query", "dashboard"],
+    answer: (
+      <p>
+        Yes — the "Ask your ledger" box at the top of the Dashboard answers
+        questions like "how much did I spend on dining out in July" or
+        "what's my net worth" directly from your own data, with no internet
+        connection or account required. Click "See examples" on the box
+        itself for more of what it understands.
+      </p>
+    ),
+  },
 ];
 
 /** Static, in-app version of the project README — no backend calls, just

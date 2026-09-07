@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -22,18 +22,27 @@ import {
   WhatsNewDialog,
 } from "./Modal";
 import { loadDashboardLayout, saveDashboardLayout, type WidgetId } from "./dashboardLayout";
-import { AccountsView } from "./AccountsView";
-import { BucketsView } from "./BucketsView";
 import { ProfileSwitcher } from "./ProfileSwitcher";
-import { BudgetView } from "./BudgetView";
-import { ReportsView } from "./ReportsView";
-import { SettingsView } from "./SettingsView";
+// `CADENCE_OPTIONS` is used synchronously in the Ledger's own (always-
+// rendered, not tab-gated) bulk "Add to Recurring" control, so
+// `RecurringView`'s module can't be deferred behind `lazy()` the way the
+// other tab views below are — a static import here would force the whole
+// module into the main bundle regardless, making a lazy wrapper around
+// the component alone pointless.
 import { CADENCE_OPTIONS, RecurringView } from "./RecurringView";
-import { InvestmentsView } from "./InvestmentsView";
-import { HouseholdView } from "./HouseholdView";
-import { CashFlowView } from "./CashFlowView";
-import { DashboardView } from "./DashboardView";
-import { HelpView } from "./HelpView";
+// Each tab view is its own chunk, loaded only the first time its tab is
+// actually opened, instead of every tab's code shipping in the one
+// startup bundle regardless of whether the user ever visits it.
+const AccountsView = lazy(() => import("./AccountsView").then((m) => ({ default: m.AccountsView })));
+const BucketsView = lazy(() => import("./BucketsView").then((m) => ({ default: m.BucketsView })));
+const BudgetView = lazy(() => import("./BudgetView").then((m) => ({ default: m.BudgetView })));
+const ReportsView = lazy(() => import("./ReportsView").then((m) => ({ default: m.ReportsView })));
+const SettingsView = lazy(() => import("./SettingsView").then((m) => ({ default: m.SettingsView })));
+const InvestmentsView = lazy(() => import("./InvestmentsView").then((m) => ({ default: m.InvestmentsView })));
+const HouseholdView = lazy(() => import("./HouseholdView").then((m) => ({ default: m.HouseholdView })));
+const CashFlowView = lazy(() => import("./CashFlowView").then((m) => ({ default: m.CashFlowView })));
+const DashboardView = lazy(() => import("./DashboardView").then((m) => ({ default: m.DashboardView })));
+const HelpView = lazy(() => import("./HelpView").then((m) => ({ default: m.HelpView })));
 import { AccountFilterDropdown, type AccountFilterValue } from "./AccountFilterDropdown";
 import { MemberFilterDropdown, type MemberFilterValue } from "./MemberFilterDropdown";
 import { MoreFiltersPopover } from "./MoreFiltersPopover";
@@ -433,6 +442,7 @@ function App({
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [allTags, setAllTags] = useState<string[]>([]);
   const [newTagText, setNewTagText] = useState<Record<number, string>>({});
+  const [bulkTagText, setBulkTagText] = useState("");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
@@ -807,34 +817,51 @@ function App({
   // credit cards are the two account types that represent debt.
   const debtAccounts = accounts.filter((a) => a.account_type === "loan" || a.account_type === "credit");
 
-  const anomalyFlagsByTransaction = new Map<number, AnomalyFlag[]>();
-  for (const flag of anomalyFlags) {
-    const existing = anomalyFlagsByTransaction.get(flag.transaction_id);
-    if (existing) existing.push(flag);
-    else anomalyFlagsByTransaction.set(flag.transaction_id, [flag]);
-  }
+  // Each wrapped in useMemo — this app's own state lives almost entirely
+  // in this one component, so without memoization these three would
+  // rerun on *every* render regardless of cause: a single keystroke into
+  // an unrelated inline edit (a tag, a date) would re-filter and re-sort
+  // the full transaction array for no reason. Real cost for a multi-year
+  // ledger with thousands of rows.
+  const anomalyFlagsByTransaction = useMemo(() => {
+    const map = new Map<number, AnomalyFlag[]>();
+    for (const flag of anomalyFlags) {
+      const existing = map.get(flag.transaction_id);
+      if (existing) existing.push(flag);
+      else map.set(flag.transaction_id, [flag]);
+    }
+    return map;
+  }, [anomalyFlags]);
 
   // Filtering is client-side over the already-loaded ledger — personal-scale
   // data, no need for a backend query just to search/filter it.
-  const filteredTransactions = transactions.filter((t) => {
-    if (searchText.trim() && !t.description.toLowerCase().includes(searchText.trim().toLowerCase())) {
-      return false;
-    }
-    if (filterCategory !== "all" && t.category !== filterCategory) return false;
-    if (filterAccountIds !== "all" && !filterAccountIds.has(t.account_id)) return false;
-    if (filterMemberIds !== "all" && (t.member_id === null || !filterMemberIds.has(t.member_id))) return false;
-    if (filterFrom && t.date < filterFrom) return false;
-    if (filterTo && t.date > filterTo) return false;
-    if (filterTag !== "all" && !t.tags.includes(filterTag)) return false;
-    return true;
-  });
+  const filteredTransactions = useMemo(
+    () =>
+      transactions.filter((t) => {
+        if (searchText.trim() && !t.description.toLowerCase().includes(searchText.trim().toLowerCase())) {
+          return false;
+        }
+        if (filterCategory !== "all" && t.category !== filterCategory) return false;
+        if (filterAccountIds !== "all" && !filterAccountIds.has(t.account_id)) return false;
+        if (filterMemberIds !== "all" && (t.member_id === null || !filterMemberIds.has(t.member_id))) return false;
+        if (filterFrom && t.date < filterFrom) return false;
+        if (filterTo && t.date > filterTo) return false;
+        if (filterTag !== "all" && !t.tags.includes(filterTag)) return false;
+        return true;
+      }),
+    [transactions, searchText, filterCategory, filterAccountIds, filterMemberIds, filterFrom, filterTo, filterTag],
+  );
 
   // The backend returns transactions in insertion order, not date order —
   // sorting is client-side too, same reasoning as filtering above.
-  const sortedTransactions = [...filteredTransactions].sort((a, b) => {
-    const cmp = compareTransactionsBy(a, b, sortColumn);
-    return sortDirection === "asc" ? cmp : -cmp;
-  });
+  const sortedTransactions = useMemo(
+    () =>
+      [...filteredTransactions].sort((a, b) => {
+        const cmp = compareTransactionsBy(a, b, sortColumn);
+        return sortDirection === "asc" ? cmp : -cmp;
+      }),
+    [filteredTransactions, sortColumn, sortDirection],
+  );
 
   function toggleSort(column: LedgerSortColumn) {
     if (sortColumn === column) {
@@ -970,6 +997,14 @@ function App({
     return new Promise((resolve) => setDialog({ kind: "confirmInvert", resolve }));
   }
 
+  // Bumped by every refetch below that follows a real mutation (never by
+  // `refreshDashboard`/`refreshReport` themselves, which only ever *read*)
+  // — the Dashboard tab-switch effect compares against this instead of
+  // unconditionally refetching on every visit, so bouncing between tabs
+  // with nothing actually changed skips 6 redundant backend calls. A ref,
+  // not state, since bumping it should never itself trigger a render.
+  const dataVersionRef = useRef(0);
+
   const refresh = useCallback(async () => {
     const [txns, s, accts, cats, flags, tags, members] = await Promise.all([
       invoke<Transaction[]>("list_transactions"),
@@ -987,6 +1022,7 @@ function App({
     setAnomalyFlags(flags);
     setAllTags(tags);
     setFamilyMembers(members);
+    dataVersionRef.current++;
   }, []);
 
   // The first time the app opens in a new calendar month, every account's
@@ -1004,6 +1040,7 @@ function App({
 
   const refreshBuckets = useCallback(async () => {
     setBuckets(await invoke<Bucket[]>("list_buckets"));
+    dataVersionRef.current++;
   }, []);
 
   const checkSinkingFundContributions = useCallback(async () => {
@@ -1020,22 +1057,27 @@ function App({
 
   const refreshRecurring = useCallback(async () => {
     setRecurring(await invoke<Recurring[]>("list_recurring"));
+    dataVersionRef.current++;
   }, []);
 
   const refreshRecurringTotals = useCallback(async () => {
     setRecurringTotals(await invoke<RecurringTotals>("recurring_totals"));
+    dataVersionRef.current++;
   }, []);
 
   const refreshRecurringCandidates = useCallback(async () => {
     setRecurringCandidates(await invoke<RecurringCandidate[]>("list_recurring_candidates"));
+    dataVersionRef.current++;
   }, []);
 
   const refreshAssets = useCallback(async () => {
     setAssets(await invoke<Asset[]>("list_assets"));
+    dataVersionRef.current++;
   }, []);
 
   const refreshHoldings = useCallback(async () => {
     setHoldings(await invoke<Holding[]>("list_holdings"));
+    dataVersionRef.current++;
   }, []);
 
   const [cashFlow, setCashFlow] = useState<CashFlow | null>(null);
@@ -1144,20 +1186,51 @@ function App({
   const [dashboardInsights, setDashboardInsights] = useState<Insight[]>([]);
   const [avgMonthlySpend, setAvgMonthlySpend] = useState("0");
 
+  // Declared here (rather than alongside the rest of the Budget tab's
+  // state, further down) specifically so `refreshDashboard` below can
+  // read them — a `useCallback` dependency array is evaluated immediately
+  // as part of the call expression, not deferred like the callback body
+  // itself, so referencing a `const` declared later in the component
+  // would be a genuine temporal-dead-zone error, not just a style choice.
+  const now = new Date();
+  const [budgetYear, setBudgetYear] = useState(now.getFullYear());
+  const [budgetMonthNum, setBudgetMonthNum] = useState(now.getMonth() + 1);
+
+  // Shared between `refreshDashboard` (always the *current* calendar
+  // month) and `refreshBudgetMonthActuals` (whatever month the Budget tab
+  // is viewing) — when both happen to want the same month's
+  // `budget_alerts_for_month`, whichever fetches it first hands the other
+  // a cache hit instead of both independently issuing an identical
+  // backend call. Always overwritten on every fetch from either side, so
+  // it can never serve data staler than the last real fetch for that
+  // month.
+  const currentMonthAlertsRef = useRef<{ month: string; alerts: BudgetAlert[] } | null>(null);
+
   const refreshDashboard = useCallback(async () => {
     const today = new Date();
+    const todayYear = today.getFullYear();
+    const todayMonth = today.getMonth() + 1;
+    const monthKey = `${todayYear}-${todayMonth}`;
+    const cachedAlerts = currentMonthAlertsRef.current?.month === monthKey ? currentMonthAlertsRef.current.alerts : null;
+
     const [nw, spend, alerts, insights, avgSpend] = await Promise.all([
       invoke<NetWorthPoint[]>("net_worth_history", { months: 6 }),
       invoke<CategoryAmount[]>("spending_this_month"),
-      invoke<BudgetAlert[]>("budget_alerts_for_month", { year: today.getFullYear(), month: today.getMonth() + 1 }),
+      cachedAlerts ? Promise.resolve(cachedAlerts) : invoke<BudgetAlert[]>("budget_alerts_for_month", { year: todayYear, month: todayMonth }),
       invoke<Insight[]>("dashboard_insights"),
       invoke<string>("average_monthly_spend"),
     ]);
+    currentMonthAlertsRef.current = { month: monthKey, alerts };
     setNetWorthHistory(nw);
     setSpendingThisMonth(spend);
     setDashboardBudgetAlerts(alerts);
     setDashboardInsights(insights);
     setAvgMonthlySpend(avgSpend);
+    // When the Budget tab is already viewing the current month, its
+    // alerts are identical to the ones just resolved above.
+    if (budgetYear === todayYear && budgetMonthNum === todayMonth) {
+      setBudgetAlerts(alerts);
+    }
     // "What changed" behind each stat card's trend, over the same span the
     // sparkline itself covers — a follow-up call (not part of the
     // Promise.all above) since it needs the history's own endpoint dates.
@@ -1171,10 +1244,15 @@ function App({
     } else {
       setAccountContributionDeltas([]);
     }
-  }, []);
+  }, [budgetYear, budgetMonthNum]);
 
+  // -1 so the very first Dashboard visit always fetches (dataVersionRef
+  // starts at 0, which would otherwise look identical to "nothing's
+  // changed" on a version-less first render).
+  const lastDashboardFetchVersionRef = useRef(-1);
   useEffect(() => {
-    if (activeTab === "dashboard") {
+    if (activeTab === "dashboard" && dataVersionRef.current !== lastDashboardFetchVersionRef.current) {
+      lastDashboardFetchVersionRef.current = dataVersionRef.current;
       refreshDashboard().catch((e) => setStatus(String(e)));
       refreshReport().catch((e) => setStatus(String(e)));
     }
@@ -1229,20 +1307,29 @@ function App({
     })();
   }, [recurring]);
 
-  const now = new Date();
-  const [budgetYear, setBudgetYear] = useState(now.getFullYear());
-  const [budgetMonthNum, setBudgetMonthNum] = useState(now.getMonth() + 1);
   const [budgetMonthActuals, setBudgetMonthActuals] = useState<ReportBudgetLine[]>([]);
   const [budgetAlerts, setBudgetAlerts] = useState<BudgetAlert[]>([]);
   const [memberBudgetActuals, setMemberBudgetActuals] = useState<MemberBudgetActual[]>([]);
 
   const refreshBudgetMonthActuals = useCallback(async (year: number, month: number) => {
+    const monthKey = `${year}-${month}`;
+    const cachedAlerts = currentMonthAlertsRef.current?.month === monthKey ? currentMonthAlertsRef.current.alerts : null;
     const [actuals, alerts] = await Promise.all([
       invoke<ReportBudgetLine[]>("budget_actuals_for_month", { year, month }),
-      invoke<BudgetAlert[]>("budget_alerts_for_month", { year, month }),
+      cachedAlerts ? Promise.resolve(cachedAlerts) : invoke<BudgetAlert[]>("budget_alerts_for_month", { year, month }),
     ]);
+    currentMonthAlertsRef.current = { month: monthKey, alerts };
     setBudgetMonthActuals(actuals);
     setBudgetAlerts(alerts);
+    // This one doubles as both a mutation-response (several budget edit
+    // handlers call it alone, with no other refetch alongside) and a
+    // plain tab-visit read (the Budget tab's own switch effect calls it
+    // unconditionally) — unlike `refreshReport`, it can't be left off the
+    // version bump without missing real mutations, so a Budget-tab visit
+    // with nothing actually edited costs one extra Dashboard refetch on
+    // the next visit. Still strictly better than refetching on literally
+    // every Dashboard visit, which is the behavior this replaces.
+    dataVersionRef.current++;
   }, []);
 
   const refreshMemberBudgetActuals = useCallback(async (year: number, month: number) => {
@@ -2393,6 +2480,25 @@ function App({
     }
   }
 
+  // No dedicated bulk backend command — `add_tag` is already a cheap
+  // single-row insert, so a client-side loop plus one shared `refresh()`
+  // at the end (same shape as `handleBulkMemberChange`/
+  // `handleBulkCategoryChange`) is simpler than adding a new command for
+  // what's still, in total, a handful of rows.
+  async function handleBulkAddTag(tag: string) {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+    const ids = Array.from(selectedIds);
+    try {
+      await Promise.all(ids.map((id) => invoke("add_tag", { transactionId: id, tag: trimmed })));
+      setBulkTagText("");
+      setSelectedIds(new Set());
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
   function toggleSelected(id: number) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -2694,6 +2800,7 @@ function App({
       </div>
 
       {activeTab === "dashboard" && (
+        <Suspense fallback={null}>
         <DashboardView
           accounts={accounts}
           netWorthHistory={netWorthHistory}
@@ -2722,6 +2829,7 @@ function App({
           onOpenInvestments={() => setActiveTab("investments")}
           onOpenReports={() => setActiveTab("reports")}
         />
+        </Suspense>
       )}
 
       {activeTab === "ledger" && pendingImport && (
@@ -3006,6 +3114,23 @@ function App({
               ))}
             </select>
           )}
+          <span className="bulk-tag-input">
+            <input
+              list="known-tags"
+              placeholder="+ Add tag…"
+              value={bulkTagText}
+              onChange={(e) => setBulkTagText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleBulkAddTag(bulkTagText);
+                }
+              }}
+            />
+            <button type="button" className="modal-secondary" disabled={!bulkTagText.trim()} onClick={() => handleBulkAddTag(bulkTagText)}>
+              Add tag
+            </button>
+          </span>
           {confirmingBulkDelete ? (
             <span className="row-delete-confirm">
               <button type="button" className="modal-secondary" onClick={() => setConfirmingBulkDelete(false)}>
@@ -3405,6 +3530,7 @@ function App({
       )}
 
       {activeTab === "buckets" && (
+        <Suspense fallback={null}>
         <BucketsView
           buckets={buckets}
           accounts={accounts}
@@ -3414,9 +3540,11 @@ function App({
           onAddContribution={handleAddContribution}
           onDeleteBucket={handleDeleteBucket}
         />
+        </Suspense>
       )}
 
       {activeTab === "budget" && (
+        <Suspense fallback={null}>
         <BudgetView
           categories={usedCategories}
           budgetActuals={budgetMonthActuals}
@@ -3431,9 +3559,11 @@ function App({
           onCategoryClick={handleCategoryClick}
           onFetchTrend={handleFetchBudgetTrend}
         />
+        </Suspense>
       )}
 
       {activeTab === "household" && (
+        <Suspense fallback={null}>
         <HouseholdView
           transactions={transactions}
           accounts={accounts}
@@ -3441,9 +3571,12 @@ function App({
           familyMembers={familyMembers}
           memberBudgetActuals={memberBudgetActuals}
           monthLabel={budgetMonthLabel}
+          year={budgetYear}
+          month={budgetMonthNum}
           onPrevMonth={handlePrevBudgetMonth}
           onNextMonth={handleNextBudgetMonth}
         />
+        </Suspense>
       )}
 
       {categoryTransactions && (
@@ -3475,6 +3608,7 @@ function App({
       )}
 
       {activeTab === "investments" && (
+        <Suspense fallback={null}>
         <InvestmentsView
           holdings={holdings}
           accounts={accounts}
@@ -3486,11 +3620,17 @@ function App({
           layoutWidgets={layoutWidgets}
           onPinWidget={(id) => addWidgetToDashboard(id, true)}
         />
+        </Suspense>
       )}
 
-      {activeTab === "help" && <HelpView />}
+      {activeTab === "help" && (
+        <Suspense fallback={null}>
+          <HelpView />
+        </Suspense>
+      )}
 
       {activeTab === "cashflow" && (
+        <Suspense fallback={null}>
         <CashFlowView
           cashFlow={cashFlow}
           range={cashFlowRange}
@@ -3513,6 +3653,7 @@ function App({
           layoutWidgets={layoutWidgets}
           onPinWidget={(id) => addWidgetToDashboard(id, true)}
         />
+        </Suspense>
       )}
 
       {monthDetail && <MonthExpenseDetailDialog detail={monthDetail} onClose={() => setMonthDetail(null)} />}
@@ -3731,9 +3872,12 @@ function App({
       )}
 
       {activeTab === "accounts" && (
+        <Suspense fallback={null}>
         <AccountsView
           accounts={accounts}
           manualAssetsTotal={assets.reduce((s, a) => s + parseFloat(a.value), 0)}
+          netWorthHistory={netWorthHistory}
+          accountContributionDeltas={accountContributionDeltas}
           onSetStartingBalance={handleSetStartingBalance}
           onSetBalanceOverride={handleSetBalanceOverride}
           onUpdateAccountType={handleUpdateAccountType}
@@ -3743,9 +3887,11 @@ function App({
           onSetAccountMember={handleSetAccountMember}
           onAddAccount={handleNewAccount}
         />
+        </Suspense>
       )}
 
       {activeTab === "reports" && !pendingSetupImport && (
+        <Suspense fallback={null}>
         <ReportsView
           report={report}
           accounts={accounts}
@@ -3765,9 +3911,11 @@ function App({
           layoutWidgets={layoutWidgets}
           onPinWidget={(id) => addWidgetToDashboard(id, true)}
         />
+        </Suspense>
       )}
 
       {activeTab === "settings" && (
+        <Suspense fallback={null}>
         <SettingsView
           appVersion={appVersion}
           dataFileLocation={dataFileLocation}
@@ -3791,6 +3939,7 @@ function App({
           themeStyle={themeStyle}
           onSetThemeStyle={setThemeStyle}
         />
+        </Suspense>
       )}
 
       {dialog?.kind === "newAccount" && (

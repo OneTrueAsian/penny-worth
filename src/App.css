@@ -1360,6 +1360,31 @@ button:disabled {
   color: var(--text-muted);
 }
 
+.ledger-qa-examples {
+  list-style: none;
+  margin: 0 0 12px 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ledger-qa-examples button {
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 5px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ledger-qa-examples button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 .dashboard-toolbar {
   display: flex;
   align-items: center;
@@ -2469,6 +2494,22 @@ button:disabled {
   color: inherit;
 }
 
+.bulk-tag-input {
+  display: flex;
+  gap: 6px;
+}
+
+.bulk-tag-input input {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: inherit;
+  width: 120px;
+}
+
 .select-col {
   width: 1%;
 }
@@ -2596,6 +2637,21 @@ button:disabled {
   color: var(--text-faint);
   cursor: grab;
   font-size: 13px;
+}
+
+.cat-row-move-buttons {
+  display: inline-flex;
+  gap: 2px;
+  margin-right: 8px;
+}
+
+.cat-row-move-buttons button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1;
 }
 
 .budget-row-dragging {

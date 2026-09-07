@@ -2584,11 +2584,18 @@ pub fn get_cash_flow(months: u32, state: tauri::State<AppStateHandle>) -> Result
     }
     year_months.reverse();
 
+    let (first_year, first_month) = year_months[0];
+    let (last_year, last_month) = year_months[year_months.len() - 1];
+    let totals_by_month = state
+        .store
+        .monthly_totals_for_range(first_year, first_month, last_year, last_month)
+        .map_err(|e| e.to_string())?;
+
     let mut month_totals = Vec::with_capacity(year_months.len());
     let mut total_income = Decimal::ZERO;
     let mut total_expense = Decimal::ZERO;
     for (year, month) in &year_months {
-        let (income, expense) = state.store.monthly_totals(*year, *month).map_err(|e| e.to_string())?;
+        let (income, expense) = totals_by_month.get(&(*year, *month)).copied().unwrap_or((Decimal::ZERO, Decimal::ZERO));
         total_income += income;
         total_expense += expense;
         let label = chrono::NaiveDate::from_ymd_opt(*year, *month, 1)
@@ -2669,9 +2676,12 @@ fn month_totals_for_range(
     to_month: u32,
     label_format: &str,
 ) -> Result<Vec<MonthTotalDto>, String> {
+    let totals_by_month = store
+        .monthly_totals_for_range(from_year, from_month, to_year, to_month)
+        .map_err(|e| e.to_string())?;
     let mut result = Vec::new();
     for (year, month) in month_range(from_year, from_month, to_year, to_month) {
-        let (income, expense) = store.monthly_totals(year, month).map_err(|e| e.to_string())?;
+        let (income, expense) = totals_by_month.get(&(year, month)).copied().unwrap_or((Decimal::ZERO, Decimal::ZERO));
         let label = chrono::NaiveDate::from_ymd_opt(year, month, 1)
             .expect("a year/month this loop generated must be valid")
             .format(label_format)
