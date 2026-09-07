@@ -3749,12 +3749,14 @@ impl Store {
         let current_spend = self.spending_by_category(first_of_month, current_window_end)?;
         let prev_spend: std::collections::HashMap<String, Decimal> =
             self.spending_by_category(prev_first, prev_window_end)?.into_iter().collect();
-        for (category, current_amount) in current_spend {
-            let Some(&previous_amount) = prev_spend.get(&category) else { continue };
+        let current_map: std::collections::HashMap<&str, Decimal> =
+            current_spend.iter().map(|(c, a)| (c.as_str(), *a)).collect();
+        for (category, current_amount) in &current_spend {
+            let Some(&previous_amount) = prev_spend.get(category) else { continue };
             if previous_amount <= Decimal::ZERO {
                 continue;
             }
-            let delta = current_amount - previous_amount;
+            let delta = *current_amount - previous_amount;
             let pct = delta / previous_amount * Decimal::from(100);
             if pct > Decimal::from(30) && delta > Decimal::from(50) {
                 insights.push(Insight {
@@ -3762,6 +3764,29 @@ impl Store {
                     kind: "category_jump".to_string(),
                     message: format!(
                         "{category} rose {pct:.0}% (${current_amount:.2} vs ${previous_amount:.2}) from last month."
+                    ),
+                });
+            }
+        }
+
+        // The positive counterpart to the jump check above: a category that
+        // dropped notably instead of rising. Walks `prev_spend` (rather
+        // than `current_spend`) so a category dropped to *zero* this month
+        // — absent from `current_map` entirely — still counts, defaulting
+        // to `Decimal::ZERO` rather than being skipped.
+        for (category, &previous_amount) in &prev_spend {
+            if previous_amount <= Decimal::ZERO {
+                continue;
+            }
+            let current_amount = current_map.get(category.as_str()).copied().unwrap_or(Decimal::ZERO);
+            let delta = previous_amount - current_amount;
+            let pct = delta / previous_amount * Decimal::from(100);
+            if pct > Decimal::from(30) && delta > Decimal::from(50) {
+                insights.push(Insight {
+                    severity: "positive".to_string(),
+                    kind: "category_drop".to_string(),
+                    message: format!(
+                        "Nice work: {category} is down {pct:.0}% (${current_amount:.2} vs ${previous_amount:.2}) from last month."
                     ),
                 });
             }
@@ -3775,7 +3800,11 @@ impl Store {
             });
         }
 
-        insights.sort_by_key(|i| if i.severity == "warning" { 0 } else { 1 });
+        insights.sort_by_key(|i| match i.severity.as_str() {
+            "warning" => 0,
+            "info" => 1,
+            _ => 2,
+        });
         insights.truncate(5);
         Ok(insights)
     }
@@ -9618,6 +9647,113 @@ mod tests {
         assert!(
             insights.iter().any(|i| i.kind == "category_jump" && i.message.contains("Groceries")),
             "expected a category-jump insight for Groceries: {insights:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_insights_flags_a_month_over_month_category_drop_as_a_positive_insight() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-07-05", "Boutique", "-200.00"),
+                    tx("2026-08-05", "Boutique", "-50.00"),
+                ],
+            )
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Shopping", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-08-05".parse().unwrap()).unwrap();
+
+        let drop = insights.iter().find(|i| i.kind == "category_drop");
+        assert!(drop.is_some(), "expected a category-drop insight for Shopping: {insights:?}");
+        let drop = drop.unwrap();
+        assert_eq!(drop.severity, "positive");
+        assert!(drop.message.contains("Shopping"), "expected the message to name the category: {drop:?}");
+    }
+
+    #[test]
+    fn dashboard_insights_flags_a_category_dropping_to_zero_spend_as_a_positive_insight() {
+        // The drop check walks *last* month's categories looking them up in
+        // *this* month's map — a category entirely absent this month (not
+        // just smaller) must default to $0 spent rather than being skipped,
+        // since "stopped spending on it altogether" is the clearest case.
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(account, &[tx("2026-07-05", "Boutique", "-200.00")])
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Shopping", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-08-05".parse().unwrap()).unwrap();
+
+        assert!(
+            insights.iter().any(|i| i.kind == "category_drop" && i.message.contains("Shopping")),
+            "expected a category-drop insight when spend stopped entirely: {insights:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_insights_does_not_flag_a_modest_month_over_month_decrease() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    tx("2026-07-05", "Boutique", "-100.00"),
+                    // A $15 (15%) drop clears neither the 30% nor the $50 floor.
+                    tx("2026-08-05", "Boutique", "-85.00"),
+                ],
+            )
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Shopping", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-08-05".parse().unwrap()).unwrap();
+
+        assert!(
+            !insights.iter().any(|i| i.kind == "category_drop"),
+            "expected no category-drop insight for a modest decrease: {insights:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_insights_sorts_warning_before_info_before_positive() {
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store
+            .save_transactions(
+                account,
+                &[
+                    // category_jump -> warning
+                    tx("2026-07-05", "Grocer", "-100.00"),
+                    tx("2026-08-05", "Grocer", "-200.00"),
+                    // category_drop -> positive
+                    tx("2026-07-05", "Boutique", "-200.00"),
+                    tx("2026-08-05", "Boutique", "-50.00"),
+                ],
+            )
+            .unwrap();
+        for t in store.all_transactions().unwrap() {
+            let category = if t.transaction.description == "Grocer" { "Groceries" } else { "Shopping" };
+            store.set_category(t.id, category, CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-08-05".parse().unwrap()).unwrap();
+        let severities: Vec<&str> = insights.iter().map(|i| i.severity.as_str()).collect();
+        let warning_pos = severities.iter().position(|s| *s == "warning");
+        let positive_pos = severities.iter().position(|s| *s == "positive");
+        assert!(
+            warning_pos.is_some() && positive_pos.is_some() && warning_pos < positive_pos,
+            "expected warning to sort before positive: {severities:?}"
         );
     }
 

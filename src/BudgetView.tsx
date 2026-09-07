@@ -3,6 +3,7 @@ import type { BudgetAlert, ReportBudgetLine } from "./types";
 import { formatAmount } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { Sparkline } from "./charts";
+import { BudgetGroupIcon } from "./budgetGroupIcons";
 
 /** A one-line description of a sparkline's trend, for the `<title>` WCAG
  * 1.1.1 requires on non-decorative non-text content — this is what a
@@ -490,7 +491,10 @@ export function BudgetView({
                   : `${pct.toFixed(0)}% ${isIncome ? "received" : "used"}`;
             return (
               <div className="group-card" key={group}>
-                <span className="group-card-title">{GROUP_LABELS[group]}</span>
+                <span className="group-card-title cell-with-icon">
+                  <BudgetGroupIcon group={group} className="category-legend-icon" />
+                  {GROUP_LABELS[group]}
+                </span>
                 <span className="group-card-amt">
                   {formatAmount(groupActual.toFixed(2))} <span className="of">of {formatAmount(groupBudgeted.toFixed(2))}</span>
                 </span>
@@ -507,7 +511,8 @@ export function BudgetView({
       {groupSummaries.map(({ group, groupLines, groupBudgeted, groupActual }) => {
         return (
           <div key={group}>
-            <h2 className="reports-section-title">
+            <h2 className="reports-section-title cell-with-icon">
+              <BudgetGroupIcon group={group} className="category-legend-icon" />
               {GROUP_LABELS[group]}{" "}
               <span className="account-col">
                 {formatAmount(groupActual.toFixed(2))} of {formatAmount(groupBudgeted.toFixed(2))}

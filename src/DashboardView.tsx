@@ -1,4 +1,7 @@
 import { FormEvent, useMemo, useState } from "react";
+import { AlertTriangle, Check, CreditCard, Info, Landmark, Leaf, LineChart as LineChartIcon, MessageCircleQuestion, Wallet } from "lucide-react";
+import { CategoryIcon } from "./categoryIcons";
+import { BudgetGroupIcon } from "./budgetGroupIcons";
 import type {
   Account,
   AccountContributionDelta,
@@ -60,21 +63,31 @@ function LedgerQaBox({
   return (
     <div className="card ledger-qa-card">
       <div className="card-head">
-        <span className="reports-section-title">Ask your ledger</span>
+        <span className="reports-section-title cell-with-icon">
+          <MessageCircleQuestion className="category-legend-icon" />
+          Ask Pennyworth
+        </span>
         <button type="button" className="modal-secondary" onClick={() => setShowExamples((v) => !v)}>
-          {showExamples ? "Hide examples" : "See examples"}
+          {showExamples ? "Hide tips" : "Tips & examples"}
         </button>
       </div>
       {showExamples && (
-        <ul className="ledger-qa-examples">
-          {LEDGER_QA_EXAMPLES.map((example) => (
-            <li key={example}>
-              <button type="button" onClick={() => setQuestion(example)}>
-                {example}
-              </button>
-            </li>
-          ))}
-        </ul>
+        <div className="ledger-qa-tips">
+          <p className="field-hint">
+            Ask one thing at a time, using the exact category, account, bucket, or merchant names you use elsewhere
+            in the app. Time periods work too — "this month," "last week," "the past 3 months," a month like "July,"
+            a year like "2026," or "since March."
+          </p>
+          <ul className="ledger-qa-examples">
+            {LEDGER_QA_EXAMPLES.map((example) => (
+              <li key={example}>
+                <button type="button" onClick={() => setQuestion(example)}>
+                  {example}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       <form className="category-create-form" onSubmit={handleSubmit}>
         <input
@@ -183,10 +196,10 @@ export function DashboardView({
    * request. */
   holdings: Holding[];
   familyMembers: FamilyMember[];
-  /** Only needed for "Ask your ledger" (see ledgerQa.ts) — bucket-progress
+  /** Only needed for "Ask Pennyworth" (see ledgerQa.ts) — bucket-progress
    * questions ("how much have I saved toward vacation"). */
   buckets: Bucket[];
-  /** Only needed for "Ask your ledger" (see ledgerQa.ts) — matching a
+  /** Only needed for "Ask Pennyworth" (see ledgerQa.ts) — matching a
    * question's category phrase against the app's real, user-curated
    * category names. */
   categories: string[];
@@ -428,7 +441,10 @@ export function DashboardView({
             <div className="stat-top">
               <div className="stat-top-main">
                 <span className="stat-value">{fmtMoneyShort(netWorthWithAssets)}</span>
-                <span className="stat-label">Net Worth</span>
+                <span className="stat-label-row">
+                  <Landmark className="stat-icon" aria-hidden="true" />
+                  <span className="stat-label">Net Worth</span>
+                </span>
               </div>
               <Sparkline points={netWorthSpark} color="var(--accent)" />
             </div>
@@ -446,7 +462,10 @@ export function DashboardView({
             <div className="stat-top">
               <div className="stat-top-main">
                 <span className="stat-value">{fmtMoneyShort(cash)}</span>
-                <span className="stat-label">Cash</span>
+                <span className="stat-label-row">
+                  <Wallet className="stat-icon" aria-hidden="true" />
+                  <span className="stat-label">Cash</span>
+                </span>
               </div>
               <Sparkline points={cashSpark} color="var(--info)" />
             </div>
@@ -470,7 +489,14 @@ export function DashboardView({
                 >
                   {fmtMoneyShort(debt)}
                 </span>
-                <span className="stat-label">Debt</span>
+                <span className="stat-label-row">
+                  {debt !== 0 && !debtTrendingDown ? (
+                    <AlertTriangle className="stat-icon" style={{ color: "var(--negative)" }} aria-hidden="true" />
+                  ) : (
+                    <CreditCard className="stat-icon" aria-hidden="true" />
+                  )}
+                  <span className="stat-label">Debt</span>
+                </span>
               </div>
               <Sparkline points={debtSpark} color={debtTrendingDown ? "var(--positive)" : "var(--negative)"} />
             </div>
@@ -488,7 +514,10 @@ export function DashboardView({
             <div className="stat-top">
               <div className="stat-top-main">
                 <span className="stat-value">{fmtMoneyShort(investments)}</span>
-                <span className="stat-label">Investments</span>
+                <span className="stat-label-row">
+                  <LineChartIcon className="stat-icon" aria-hidden="true" />
+                  <span className="stat-label">Investments</span>
+                </span>
               </div>
               <Sparkline points={investmentsSpark} color="#8A5FB0" />
             </div>
@@ -532,9 +561,12 @@ export function DashboardView({
       <>
         {budgetAlerts.length > 0 && (
           <button type="button" className="budget-alert-banner" onClick={() => setShowBudgetAlerts((v) => !v)}>
-            {overCount > 0 && `${overCount} categor${overCount === 1 ? "y" : "ies"} over budget`}
-            {overCount > 0 && warningCount > 0 && ", "}
-            {warningCount > 0 && `${warningCount} approaching ${warningCount === 1 ? "its" : "their"} limit`}
+            <AlertTriangle className="budget-alert-icon" aria-hidden="true" />
+            <span>
+              {overCount > 0 && `${overCount} categor${overCount === 1 ? "y" : "ies"} over budget`}
+              {overCount > 0 && warningCount > 0 && ", "}
+              {warningCount > 0 && `${warningCount} approaching ${warningCount === 1 ? "its" : "their"} limit`}
+            </span>
           </button>
         )}
         <StatDetailPanel
@@ -555,12 +587,17 @@ export function DashboardView({
               <span className="reports-section-title">Insights</span>
             </div>
             <ul className="insights-list">
-              {insights.map((insight, i) => (
-                <li key={i} className={`insight-row insight-${insight.severity}`}>
-                  <span className={`confidence-badge insight-badge-${insight.severity}`}>{insight.severity}</span>
-                  <span>{insight.message}</span>
-                </li>
-              ))}
+              {insights.map((insight, i) => {
+                const SeverityIcon =
+                  insight.severity === "warning" ? AlertTriangle : insight.severity === "positive" ? Leaf : Info;
+                return (
+                  <li key={i} className={`insight-row insight-${insight.severity}`}>
+                    <SeverityIcon className="insight-icon" aria-hidden="true" />
+                    <span className={`confidence-badge insight-badge-${insight.severity}`}>{insight.severity}</span>
+                    <span>{insight.message}</span>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}
@@ -601,6 +638,7 @@ export function DashboardView({
               <div>
                 {donutData.map((d) => (
                   <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
+                    <CategoryIcon category={d.label} className="category-legend-icon" />
                     <span className="chart-legend-swatch" style={{ background: d.color }}></span>
                     {d.label}
                     <span className="account-col" style={{ marginLeft: "auto" }}>
@@ -639,7 +677,10 @@ export function DashboardView({
                 title="Go to the Budget tab"
               >
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: 6 }}>
-                  <span style={{ fontWeight: 600 }}>{GROUP_LABELS[group]}</span>
+                  <span className="cell-with-icon" style={{ fontWeight: 600 }}>
+                    <BudgetGroupIcon group={group} className="category-legend-icon" />
+                    {GROUP_LABELS[group]}
+                  </span>
                   <span className="account-col">
                     {formatAmount(actual)} of {formatAmount(budgeted)}
                   </span>
@@ -667,6 +708,9 @@ export function DashboardView({
                 onClick={onOpenRecurring}
                 title="Go to the Recurring tab"
               >
+                <span className="row-icon-badge">
+                  <CategoryIcon category={r.category} />
+                </span>
                 <div className="suggested-info">
                   <div className="account-name-cell">{r.merchant}</div>
                   <span className="account-col">{r.next_date}</span>
@@ -699,7 +743,14 @@ export function DashboardView({
             {recent.map((t) => (
               <tr key={t.id} className="clickable-row" onClick={onOpenLedger} title="Go to the Ledger tab">
                 <td>{t.date}</td>
-                <td>{t.description}</td>
+                <td>
+                  <span className="cell-with-icon">
+                    <span className="row-icon-badge">
+                      <CategoryIcon category={t.category} />
+                    </span>
+                    {t.description}
+                  </span>
+                </td>
                 <td className="amount-col">{formatAmount(t.amount)}</td>
                 <td>{t.category ?? "Uncategorized"}</td>
               </tr>
@@ -926,7 +977,7 @@ export function DashboardView({
             {checklistSteps.map((step) => (
               <li key={step.label} className={step.done ? "checklist-step checklist-step-done" : "checklist-step"}>
                 <button type="button" className="checklist-step-btn" onClick={step.onClick} disabled={step.done}>
-                  <span className="checklist-step-check" aria-hidden="true">{step.done ? "✓" : ""}</span>
+                  <span className="checklist-step-check" aria-hidden="true">{step.done ? <Check /> : null}</span>
                   <span className="checklist-step-text">
                     <span className="checklist-step-label">{step.label}</span>
                     <span className="checklist-step-detail">{step.detail}</span>

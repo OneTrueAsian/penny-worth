@@ -3,6 +3,7 @@ import type { Account, FamilyMember, Recurring, RecurringCandidate, RecurringTot
 import { formatAmount, toLocalIsoDate } from "./format";
 import { fmtMoneyShort } from "./charts";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { CategoryIcon } from "./categoryIcons";
 
 export const CADENCE_OPTIONS = ["weekly", "biweekly", "monthly", "annual"];
 
@@ -105,6 +106,9 @@ function SuggestedRecurringSection({
       </p>
       {candidates.map((c) => (
         <div className="suggested-row" key={`${c.merchant}|${c.amount}|${c.cadence}`}>
+          <span className="row-icon-badge">
+            <CategoryIcon category={c.category} />
+          </span>
           <div className="suggested-info">
             <div className="suggested-name">{c.merchant}</div>
             <div className="suggested-meta">
@@ -588,8 +592,15 @@ export function RecurringView({
             ) : (
               <tr key={r.id} className={r.status === "canceled" ? "recurring-row-canceled" : undefined}>
                 <td>
-                  <div className="account-name-cell">{r.merchant}</div>
-                  {r.member_name && <span className="account-col">{r.member_name}</span>}
+                  <div className="cell-with-icon">
+                    <span className="row-icon-badge">
+                      <CategoryIcon category={r.category} />
+                    </span>
+                    <div>
+                      <div className="account-name-cell">{r.merchant}</div>
+                      {r.member_name && <span className="account-col">{r.member_name}</span>}
+                    </div>
+                  </div>
                 </td>
                 <td>{r.account_name ?? <span className="account-col">—</span>}</td>
                 <td>
@@ -654,7 +665,12 @@ export function RecurringView({
               .map((r) => (
                 <tr key={r.id} className={r.status === "canceled" ? "recurring-row-canceled" : undefined}>
                   <td>
-                    <div className="account-name-cell">{r.merchant}</div>
+                    <div className="cell-with-icon">
+                      <span className="row-icon-badge">
+                        <CategoryIcon category={r.category} />
+                      </span>
+                      <div className="account-name-cell">{r.merchant}</div>
+                    </div>
                   </td>
                   <td>
                     <span className="confidence-badge">{r.cadence}</span>

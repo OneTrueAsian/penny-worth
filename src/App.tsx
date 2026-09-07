@@ -48,6 +48,7 @@ import { MemberFilterDropdown, type MemberFilterValue } from "./MemberFilterDrop
 import { MoreFiltersPopover } from "./MoreFiltersPopover";
 import { UpdateBanner } from "./UpdateBanner";
 import { NavIcon } from "./icons";
+import { CategoryIcon } from "./categoryIcons";
 import { formatAmount, toLocalIsoDate } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { useDelayedVisibility } from "./useDelayedVisibility";
@@ -3223,27 +3224,32 @@ function App({
                 )}
               </td>
               <td>
-                {editingDescription?.id === t.id ? (
-                  <input
-                    autoFocus
-                    className="row-edit-input"
-                    value={editingDescription.value}
-                    onChange={(e) => setEditingDescription({ id: t.id, value: e.target.value })}
-                    onBlur={() => commitDescriptionEdit(t.id, editingDescription.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitDescriptionEdit(t.id, editingDescription.value);
-                      if (e.key === "Escape") setEditingDescription(null);
-                    }}
-                  />
-                ) : (
-                  <span
-                    className="amount-editable"
-                    title="Click to fix the description"
-                    onClick={() => setEditingDescription({ id: t.id, value: t.description })}
-                  >
-                    {t.description}
+                <span className="cell-with-icon">
+                  <span className="row-icon-badge">
+                    <CategoryIcon category={t.category} />
                   </span>
-                )}
+                  {editingDescription?.id === t.id ? (
+                    <input
+                      autoFocus
+                      className="row-edit-input"
+                      value={editingDescription.value}
+                      onChange={(e) => setEditingDescription({ id: t.id, value: e.target.value })}
+                      onBlur={() => commitDescriptionEdit(t.id, editingDescription.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitDescriptionEdit(t.id, editingDescription.value);
+                        if (e.key === "Escape") setEditingDescription(null);
+                      }}
+                    />
+                  ) : (
+                    <span
+                      className="amount-editable"
+                      title="Click to fix the description"
+                      onClick={() => setEditingDescription({ id: t.id, value: t.description })}
+                    >
+                      {t.description}
+                    </span>
+                  )}
+                </span>
                 {(anomalyFlagsByTransaction.get(t.id) ?? []).map((flag, i) => (
                   <span
                     key={i}

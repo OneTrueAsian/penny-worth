@@ -4,6 +4,7 @@ import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 import { GROUP_LABELS, GROUP_ORDER, groupOf, netWorthContribution } from "./accountGroups";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { AccountTypeIcon } from "./accountIcons";
 
 const ACCOUNT_TYPE_OPTIONS = ["checking", "savings", "credit", "loan", "investment", "other"];
 
@@ -27,16 +28,6 @@ const ACCOUNT_STAT_LABELS: Record<AccountStatKey, string> = {
   networth: "Net Worth",
 };
 
-/** A small glyph per account group, next to each card's name — purely
- * decorative, matching the mockup's `.type-badge` (a colored circle with
- * an icon isn't worth a whole icon library entry for four groups). */
-const GROUP_GLYPH: Record<string, string> = {
-  cash: "$",
-  credit: "%",
-  loan: "%",
-  investment: "↗",
-  other: "•",
-};
 
 function AccountCard({
   account: a,
@@ -114,7 +105,9 @@ function AccountCard({
 
   return (
     <div className="account-card">
-      <span className={isLiability ? "type-badge type-badge-neg" : "type-badge"}>{GROUP_GLYPH[group]}</span>
+      <span className={isLiability ? "type-badge type-badge-neg" : "type-badge"}>
+        <AccountTypeIcon accountType={a.account_type} />
+      </span>
       <div className="info">
         <div className="account-name-cell">{a.name}</div>
         {editingDetails?.id === a.id ? (

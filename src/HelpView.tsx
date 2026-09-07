@@ -27,7 +27,7 @@ const GETTING_STARTED: HelpEntry = {
   node: (
     <ol>
       <li>
-        <strong>Add an account</strong> — from the Reports tab
+        <strong>Add an account</strong> — from the Accounts tab
         ("Add account…"), or you'll be prompted automatically the first
         time you import a file. Checking, savings, credit card, loan,
         investment, and "other" are all supported.
@@ -52,28 +52,72 @@ const GETTING_STARTED: HelpEntry = {
 
 const TAB_TOUR_ENTRIES: HelpEntry[] = [
   {
-    tags: ["dashboard", "net worth", "insights", "budget alerts", "spending"],
+    tags: [
+      "dashboard",
+      "net worth",
+      "insights",
+      "budget alerts",
+      "spending",
+      "what changed",
+      "customize",
+      "pin widget",
+      "get started",
+      "checklist",
+      "ask pennyworth",
+    ],
     node: (
       <li>
-        <strong>Dashboard</strong> — net worth, this month's spending,
-        budget alerts, and an <strong>Insights</strong> feed that surfaces
-        things worth a look on its own: a category on pace to go over
-        budget, a month-over-month spending jump, or an unusually large
-        charge.
+        <strong>Dashboard</strong> — net worth, cash, debt, and investments
+        at a glance (click any of the four for a breakdown of{" "}
+        <strong>what changed</strong> and which accounts drove it), this
+        month's spending by category, recent transactions, and an{" "}
+        <strong>Insights</strong> feed that surfaces things worth a look on
+        its own: a category on pace to go over budget, a month-over-month
+        jump, an unusually large charge — and good news too, like a
+        category you meaningfully cut back on. The layout is yours:
+        pin/unpin widgets, drag to reorder, or pick a preset from{" "}
+        <strong>"Customize"</strong>. New here also see a{" "}
+        <strong>Get started</strong> checklist and the{" "}
+        <strong>Ask Pennyworth</strong> question box (see FAQ below).
       </li>
     ),
   },
   {
-    tags: ["ledger", "transactions", "filter", "split", "tag", "debt payment", "family member", "manage family members"],
+    tags: [
+      "accounts",
+      "net worth",
+      "assets",
+      "liabilities",
+      "what changed",
+      "account type",
+      "credit",
+      "loan",
+      "investment",
+      "institution",
+    ],
+    node: (
+      <li>
+        <strong>Accounts</strong> — every account grouped by type (cash,
+        credit, loan, investment, other), with running totals for Total
+        Assets, Total Liabilities, and Net Worth — click any of those for a
+        breakdown of <strong>what changed</strong> and which accounts drove
+        it. Add, edit, or delete an account here, including its
+        institution, last-4 digits, and which family member it belongs to.
+      </li>
+    ),
+  },
+  {
+    tags: ["ledger", "transactions", "filter", "split", "tag", "bulk tag", "debt payment", "family member", "manage family members"],
     node: (
       <li>
         <strong>Ledger</strong> — every transaction, filterable by
         account/category/tag/family member, with inline category
-        correction (one at a time or in bulk), splitting a transaction
-        across multiple categories, tagging, applying a payment toward a
-        debt account, and — for households tracking more than one person —
-        assigning any account, transaction, bucket, asset, or recurring
-        item to a family member via <strong>"Manage family members…"</strong>.
+        correction and tagging — either one at a time or, after selecting
+        several rows, in bulk — splitting a transaction across multiple
+        categories, applying a payment toward a debt account, and — for
+        households tracking more than one person — assigning any account,
+        transaction, bucket, asset, or recurring item to a family member
+        via <strong>"Manage family members…"</strong>.
       </li>
     ),
   },
@@ -82,9 +126,10 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
     node: (
       <li>
         <strong>Budget</strong> — this month's budgeted vs. actual per
-        category, with prev/next month navigation and drag-to-reorder.
-        Click any category name to see every transaction behind that number
-        and fix any that are miscategorized, right from that screen.
+        category, with prev/next month navigation and reordering (drag a
+        row, or use the ↑/↓ buttons next to it). Click any category name to
+        see every transaction behind that number and fix any that are
+        miscategorized, right from that screen.
       </li>
     ),
   },
@@ -134,6 +179,8 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
       "holdings",
       "shares",
       "cost basis",
+      "gain loss",
+      "what changed",
       "goal projection",
       "live prices",
       "stocks",
@@ -144,38 +191,81 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
     node: (
       <li>
         <strong>Investments</strong> — holdings per account (shares, price,
-        cost basis) with computed value and gain/loss, plus a
-        <strong> goal projection</strong> calculator that projects a future
-        balance from a starting amount, a monthly contribution, and an
-        assumed annual return. Prices are manual by default; optionally
-        turn on live pricing (Settings tab) to auto-fill a new holding's
-        price by symbol and keep existing ones current automatically.
+        cost basis) with computed value and gain/loss. Click{" "}
+        <strong>"Total gain/loss"</strong> or <strong>"Today's
+        gain/loss"</strong> to see which holdings are driving it. Also
+        includes a <strong>goal projection</strong> calculator that
+        projects a future balance from a starting amount, a monthly
+        contribution, and an assumed annual return. Prices are manual by
+        default; optionally turn on live pricing (Settings tab) to
+        auto-fill a new holding's price by symbol and keep existing ones
+        current automatically.
       </li>
     ),
   },
   {
-    tags: ["reports", "accounts", "net worth", "property", "valuables", "csv", "pdf", "setup import"],
+    tags: [
+      "household",
+      "family",
+      "spending by person",
+      "income by person",
+      "net worth by person",
+      "budget by person",
+      "unassigned",
+    ],
     node: (
       <li>
-        <strong>Reports</strong> — accounts management, net worth
-        breakdown, total saved, all-time income, spending by tag, this
-        month's budget snapshot, <strong>Property & Valuables</strong>
-        (manually tracked assets like a home or a vehicle, folded into your
-        net worth), and the CSV/PDF export and setup-data import/export
-        tools described below.
+        <strong>Household</strong> — spending and income broken down by
+        family member for whichever month you're viewing, net worth by
+        person (always as of today — it isn't a monthly figure the way the
+        cards above it are), and a budget grid split by category and
+        person. Anything not assigned to a specific person lands under
+        "Unassigned" — see the Ledger's <strong>"Manage family
+        members…"</strong> to start attributing accounts and transactions.
       </li>
     ),
   },
   {
-    tags: ["settings", "profiles", "data file", "backups", "live stock prices", "move data file"],
+    tags: ["reports", "net worth", "property", "valuables", "csv", "pdf", "setup import", "savings rate", "buckets overview"],
+    node: (
+      <li>
+        <strong>Reports</strong> — total saved, all-time income, spending
+        by tag, a savings-rate trend, <strong>Property &
+        Valuables</strong> (manually tracked assets like a home or a
+        vehicle, folded into your net worth), net worth by family member,
+        quick summaries linking back to Buckets and Budget, and the CSV/PDF
+        export and setup-data import/export tools described below. Account
+        balances and net worth by <em>account</em> live on the Accounts tab
+        instead.
+      </li>
+    ),
+  },
+  {
+    tags: [
+      "settings",
+      "profiles",
+      "data file",
+      "backups",
+      "live stock prices",
+      "move data file",
+      "appearance",
+      "theme",
+      "dark mode",
+      "light mode",
+      "aurora",
+      "midnight emerald",
+      "futuristic",
+    ],
     node: (
       <li>
         <strong>Settings</strong> — separate profiles (completely
         independent data files you can create, switch, rename, and delete
         — see FAQ), where your data file lives (and a button to move it),
         your backup history with a manual "Back up now" and per-backup
-        restore, and an optional live stock-price integration for the
-        Investments tab.
+        restore, an optional live stock-price integration for the
+        Investments tab, and <strong>appearance</strong>: Light/Dark/System
+        plus four visual styles — Classic, Aurora, Midnight Emerald, and
+        Futuristic (see FAQ).
       </li>
     ),
   },
@@ -480,6 +570,22 @@ const FAQ_ENTRIES: FaqEntry[] = [
     ),
   },
   {
+    question: "Can I change how Penny Worth looks?",
+    tags: ["appearance", "theme", "dark mode", "light mode", "aurora", "midnight emerald", "futuristic", "style", "color"],
+    answer: (
+      <p>
+        Yes — the Settings tab has an Appearance section with a Light/Dark/
+        System toggle plus four visual styles: <strong>Classic</strong>{" "}
+        (the original look, following that toggle), <strong>Aurora</strong>{" "}
+        and <strong>Midnight Emerald</strong> (always-dark reskins with
+        their own accent colors), and <strong>Futuristic</strong> (a neon
+        style with its own type and sidebar icons, the only one of the
+        three reskins that still follows Light/Dark/System). Switching is
+        instant and purely visual — nothing about your data changes.
+      </p>
+    ),
+  },
+  {
     question: "Can I move my data file to a different folder?",
     tags: ["move", "relocate", "data file", "folder", "location"],
     answer: (
@@ -552,14 +658,18 @@ const FAQ_ENTRIES: FaqEntry[] = [
   },
   {
     question: "Can I ask questions about my spending in plain English?",
-    tags: ["ask your ledger", "question", "search", "natural language", "query", "dashboard"],
+    tags: ["ask pennyworth", "question", "search", "natural language", "query", "dashboard"],
     answer: (
       <p>
-        Yes — the "Ask your ledger" box at the top of the Dashboard answers
+        Yes — the "Ask Pennyworth" box at the top of the Dashboard answers
         questions like "how much did I spend on dining out in July" or
         "what's my net worth" directly from your own data, with no internet
-        connection or account required. Click "See examples" on the box
-        itself for more of what it understands.
+        connection or account required. It matches a set of question shapes
+        rather than truly understanding free-form English, so it works best
+        one question at a time, using the exact category, account, bucket,
+        or merchant names you use elsewhere in the app. Click "Tips &amp;
+        examples" on the box itself for phrasing guidance and the full list
+        of what it understands.
       </p>
     ),
   },

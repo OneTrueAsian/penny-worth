@@ -99,5 +99,18 @@ export const CHANGELOG: Record<string, string[]> = {
   "1.2.3": [
     "A fourth visual theme, Futuristic, joins Aurora and Midnight Emerald in Settings ▸ Appearance — a neon cyberpunk look with electric cyan, violet, and magenta-red accents, plus Orbitron and Share Tech Mono type. Unlike the other two reskins, Futuristic has a light mode as well as dark, and follows the sidebar's Light/Dark/System toggle.",
     "Futuristic also swaps in its own angular, HUD-style sidebar icon set in place of the app's default icons.",
+    "New icons throughout the app: categories, account types, and budget groups now show a small icon next to their name on the Dashboard, Ledger, Recurring, Accounts, and Budget tabs.",
+    "The Dashboard's Insights feed now calls out good news too, not just warnings — a category you meaningfully cut back on shows up as a positive \"nice work\" callout.",
+    "Investments: click \"Total gain/loss\" or \"Today's gain/loss\" to see exactly which holdings are driving that number — the same \"what makes up this\" breakdown the Dashboard and Accounts tabs already use for their stat tiles.",
+    "Accounts' stat tiles (Total Assets, Total Liabilities, Net Worth) can now be clicked for a \"what changed\" breakdown, same as the Dashboard.",
+    "Ledger: tag several selected transactions at once, alongside the existing bulk category correction.",
+    "Budget categories can now be reordered with ↑/↓ buttons next to each row, not just by dragging.",
+    "Household's spending and income by person are now scoped to the month you're viewing, matching the budget-by-person card below them.",
+    "Dialogs (Add account, Edit transaction, etc.) now trap keyboard focus while open — Tab cycles within the dialog instead of escaping to the page behind it — and restore focus to what you were on when closed.",
+    "Renamed the Dashboard's natural-language question box from \"Ask your ledger\" to \"Ask Pennyworth,\" with a new icon, randomized example questions, and a \"Tips & examples\" guide for phrasing questions it can actually answer.",
+    "Faster Ledger, Budget, and Reports screens on large datasets, from new database indexes and less redundant recalculation.",
+    "Fixed: a single unusually large one-off expense in a brand-new category could trigger a false \"on pace to exceed budget\" warning even with no spending history to project from.",
+    "Fixed: the new account dialog could occasionally leave its name field unfocused when opened.",
+    "Fixed: \"what's my savings rate this month\" and similar bare time-period questions weren't recognized by Ask Pennyworth.",
   ],
 };

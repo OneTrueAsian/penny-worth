@@ -6,6 +6,7 @@ import { projectGoal } from "./projections";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { PinToDashboardButton } from "./PinToDashboardButton";
 import type { WidgetId } from "./dashboardLayout";
+import { StatDetailPanel } from "./StatDetailPanel";
 
 const CLASS_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9"];
 
@@ -299,6 +300,22 @@ export function InvestmentsView({
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   useAutoCancelDelete(confirmingDeleteId, () => setConfirmingDeleteId(null));
   const [editingPrice, setEditingPrice] = useState<{ id: number; value: string } | null>(null);
+  const [expandedGainStat, setExpandedGainStat] = useState<"total" | "day" | null>(null);
+
+  // Per-holding rows behind the "Total gain/loss" and "Today's gain/loss"
+  // stat tiles below — same "click a stat, see what makes it up" pattern
+  // as the Dashboard/Accounts tabs' own StatDetailPanel-backed tiles.
+  // "Today's" is scoped to holdings that actually have a `day_gain_loss`
+  // (a live quote today), matching `totalDayGain`'s own filter just below.
+  const { totalGainRows, dayGainRows } = useMemo(
+    () => ({
+      totalGainRows: holdings.map((h) => ({ name: h.symbol, amount: parseFloat(h.gain_loss) })),
+      dayGainRows: holdings
+        .filter((h) => h.day_gain_loss !== null)
+        .map((h) => ({ name: h.symbol, amount: parseFloat(h.day_gain_loss as string) })),
+    }),
+    [holdings],
+  );
 
   const { totalValue, totalCost, totalGain, holdingsWithDayCount, totalDayGain, totalDayGainPct } = useMemo(() => {
     const totalValue = holdings.reduce((s, h) => s + parseFloat(h.value), 0);
@@ -354,14 +371,22 @@ export function InvestmentsView({
           <span className="stat-value">{formatAmount(totalCost.toFixed(2))}</span>
           <span className="stat-label">Cost basis</span>
         </div>
-        <div className="stat">
+        <button
+          type="button"
+          className={expandedGainStat === "total" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          onClick={() => setExpandedGainStat((s) => (s === "total" ? null : "total"))}
+        >
           <span className={totalGain < 0 ? "stat-value report-over-budget" : "stat-value"}>
             {totalGain > 0 ? "+" : ""}
             {formatAmount(totalGain.toFixed(2))}
           </span>
           <span className="stat-label">Total gain/loss</span>
-        </div>
-        <div className="stat">
+        </button>
+        <button
+          type="button"
+          className={expandedGainStat === "day" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          onClick={() => setExpandedGainStat((s) => (s === "day" ? null : "day"))}
+        >
           {holdingsWithDayCount > 0 ? (
             <span className={totalDayGain < 0 ? "stat-value report-over-budget" : "stat-value"}>
               {totalDayGain > 0 ? "+" : ""}
@@ -381,8 +406,16 @@ export function InvestmentsView({
               {holdingsWithDayCount} of {holdings.length} priced today
             </span>
           )}
-        </div>
+        </button>
       </div>
+
+      <StatDetailPanel
+        isOpen={expandedGainStat !== null}
+        title={expandedGainStat === "total" ? "Total gain/loss" : expandedGainStat === "day" ? "Today's gain/loss" : null}
+        rows={expandedGainStat === "total" ? totalGainRows : expandedGainStat === "day" ? dayGainRows : null}
+        emptyMessage="No holdings contribute to this yet."
+        onClose={() => setExpandedGainStat(null)}
+      />
 
       {donutData.length > 0 && (
         <div className="card">

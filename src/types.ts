@@ -59,8 +59,8 @@ export type AppSettings = {
 export type ThemeStyle = "classic" | "aurora" | "midnight_emerald" | "futuristic";
 
 export type Insight = {
-  severity: "warning" | "info";
-  kind: "pace" | "category_jump" | "large_expense";
+  severity: "warning" | "info" | "positive";
+  kind: "pace" | "category_jump" | "category_drop" | "large_expense";
   message: string;
 };
 

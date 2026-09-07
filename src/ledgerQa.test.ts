@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answerLedgerQuestion, type QaContext } from "./ledgerQa";
+import { answerLedgerQuestion, LEDGER_QA_EXAMPLES, type QaContext } from "./ledgerQa";
 import type { Account, Bucket, Recurring, Transaction } from "./types";
 
 const TODAY = new Date(2026, 8, 6); // Sat 2026-09-06
@@ -594,4 +594,43 @@ describe("unmatched questions", () => {
     expect(r.matched).toBe(false);
     expect(r.answer).toContain("Try something like");
   });
+});
+
+// The Dashboard's "Ask Pennyworth" box surfaces `LEDGER_QA_EXAMPLES`
+// verbatim as clickable suggestions (DashboardView.tsx's `LedgerQaBox`) —
+// a shipped example that fails to match (as "what's my savings rate this
+// month" once did: its pattern only accepted a period phrase after "in/
+// during/for", not the bare "this month" every sibling pattern in this
+// file already accepts) hands a first-time user exactly the "I couldn't
+// match that" failure the examples exist to prevent. Every example is
+// checked here against one shared, realistically-populated context
+// covering each example's own subject (an account per type, transactions
+// in more than one category and month, a recurring bill, a bucket), so a
+// broken example fails loudly in this suite instead of only when a user
+// happens to click it.
+describe("the Dashboard's curated example questions", () => {
+  const exampleCtx = ctx({
+    accounts: [
+      account({ id: 1, name: "Everyday Checking", account_type: "checking", current_balance: "2500.00" }),
+      account({ id: 2, name: "Car Loan", account_type: "loan", current_balance: "-8000.00", starting_balance: "-8000.00" }),
+      account({ id: 3, name: "Rewards Card", account_type: "credit", current_balance: "-450.00", starting_balance: "-450.00" }),
+    ],
+    transactions: [
+      tx({ account_id: 1, date: "2026-07-10", amount: "-60.00", category: "Dining Out", description: "Sushi Place" }),
+      tx({ account_id: 1, date: "2026-09-03", amount: "-90.00", category: "Groceries", description: "Whole Foods" }),
+      tx({ account_id: 1, date: "2026-09-05", amount: "3000.00", category: "Income", description: "Payroll" }),
+      tx({ account_id: 1, date: "2026-09-05", amount: "-1200.00", category: "Rent", description: "Landlord" }),
+      tx({ account_id: 1, date: "2026-08-05", amount: "-1400.00", category: "Rent", description: "Landlord" }),
+    ],
+    recurring: [recurring({ merchant: "Netflix", amount: "-15.00", cadence: "monthly" })],
+    buckets: [bucket({ name: "Vacation Fund", target_amount: "3000.00", saved_amount: "1500.00" })],
+    avgMonthlySpend: "2750.00",
+  });
+
+  for (const example of LEDGER_QA_EXAMPLES) {
+    it(`matches: "${example}"`, () => {
+      const r = ask(example, exampleCtx);
+      expect(r.matched, `expected "${example}" to match an intent, got: ${r.answer}`).toBe(true);
+    });
+  }
 });

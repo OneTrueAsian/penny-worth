@@ -358,9 +358,10 @@ const INTENTS: Intent[] = [
     handle: (m, ctx) => bucketProgressAnswer(m[1], ctx),
   },
   {
-    pattern: /(?:what'?s|what is) my savings rate(?: (?:in|during|for) (.+))?$/,
+    pattern:
+      /(?:what'?s|what is) my savings rate(?: (?:in|during|for) (.+)| (this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
     handle: (m, ctx) => {
-      const periodPhrase = m[1]?.trim();
+      const periodPhrase = (m[1] ?? m[2])?.trim();
       const range = periodPhrase ? parsePeriod(periodPhrase, ctx.today) : monthRange(ctx.today.getFullYear(), ctx.today.getMonth() + 1);
       if (!range) return `I couldn't figure out what time period "${periodPhrase}" means.`;
       const income = runQuery({ metric: "sum", sign: "income", period: range }, ctx).value;

@@ -36,6 +36,7 @@
   --accent-soft-text: #146b4e;
 
   --positive: #198463;
+  --positive-soft: #def2e9;
   --negative: #a24e33;
   --negative-soft: #f7e4dc;
   --warning: #866120;
@@ -90,6 +91,7 @@
     --accent-soft-text: #6ee3b6;
 
     --positive: #35c795;
+    --positive-soft: #163a2c;
     --negative: #e0895f;
     --negative-soft: #3a2a22;
     --warning: #e0ba5f;
@@ -126,6 +128,7 @@
   --accent-soft-text: #6ee3b6;
 
   --positive: #35c795;
+  --positive-soft: #163a2c;
   --negative: #e0895f;
   --negative-soft: #3a2a22;
   --warning: #e0ba5f;
@@ -167,6 +170,7 @@
   --accent-soft-text: #c7c8ff;
 
   --positive: #4edea3;
+  --positive-soft: #1c3a2e;
   --negative: #ff8a94;
   --negative-soft: #3a2129;
   --warning: #f0c374;
@@ -221,6 +225,7 @@
   --accent-soft-text: #34d399;
 
   --positive: #10b981;
+  --positive-soft: #0f3b2e;
   --negative: #f87171;
   --negative-soft: #3b1219;
   --warning: #fbbf24;
@@ -272,6 +277,7 @@
   --accent-soft-text: #0b5768;
 
   --positive: #047857;
+  --positive-soft: #dcfdf4;
   --negative: #e11d48;
   --negative-soft: #fde2e8;
   --warning: #b45309;
@@ -316,6 +322,7 @@
     --accent-soft-text: #7be8fb;
 
     --positive: #39ff9e;
+    --positive-soft: #063a21;
     --negative: #ff3d6e;
     --negative-soft: #3a0f1d;
     --warning: #ffd60a;
@@ -356,6 +363,7 @@
   --accent-soft-text: #7be8fb;
 
   --positive: #39ff9e;
+  --positive-soft: #063a21;
   --negative: #ff3d6e;
   --negative-soft: #3a0f1d;
   --warning: #ffd60a;
@@ -1129,16 +1137,24 @@ button:disabled {
 }
 
 .tour-list > li {
-  display: flex;
-  gap: 10px;
-  padding: 11px 0;
+  position: relative;
+  padding: 11px 0 11px 16px;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
   line-height: 1.6;
 }
 
+/* Plain document flow, not `display: flex` — a bullet's text is free to
+   contain more than one inline element (e.g. several `<strong>` phrases),
+   and flex would lay each of those out as its own side-by-side column
+   instead of running text, wrapping normally, the way multiple `<strong>`
+   tags inside one flex child otherwise do. */
 .tour-list > li:first-child {
   padding-top: 0;
+}
+
+.tour-list > li:first-child::before {
+  top: 7px;
 }
 
 .tour-list > li:last-child {
@@ -1147,12 +1163,13 @@ button:disabled {
 
 .tour-list > li::before {
   content: "";
+  position: absolute;
+  left: 0;
+  top: 18px;
   width: 6px;
   height: 6px;
   border-radius: 999px;
   background: var(--accent);
-  flex: none;
-  margin-top: 7px;
 }
 
 .path-box {
@@ -1222,6 +1239,11 @@ button:disabled {
 .account-card .type-badge-neg {
   background: var(--negative-soft);
   color: var(--negative);
+}
+
+.account-card .type-badge svg {
+  width: 18px;
+  height: 18px;
 }
 
 .account-card .info {
@@ -1358,6 +1380,11 @@ button:disabled {
 
 .ledger-qa-answer-unmatched {
   color: var(--text-muted);
+}
+
+.ledger-qa-tips p.field-hint {
+  margin: 0 0 10px 0;
+  line-height: 1.5;
 }
 
 .ledger-qa-examples {
@@ -1630,6 +1657,42 @@ button:disabled {
   height: 9px;
   border-radius: 3px;
   flex: none;
+}
+
+.category-legend-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--text-muted);
+}
+
+/* A small neutral icon badge for one row of a merchant/category list
+   (Recent transactions, the Ledger, Recurring, Top merchants, Upcoming
+   bills) — deliberately not colored per-category, since the donut chart's
+   own category colors are assigned by chart position, not a stable
+   per-category identity (see chart-legend-swatch above), so reusing them
+   here would tie a category to a color that can change chart-to-chart. */
+.row-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  flex: none;
+}
+
+.row-icon-badge svg {
+  width: 15px;
+  height: 15px;
+}
+
+.cell-with-icon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .goal-ring-pct {
@@ -2079,6 +2142,19 @@ button:disabled {
   letter-spacing: 0.05em;
   color: var(--text-muted);
   font-weight: 600;
+}
+
+.stat-label-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.stat-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
 }
 
 .stat-delta {
@@ -3045,8 +3121,34 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.insight-badge-positive {
+  background: var(--positive-soft);
+  color: var(--positive);
+  text-transform: uppercase;
+}
+
+.insight-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.insight-warning .insight-icon {
+  color: var(--warning);
+}
+
+.insight-info .insight-icon {
+  color: var(--accent-soft-text);
+}
+
+.insight-positive .insight-icon {
+  color: var(--positive);
+}
+
 .budget-alert-banner {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   text-align: left;
   margin-bottom: 16px;
@@ -3058,6 +3160,12 @@ button:disabled {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.budget-alert-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
 }
 
 .live-price-usage {
@@ -3277,6 +3385,11 @@ button:disabled {
 .checklist-step-done .checklist-step-check {
   background: var(--accent-soft);
   border-color: var(--accent);
+}
+
+.checklist-step-check svg {
+  width: 12px;
+  height: 12px;
 }
 
 .checklist-step-text {
