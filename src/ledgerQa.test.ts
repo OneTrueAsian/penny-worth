@@ -109,6 +109,22 @@ describe("spend by category or merchant", () => {
     expect(r.answer).toContain("2 transactions");
   });
 
+  it("accepts 'in' as a category preposition, not just 'on'/'at' (reported: \"how much did i spend in groceries in the past 2 months?\")", () => {
+    const c = ctx({
+      categories: ["Dining Out", "Groceries", "Transportation"],
+      transactions: [
+        tx({ date: "2026-08-01", amount: "-120.00", category: "Groceries" }),
+        tx({ date: "2026-07-10", amount: "-80.00", category: "Groceries" }),
+        tx({ date: "2026-05-01", amount: "-999.00", category: "Groceries" }), // outside the 2-month window
+      ],
+    });
+    const r = ask("how much did i spend in groceries in the past 2 months?", c);
+    expect(r.matched).toBe(true);
+    expect(r.answer).toContain("Groceries");
+    expect(r.answer).toContain("$200.00");
+    expect(r.answer).not.toContain("couldn't");
+  });
+
   it("fuzzy-matches a typo'd category name", () => {
     const c = ctx({
       transactions: [tx({ date: "2026-07-05", amount: "-60.00", category: "Dining Out" })],

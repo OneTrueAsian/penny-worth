@@ -209,11 +209,16 @@ type Intent = {
 
 const INTENTS: Intent[] = [
   {
-    // "how much did I spend on/at <subject> [in/during/since <period>]",
+    // "how much did I spend on/in/at <subject> [in/during/since <period>]",
     // plus a handful of relative periods ("last week", "the past 3
-    // months") that read naturally with no connector word at all.
+    // months") that read naturally with no connector word at all. "in" is
+    // deliberately accepted both as the subject preposition ("spend in
+    // groceries") and the period connector ("in the past 2 months") — the
+    // lazy subject match plus the anchored trailing clause resolve the
+    // overlap correctly (verified in ledgerQa.test.ts), since there's
+    // always a unique split that lets the rest of the pattern match.
     pattern:
-      /how much (?:did i|have i) spen[dt] (?:on|at) (.+?)(?: (in|during|since) (.+)|(this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
+      /how much (?:did i|have i) spen[dt] (?:on|in|at) (.+?)(?: (in|during|since) (.+)|(this week|last week|this month|last month|this year|last year|the past \d+ (?:day|week|month|year)s?|\d{4}))?$/,
     handle: (m, ctx) => {
       const subjectPhrase = m[1].trim();
       const periodPhrase = m[4] ?? (m[3] ? (m[2] === "since" ? `since ${m[3]}` : m[3]) : undefined);

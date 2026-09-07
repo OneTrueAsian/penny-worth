@@ -3485,12 +3485,19 @@ impl Store {
     /// crate already computes elsewhere rather than inventing new
     /// detection logic:
     ///
-    /// 1. **Pace**: for each budgeted category (excluding income),
-    ///    projects this month's spend forward (`actual *
-    ///    days_in_month/days_elapsed`) and flags it if that projection
-    ///    exceeds the budget by more than 10% — skipped entirely before
-    ///    day 5 of the month, since too little of the month has happened
-    ///    yet to project anything meaningful from.
+    /// 1. **Pace**: for each *flexible* budgeted category, projects this
+    ///    month's spend forward (`actual * days_in_month/days_elapsed`)
+    ///    and flags it if that projection exceeds the budget by more than
+    ///    10% — skipped entirely before day 5 of the month, since too
+    ///    little of the month has happened yet to project anything
+    ///    meaningful from. Scoped to `flexible` specifically (not just
+    ///    "not income") because linear day-of-month extrapolation assumes
+    ///    spend accrues gradually across the month — true for discretionary
+    ///    categories, false for `fixed`/`nonmonthly` ones, which post as a
+    ///    single lump sum: a $2,405.94 mortgage payment on the 1st once
+    ///    projected as "$2,405.94 / 6 days-elapsed * 30 days-in-month" a
+    ///    nonsensical $12,029.70 "on pace to exceed" warning for a bill
+    ///    that was already paid in full the moment it posted.
     /// 2. **Category jump**: reuses `spending_by_category` to compare this
     ///    month-to-date against the *same number of days* at the start of
     ///    the previous month (not the previous month's full total — that
@@ -3513,7 +3520,7 @@ impl Store {
         if days_elapsed >= 5 {
             let days_in_month = days_in_month(year, month);
             for actual in self.monthly_budget_actuals(year, month)? {
-                if actual.budget_group == "income" || actual.budgeted <= Decimal::ZERO {
+                if actual.budget_group != "flexible" || actual.budgeted <= Decimal::ZERO {
                     continue;
                 }
                 let projected = actual.actual * Decimal::from(days_in_month) / Decimal::from(days_elapsed);
@@ -8861,6 +8868,55 @@ mod tests {
         let insights = store.dashboard_insights("2026-08-03".parse().unwrap()).unwrap();
 
         assert!(!insights.iter().any(|i| i.kind == "pace"), "expected no early-month pace insight: {insights:?}");
+    }
+
+    #[test]
+    fn dashboard_insights_does_not_pace_project_a_fixed_expense_paid_in_full_at_the_start_of_the_month() {
+        // Reproduces a real report: a $2405.94 mortgage payment posted on
+        // the 1st showed a Dashboard warning projecting $12,029.70 by
+        // month end (naive `actual * days_in_month / days_elapsed` —
+        // 2405.94 / 6 * 30 — applied to a bill that was already paid in
+        // full for the month, not one that accrues day by day).
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Mortgage", "2026-09", "2405.94".parse().unwrap(), "fixed").unwrap();
+        store
+            .save_transactions(account, &[tx("2026-09-01", "LMCU Mortgage", "-2405.94")])
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Mortgage", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-09-06".parse().unwrap()).unwrap();
+
+        assert!(
+            !insights.iter().any(|i| i.kind == "pace" && i.message.contains("Mortgage")),
+            "expected no pace insight for a fully-paid fixed expense: {insights:?}"
+        );
+    }
+
+    #[test]
+    fn dashboard_insights_still_pace_projects_a_flexible_category_that_front_loaded_its_spend() {
+        // The fix must not become "skip pace for anything paid early" —
+        // a flexible category that happens to spend a lot on day 1 (e.g.
+        // a big grocery haul) is exactly the case pace projection exists
+        // for, and should still fire.
+        let store = Store::open_in_memory().unwrap();
+        let account = test_account(&store);
+        store.set_budget("Groceries", "2026-09", "300.00".parse().unwrap(), "flexible").unwrap();
+        store
+            .save_transactions(account, &[tx("2026-09-01", "Costco", "-250.00")])
+            .unwrap();
+        for id in store.all_transactions().unwrap().iter().map(|t| t.id).collect::<Vec<_>>() {
+            store.set_category(id, "Groceries", CategorySource::User, None).unwrap();
+        }
+
+        let insights = store.dashboard_insights("2026-09-06".parse().unwrap()).unwrap();
+
+        assert!(
+            insights.iter().any(|i| i.kind == "pace" && i.message.contains("Groceries")),
+            "expected a pace insight for a front-loaded flexible category: {insights:?}"
+        );
     }
 
     #[test]
