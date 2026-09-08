@@ -110,7 +110,7 @@ const DEFAULT_SIZE: Record<FixedWidgetId, { w: number; h: number }> = {
   debt_payoff: { w: 12, h: 9 },
   allocation: { w: 12, h: 7 },
   net_worth_by_member: { w: 12, h: 6 },
-  income_vs_expenses: { w: 12, h: 9 },
+  income_vs_expenses: { w: 12, h: 10 },
   todays_gain_loss: { w: 6, h: 5 },
 };
 // Account/Bucket/Investment-account widgets default to a compact,

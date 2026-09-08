@@ -1486,8 +1486,17 @@ button:disabled {
 }
 
 /* react-resizable's default corner handle is a fixed near-black triangle
-   — near-invisible against a dark surface, so invert it in dark mode. */
-[data-theme="dark"] .react-resizable-handle {
+   — near-invisible against a dark surface, so invert it in dark mode.
+   Aurora and Midnight Emerald are "always dark" regardless of the
+   sidebar's own Light/Dark/System toggle (see App.tsx's `data-palette`
+   vs. `data-theme` — they're independent attributes, so `data-theme` can
+   still say "light" while one of these reskins renders dark), so they're
+   matched by palette directly rather than relying on `data-theme`.
+   Futuristic has its own real light/dark modes and correctly follows
+   `data-theme`, so it doesn't need a palette-specific rule here. */
+[data-theme="dark"] .react-resizable-handle,
+[data-palette="aurora"] .react-resizable-handle,
+[data-palette="midnight_emerald"] .react-resizable-handle {
   filter: invert(1);
 }
 
@@ -1581,6 +1590,19 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 18px;
+  min-width: 0;
+}
+
+/* The legend list next to the donut (see DashboardView/CashFlowView/
+   InvestmentsView) — without an explicit min-width, a flex item's default
+   min-width is its content's un-wrapped size, so a long category name +
+   amount refuses to shrink and overflows the card instead of wrapping,
+   at a card width narrower than this used to ever render at (a free-form
+   grid widget can be resized much narrower than a full page section
+   ever was). */
+.donut-legend-list {
+  min-width: 0;
+  flex: 1;
 }
 
 .donut-hole {
@@ -1675,8 +1697,10 @@ button:disabled {
 .chart-legend-item {
   display: flex;
   align-items: center;
-  gap: 7px;
+  flex-wrap: wrap;
+  gap: 3px 7px;
   font-size: 12.5px;
+  min-width: 0;
 }
 
 .category-trend {
@@ -1754,12 +1778,18 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
 }
 
 .bucket-card-header h3 {
   margin: 0;
   font-size: 15px;
   font-family: var(--font-display);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bucket-saved {
@@ -1881,10 +1911,22 @@ button:disabled {
  * what's actually printed in it. */
 .cat-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.4fr) 152px minmax(70px, 1fr) 134px 134px 134px 130px;
+  /* The three amount columns and the group/actions columns used to be
+     fixed lengths (134px/152px/130px) — an explicit px track never
+     shrinks below that length no matter how narrow the container gets,
+     which forced the *entire* row (name and progress bar included) into
+     a ~1030px horizontal-scroll minimum even at this app's own default
+     800x600 window. `minmax(floor, preferred)` still gives every row's
+     columns the same fixed *preferred* width (the actual reason these
+     aren't content-sized — see the comment above), but now lets a track
+     shrink toward its floor under real space pressure instead of forcing
+     the whole row wider; `.cat-amt`'s own `overflow: hidden; text-overflow:
+     ellipsis` already handles truncating an amount gracefully once its
+     column shrinks. */
+  grid-template-columns: minmax(160px, 1.4fr) minmax(90px, 152px) minmax(70px, 1fr) minmax(50px, 134px) minmax(50px, 134px) minmax(50px, 134px) minmax(90px, 130px);
   align-items: center;
-  gap: 14px;
-  padding: 12px 16px;
+  gap: 10px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border);
 }
 

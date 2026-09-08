@@ -697,7 +697,7 @@ export function DashboardView({
         {donutData.length > 0 ? (
           <div className="donut-with-legend">
             <DonutChart data={donutData} size={132} center={{ value: fmtMoneyShort(donutTotal), label: "this month" }} />
-            <div>
+            <div className="donut-legend-list">
               {donutData.map((d) => (
                 <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
                   <CategoryIcon category={d.label} className="category-legend-icon" />
@@ -928,7 +928,7 @@ export function DashboardView({
         {allocationData.length > 0 ? (
           <div className="donut-with-legend">
             <DonutChart data={allocationData} size={132} />
-            <div>
+            <div className="donut-legend-list">
               {allocationData.map((d) => (
                 <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
                   <span className="chart-legend-swatch" style={{ background: d.color }}></span>

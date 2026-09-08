@@ -292,7 +292,7 @@ export function BucketsView({
                 )}
                 <div className="bucket-card-main">
                   <div className="bucket-card-header">
-                    <h3>{b.name}</h3>
+                    <h3 title={b.name}>{b.name}</h3>
                     {confirmingDeleteId === b.id ? (
                       <span className="row-delete-confirm">
                         <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>

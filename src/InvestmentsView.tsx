@@ -425,7 +425,7 @@ export function InvestmentsView({
           </div>
           <div className="donut-with-legend">
             <DonutChart data={donutData} size={132} />
-            <div>
+            <div className="donut-legend-list">
               {donutData.map((d) => (
                 <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
                   <span className="chart-legend-swatch" style={{ background: d.color }}></span>

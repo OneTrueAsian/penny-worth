@@ -175,7 +175,14 @@ export function BarChart({
   const innerH = height - padT - padB;
   let max = 0;
   data.forEach((d) => d.values.forEach((v) => { max = Math.max(max, Math.abs(v.value)); }));
-  max = max === 0 ? 1 : max * 1.15;
+  // Every value is zero (e.g. a brand-new account with no history yet) —
+  // `max` still needs to be a positive number below so bar-height/tooltip
+  // math doesn't divide by zero, but that fallback value is only ever an
+  // implementation detail for laying out an empty chart, never a real
+  // scale: labeling the axis against it produced a nonsensical "$1, $1,
+  // $1, $0, $0" instead of an honest all-zero axis.
+  const isEmpty = max === 0;
+  max = isEmpty ? 1 : max * 1.15;
   const groupW = innerW / (data.length || 1);
   const gridCount = 4;
 
@@ -206,7 +213,7 @@ export function BarChart({
           <g key={i}>
             <line x1={padL} y1={gy} x2={width - padR} y2={gy} stroke="var(--border)" strokeWidth={1} />
             <text x={padL - 8} y={gy + 3} textAnchor="end" className="axis-label">
-              {fmtMoneyShort(val)}
+              {isEmpty ? fmtMoneyShort(0) : fmtMoneyShort(val)}
             </text>
           </g>
         );

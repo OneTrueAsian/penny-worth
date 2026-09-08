@@ -1442,11 +1442,32 @@ impl Store {
         Ok(base_value + total)
     }
 
+    /// Every investment account's total holdings value (`SUM(shares *
+    /// price)`), keyed by account id. An account with no holdings rows
+    /// simply has no entry, letting callers fall back to its transaction-
+    /// derived balance instead of treating "no holdings yet" as "worth
+    /// zero" (see `list_accounts`/`account_contributions_as_of`).
+    fn holdings_value_by_account(&self) -> rusqlite::Result<std::collections::HashMap<i64, Decimal>> {
+        let mut stmt = self.conn.prepare("SELECT account_id, shares, price FROM holdings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        let mut totals: std::collections::HashMap<i64, Decimal> = std::collections::HashMap::new();
+        for row in rows {
+            let (account_id, shares_str, price_str) = row?;
+            let shares = Decimal::from_str(&shares_str).expect("shares stored by this crate must be valid");
+            let price = Decimal::from_str(&price_str).expect("price stored by this crate must be valid");
+            *totals.entry(account_id).or_insert(Decimal::ZERO) += shares * price;
+        }
+        Ok(totals)
+    }
+
     /// Every account, each with its balance computed fresh as of `today`
     /// (see `account_balance_as_of`) — not a stored running total, so
     /// it's never out of sync with either the transaction log or any
     /// monthly reset.
     pub fn list_accounts(&self, today: NaiveDate) -> rusqlite::Result<Vec<StoredAccount>> {
+        let holdings_value = self.holdings_value_by_account()?;
         let mut stmt = self.conn.prepare(
             "SELECT a.id, a.name, a.account_type, a.starting_balance, a.institution, a.mask, a.interest_rate,
                     a.excluded_from_debt_payoff, a.member_id, fm.name
@@ -1474,7 +1495,23 @@ impl Store {
             let (id, name, account_type, starting_balance_str, institution, mask, interest_rate_str, excluded_from_debt_payoff, member_id, member_name) = row?;
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
-            let current_balance = self.account_balance_as_of(id, starting_balance, today)?;
+            let mut current_balance = self.account_balance_as_of(id, starting_balance, today)?;
+            // An investment account's real worth is what it holds, not
+            // whatever cash transactions happen to have touched the
+            // account — once it has any holdings tracked, their total
+            // value replaces the transaction-derived balance entirely (a
+            // still-empty, freshly created investment account has no
+            // entry in `holdings_value` yet, so it keeps its transaction-
+            // derived balance until the first holding is added). This was
+            // a real gap: a portfolio tracked entirely through Holdings
+            // (never a matching deposit transaction) showed as $0 in Net
+            // Worth, Accounts, and Household everywhere, despite the
+            // Investments tab correctly showing its real value.
+            if account_type == "investment" {
+                if let Some(&value) = holdings_value.get(&id) {
+                    current_balance = value;
+                }
+            }
             let interest_rate = interest_rate_str
                 .map(|s| Decimal::from_str(&s).expect("interest_rate stored by this crate must be valid"));
             accounts.push(StoredAccount {
@@ -4968,14 +5005,27 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let holdings_value = self.holdings_value_by_account()?;
         let mut result = Vec::with_capacity(accounts.len());
         for (id, name, account_type, starting_balance_str) in accounts {
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
-            let balance = self.account_balance_as_of(id, starting_balance, as_of)?;
+            let mut balance = self.account_balance_as_of(id, starting_balance, as_of)?;
             let account_type =
                 AccountType::parse(&account_type).expect("account_type stored by this crate must be valid");
             let group = account_type.group();
+            // Same holdings-take-priority rule as `list_accounts` — see its
+            // comment. Only ever "as of today" in effect: a holding has no
+            // historical price record, so its current value is applied at
+            // every past date too, same convention `assetsTotal` already
+            // uses for Property & Valuables in the Dashboard's own trend
+            // chart (a flat approximation is far less misleading than the
+            // $0 this used to show throughout).
+            if group == "investment" {
+                if let Some(&value) = holdings_value.get(&id) {
+                    balance = value;
+                }
+            }
             let contribution = match group {
                 "credit" => balance - starting_balance,
                 "loan" => -balance,
@@ -6748,6 +6798,40 @@ mod tests {
         let accounts = store.list_accounts(far_future()).unwrap();
 
         assert_eq!(accounts[0].member_name, Some("Alex".to_string()));
+    }
+
+    #[test]
+    fn list_accounts_uses_holdings_value_for_an_investment_account_once_it_has_holdings() {
+        // A portfolio tracked entirely through Holdings (no matching
+        // deposit transaction ever recorded) used to show as worth
+        // whatever its starting_balance happened to be (typically $0) —
+        // this is what makes the Investments tab's real value agree with
+        // Net Worth/Accounts/Household everywhere else.
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Brokerage", AccountType::Investment).unwrap();
+        store.set_account_starting_balance(brokerage, "0".parse().unwrap()).unwrap();
+        store
+            .create_holding(brokerage, "VTI", "Vanguard Total Stock", "10".parse().unwrap(), "265.00".parse().unwrap(), "2000.00".parse().unwrap(), None)
+            .unwrap();
+        store
+            .create_holding(brokerage, "BND", "Vanguard Total Bond", "20".parse().unwrap(), "71.50".parse().unwrap(), "1300.00".parse().unwrap(), None)
+            .unwrap();
+
+        let accounts = store.list_accounts(far_future()).unwrap();
+
+        // 10*265.00 + 20*71.50 = 2650.00 + 1430.00 = 4080.00
+        assert_eq!(accounts[0].current_balance, "4080.00".parse().unwrap());
+    }
+
+    #[test]
+    fn list_accounts_falls_back_to_transaction_balance_for_an_investment_account_with_no_holdings() {
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Brokerage", AccountType::Investment).unwrap();
+        store.set_account_starting_balance(brokerage, "5000.00".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts(far_future()).unwrap();
+
+        assert_eq!(accounts[0].current_balance, "5000.00".parse().unwrap());
     }
 
     #[test]
@@ -11315,6 +11399,27 @@ mod tests {
         // 1000 cash - 300 owed - 15000 owed + 5000 investments = -9300
         assert_eq!(breakdown.net_worth, "-9300.00".parse().unwrap());
         assert_eq!(breakdown.net_worth, store.net_worth_as_of("2026-08-31".parse().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn net_worth_breakdown_as_of_uses_holdings_value_for_an_investment_account_once_it_has_holdings() {
+        // Same gap as `list_accounts`'s own version of this test: a
+        // holding has no historical price record, so its current value is
+        // applied at every past date too (same "current value applied
+        // throughout" convention the Dashboard already uses for Property
+        // & Valuables) — a flat approximation, but far less misleading
+        // than counting a real, tracked portfolio as $0 everywhere.
+        let store = Store::open_in_memory().unwrap();
+        let brokerage = store.get_or_create_account("Brokerage", AccountType::Investment).unwrap();
+        store.set_account_starting_balance(brokerage, "0".parse().unwrap()).unwrap();
+        store
+            .create_holding(brokerage, "VTI", "Vanguard Total Stock", "10".parse().unwrap(), "265.00".parse().unwrap(), "2000.00".parse().unwrap(), None)
+            .unwrap();
+
+        let breakdown = store.net_worth_breakdown_as_of("2026-01-01".parse().unwrap()).unwrap();
+
+        assert_eq!(breakdown.investments, "2650.00".parse().unwrap());
+        assert_eq!(breakdown.net_worth, "2650.00".parse().unwrap());
     }
 
     #[test]
