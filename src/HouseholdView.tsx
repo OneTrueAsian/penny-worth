@@ -54,7 +54,7 @@ export function HouseholdView({
   const monthKey = `${year}-${String(month).padStart(2, "0")}`;
   const transactionsThisMonth = transactions.filter((t) => t.date.startsWith(monthKey));
   const spending = spendingByMember(transactionsThisMonth);
-  const income = incomeByMember(transactionsThisMonth);
+  const income = incomeByMember(transactionsThisMonth, accounts);
   const netWorth = netWorthByMember(accounts, assets);
 
   // Group this month's per-member actuals by category, preserving the

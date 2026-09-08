@@ -4758,22 +4758,39 @@ impl Store {
     /// exclusion here it was silently counted as both (once on each side of
     /// the transfer) — inflating this month's income, expense, and any
     /// per-person breakdown built on top of it.
+    ///
+    /// A positive amount on a credit or loan account is never income
+    /// either, regardless of category or whether it's linked through
+    /// `apply_debt_payment` — restoring available credit (or, on a loan,
+    /// an escrow refund or similar) is a balance adjustment, not new money
+    /// coming in. This was the root cause of a real production bug: a
+    /// credit card payment recorded as an ordinary deposit (not linked)
+    /// inflated a family member's reported income by over 50x. A charge on
+    /// either account type (negative) still counts as spending as normal —
+    /// only the positive side is excluded here.
     pub fn monthly_totals(&self, year: i32, month: u32) -> rusqlite::Result<(Decimal, Decimal)> {
         let (first, next_first) = month_bounds(year, month);
         let mut stmt = self.conn.prepare(
-            "SELECT amount FROM transactions
-             WHERE date >= ?1 AND date < ?2
-                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
-                   AND (category IS NULL OR category <> 'Transfer')
-                   AND deleted_at IS NULL",
+            "SELECT t.amount, a.account_type FROM transactions t
+             JOIN accounts a ON a.id = t.account_id
+             WHERE t.date >= ?1 AND t.date < ?2
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND (t.category IS NULL OR t.category <> 'Transfer')
+                   AND t.deleted_at IS NULL",
         )?;
-        let rows = stmt.query_map(params![first.to_string(), next_first.to_string()], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map(params![first.to_string(), next_first.to_string()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
 
         let mut income = Decimal::ZERO;
         let mut expense = Decimal::ZERO;
         for row in rows {
-            let amount = Decimal::from_str(&row?).expect("amount stored by this crate must be valid");
+            let (amount_str, account_type) = row?;
+            let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
             if amount > Decimal::ZERO {
+                if account_type == "credit" || account_type == "loan" {
+                    continue;
+                }
                 income += amount;
             } else if amount < Decimal::ZERO {
                 expense -= amount;
@@ -4800,23 +4817,27 @@ impl Store {
         let (range_start, _) = month_bounds(from_year, from_month);
         let (_, range_end) = month_bounds(to_year, to_month);
         let mut stmt = self.conn.prepare(
-            "SELECT date, amount FROM transactions
-             WHERE date >= ?1 AND date < ?2
-                   AND id NOT IN (SELECT generated_transaction_id FROM debt_payments)
-                   AND (category IS NULL OR category <> 'Transfer')
-                   AND deleted_at IS NULL",
+            "SELECT t.date, t.amount, a.account_type FROM transactions t
+             JOIN accounts a ON a.id = t.account_id
+             WHERE t.date >= ?1 AND t.date < ?2
+                   AND t.id NOT IN (SELECT generated_transaction_id FROM debt_payments)
+                   AND (t.category IS NULL OR t.category <> 'Transfer')
+                   AND t.deleted_at IS NULL",
         )?;
         let rows = stmt.query_map(params![range_start.to_string(), range_end.to_string()], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
         })?;
 
         let mut totals: std::collections::HashMap<(i32, u32), (Decimal, Decimal)> = std::collections::HashMap::new();
         for row in rows {
-            let (date_str, amount_str) = row?;
+            let (date_str, amount_str, account_type) = row?;
             let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").expect("date stored by this crate must be valid");
             let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
             let entry = totals.entry((date.year(), date.month())).or_insert((Decimal::ZERO, Decimal::ZERO));
             if amount > Decimal::ZERO {
+                if account_type == "credit" || account_type == "loan" {
+                    continue;
+                }
                 entry.0 += amount;
             } else if amount < Decimal::ZERO {
                 entry.1 -= amount;
@@ -11109,6 +11130,62 @@ mod tests {
         let batched = store.monthly_totals_for_range(2026, 6, 2026, 6).unwrap();
 
         assert_eq!(batched.get(&(2026, 6)).copied().unwrap(), ("3000.00".parse().unwrap(), Decimal::ZERO));
+    }
+
+    #[test]
+    fn monthly_totals_never_counts_a_positive_credit_card_transaction_as_income() {
+        // A credit card payment recorded as an ordinary deposit (not
+        // linked via apply_debt_payment) — the real production shape that
+        // inflated a family member's reported income by over 50x. The
+        // charge on checking (an expense) still counts normally.
+        let store = Store::open_in_memory().unwrap();
+        let checking = test_account(&store);
+        let credit_card = store.get_or_create_account("Visa", AccountType::Credit).unwrap();
+        store
+            .save_transactions(checking, &[tx("2026-08-20", "WITHDRAWAL VISA", "-200.00")])
+            .unwrap();
+        store
+            .save_transactions(credit_card, &[tx("2026-08-21", "VISA ONLINE PYMT", "200.00")])
+            .unwrap();
+
+        let (income, expense) = store.monthly_totals(2026, 8).unwrap();
+
+        assert_eq!(income, Decimal::ZERO, "the credit card deposit must not count as income");
+        assert_eq!(expense, "200.00".parse().unwrap(), "the checking withdrawal still counts as spending");
+    }
+
+    #[test]
+    fn monthly_totals_still_counts_a_credit_card_charge_as_spending() {
+        let store = Store::open_in_memory().unwrap();
+        let credit_card = store.get_or_create_account("Visa", AccountType::Credit).unwrap();
+        store.save_transactions(credit_card, &[tx("2026-08-20", "Groceries", "-80.00")]).unwrap();
+
+        let (income, expense) = store.monthly_totals(2026, 8).unwrap();
+
+        assert_eq!(income, Decimal::ZERO);
+        assert_eq!(expense, "80.00".parse().unwrap(), "a charge is still real spending, only positive amounts are excluded");
+    }
+
+    #[test]
+    fn monthly_totals_never_counts_a_positive_loan_transaction_as_income() {
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Car Loan", AccountType::Loan).unwrap();
+        store.save_transactions(loan, &[tx("2026-08-20", "Escrow Refund", "75.00")]).unwrap();
+
+        let (income, _) = store.monthly_totals(2026, 8).unwrap();
+
+        assert_eq!(income, Decimal::ZERO);
+    }
+
+    #[test]
+    fn monthly_totals_for_range_also_never_counts_a_credit_card_payment_as_income() {
+        let store = Store::open_in_memory().unwrap();
+        let credit_card = store.get_or_create_account("Visa", AccountType::Credit).unwrap();
+        store.save_transactions(credit_card, &[tx("2026-06-10", "VISA ONLINE PYMT", "200.00")]).unwrap();
+
+        let batched = store.monthly_totals_for_range(2026, 6, 2026, 6).unwrap();
+
+        assert_eq!(batched.get(&(2026, 6)).copied().unwrap(), (Decimal::ZERO, Decimal::ZERO));
     }
 
     #[test]

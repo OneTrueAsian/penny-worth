@@ -1,5 +1,5 @@
 import type { Account, Asset, Transaction } from "./types";
-import { netWorthContribution } from "./accountGroups";
+import { groupOf, netWorthContribution } from "./accountGroups";
 
 /** A name→amount row for a "by family member" breakdown table. */
 export type MemberAmount = { name: string; amount: number };
@@ -24,12 +24,21 @@ export function spendingByMember(transactions: Transaction[]): MemberAmount[] {
 
 /** All-time income grouped by family member — the symmetric counterpart
  * to `spendingByMember` (inflows instead of outflows), same
- * drop-unattributed and Transfer-exclusion conventions. */
-export function incomeByMember(transactions: Transaction[]): MemberAmount[] {
+ * drop-unattributed and Transfer-exclusion conventions. Also excludes a
+ * positive amount on a credit or loan account — restoring available
+ * credit (or a loan escrow refund) is a balance adjustment, never income,
+ * regardless of category or whether it's linked through
+ * `apply_debt_payment` (matches the same exclusion `Store::monthly_totals`
+ * applies on the backend — a real production bug: an unlinked credit card
+ * payment inflated a family member's reported income by over 50x). */
+export function incomeByMember(transactions: Transaction[], accounts: Account[]): MemberAmount[] {
+  const groupByAccountId = new Map(accounts.map((a) => [a.id, groupOf(a.account_type)]));
   const totals = new Map<string, number>();
   for (const t of transactions) {
     const amount = parseFloat(t.amount);
     if (amount <= 0 || !t.member_name || t.category === "Transfer") continue;
+    const group = groupByAccountId.get(t.account_id);
+    if (group === "credit" || group === "loan") continue;
     totals.set(t.member_name, (totals.get(t.member_name) ?? 0) + amount);
   }
   return Array.from(totals, ([name, amount]) => ({ name, amount }));

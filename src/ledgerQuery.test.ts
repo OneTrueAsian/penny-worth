@@ -146,6 +146,25 @@ describe("runQuery — Transfer exclusion", () => {
   });
 });
 
+describe("runQuery — credit/loan payments are never income", () => {
+  // Same blanket rule Store::monthly_totals applies on the backend: a
+  // positive amount on a credit or loan account is a balance adjustment,
+  // never income — even if (mistakenly) categorized "Income".
+  const c = ctx({
+    accounts: [account({ id: 1, name: "Everyday Checking" }), account({ id: 2, name: "Capital One", account_type: "credit" })],
+    transactions: [
+      tx({ amount: "4000.00", category: "Income", description: "Paycheck" }),
+      tx({ amount: "1867.82", category: "Income", account_id: 2, account_name: "Capital One", description: "Payment" }),
+    ],
+  });
+
+  it("excludes a credit account's positive amount even when categorized Income", () => {
+    const result = runQuery({ metric: "sum", sign: "income" }, c);
+    expect(result.value).toBeCloseTo(4000);
+    expect(result.count).toBe(1);
+  });
+});
+
 describe("runQuery — subject types", () => {
   const c = ctx({
     accounts: [account({ id: 1, name: "Everyday Checking" }), account({ id: 2, name: "Rewards Card", account_type: "credit" })],
