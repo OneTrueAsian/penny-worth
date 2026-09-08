@@ -1,5 +1,8 @@
 import { FormEvent, useMemo, useState } from "react";
 import { AlertTriangle, Check, CreditCard, Info, Landmark, Leaf, LineChart as LineChartIcon, MessageCircleQuestion, Wallet } from "lucide-react";
+import { GridLayout, useContainerWidth } from "react-grid-layout";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
 import { CategoryIcon } from "./categoryIcons";
 import { BudgetGroupIcon } from "./budgetGroupIcons";
 import type {
@@ -18,7 +21,7 @@ import type {
   Report,
   Transaction,
 } from "./types";
-import { DonutChart, LineChart, ProgressRing, Sparkline, fmtMoneyShort } from "./charts";
+import { BarChart, DonutChart, LineChart, ProgressRing, Sparkline, fmtMoneyShort } from "./charts";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 import { groupOf, netWorthContribution, owedAmount } from "./accountGroups";
@@ -27,10 +30,15 @@ import {
   LAYOUT_PRESETS,
   LAYOUT_PRESET_LABELS,
   matchingLayoutPreset,
+  parseWidgetId,
+  toGridWidgetItems,
+  type DashboardGridLayout,
+  type FixedWidgetId,
   type LayoutPresetKey,
   type WidgetId,
 } from "./dashboardLayout";
 import { answerLedgerQuestion, LEDGER_QA_EXAMPLES, type QaResult } from "./ledgerQa";
+import { daysLeft } from "./BucketsView";
 
 const CHECKLIST_DISMISSED_KEY = "meadow-checklist-dismissed";
 
@@ -130,13 +138,6 @@ const GROUP_LABELS: Record<string, string> = {
 
 type StatKey = "networth" | "cash" | "debt" | "investments";
 
-const STAT_LABELS: Record<StatKey, string> = {
-  networth: "Net Worth",
-  cash: "Cash",
-  debt: "Debt",
-  investments: "Investments",
-};
-
 export function DashboardView({
   accounts,
   netWorthHistory,
@@ -155,8 +156,9 @@ export function DashboardView({
   buckets,
   categories,
   topCategoriesData,
-  layoutWidgets,
-  onSetLayoutWidgets,
+  cashFlow,
+  dashboardLayout,
+  onSetDashboardLayout,
   onOpenAddWidget,
   onOpenLedger,
   onOpenRecurring,
@@ -164,6 +166,8 @@ export function DashboardView({
   onOpenCashFlow,
   onOpenInvestments,
   onOpenReports,
+  onOpenAccounts,
+  onOpenBuckets,
 }: {
   accounts: Account[];
   netWorthHistory: NetWorthPoint[];
@@ -208,11 +212,17 @@ export function DashboardView({
    * looked at, defaulting to the current month) whenever this widget is on
    * the layout, mirroring the existing tab-scoped fetch pattern. */
   topCategoriesData: CashFlow | null;
-  /** The Dashboard's current widget arrangement, persisted client-side
-   * (see dashboardLayout.ts) — not app data, so it isn't fetched from the
-   * backend or shared between profiles. */
-  layoutWidgets: WidgetId[];
-  onSetLayoutWidgets: (widgets: WidgetId[]) => void;
+  /** Only needed for the "Income vs. expenses" pinned-report widget — the
+   * same totals-over-time data Cash Flow's own overview tab computes.
+   * App.tsx fetches it (for whatever range Cash Flow's own toggle last
+   * used, defaulting to 6 months) whenever this widget is on the layout,
+   * mirroring `topCategoriesData`'s own tab-scoped fetch pattern above. */
+  cashFlow: CashFlow | null;
+  /** The Dashboard's current free-form grid arrangement, persisted
+   * client-side (see dashboardLayout.ts) — not app data, so it isn't
+   * fetched from the backend or shared between profiles. */
+  dashboardLayout: DashboardGridLayout;
+  onSetDashboardLayout: (layout: DashboardGridLayout) => void;
   onOpenAddWidget: () => void;
   /** "Recent transactions"/"Upcoming bills" rows drill into the Ledger/
    * Recurring tab — no filter passed along, matching every other tab
@@ -224,12 +234,16 @@ export function DashboardView({
   onOpenCashFlow: () => void;
   onOpenInvestments: () => void;
   onOpenReports: () => void;
+  /** Only needed for a pinned single-account widget's "View in Accounts →"
+   * link — every other widget already had a home-tab link, this one didn't. */
+  onOpenAccounts: () => void;
+  /** Only needed for a pinned single-bucket widget's "View in Buckets →" link. */
+  onOpenBuckets: () => void;
 }) {
   const [expandedStat, setExpandedStat] = useState<StatKey | null>(null);
   const [showBudgetAlerts, setShowBudgetAlerts] = useState(false);
   const [checklistDismissed, setChecklistDismissed] = useState(loadChecklistDismissed);
   const [customizeMode, setCustomizeMode] = useState(false);
-  const [dragWidgetId, setDragWidgetId] = useState<WidgetId | null>(null);
 
   function dismissChecklist() {
     setChecklistDismissed(true);
@@ -342,14 +356,6 @@ export function DashboardView({
       investments: toRows(accountContributionDeltas.filter((d) => d.group === "investment")),
     };
   }, [accountContributionDeltas]);
-  // Which arrow direction reads as "good" for each card's change rows —
-  // inverted for Debt, same as debtTrendingDown/debtSpark above.
-  const changeGoodDirection: Record<StatKey, "up" | "down"> = {
-    networth: "up",
-    cash: "up",
-    debt: "down",
-    investments: "up",
-  };
 
   function toggleStat(key: StatKey) {
     setExpandedStat((prev) => (prev === key ? null : key));
@@ -424,118 +430,176 @@ export function DashboardView({
 
   const netWorthByMemberRows = useMemo(() => netWorthByMember(accounts, assets), [accounts, assets]);
 
+  // "Today's gain/loss" pinned-report widget — same formula as the
+  // Investments tab's own stat tile of the same name (see
+  // InvestmentsView.tsx): scoped to holdings that actually have a live
+  // quote today (`day_gain_loss` non-null), with the percentage computed
+  // against what those same holdings were worth at yesterday's close.
+  const { holdingsWithDayCount, totalDayGain, totalDayGainPct } = useMemo(() => {
+    const withDayData = holdings.filter((h) => h.day_gain_loss !== null);
+    const totalDayGain = withDayData.reduce((s, h) => s + parseFloat(h.day_gain_loss as string), 0);
+    const totalDayPrevValue = withDayData.reduce((s, h) => s + parseFloat(h.shares) * parseFloat(h.prev_close as string), 0);
+    return {
+      holdingsWithDayCount: withDayData.length,
+      totalDayGain,
+      totalDayGainPct: totalDayPrevValue !== 0 ? (totalDayGain / totalDayPrevValue) * 100 : null,
+    };
+  }, [holdings]);
+
   // Every widget's content, keyed by id — the layout array below just
   // decides which of these render, and in what order. Wrapping each
   // existing section here (unchanged) rather than restructuring them is
   // deliberate: the customization system should only ever reorder/hide
   // widgets, never change what's inside one.
-  const widgetContent: Record<WidgetId, React.ReactNode> = {
-    stats: (
+  const widgetContent: Record<FixedWidgetId, React.ReactNode> = {
+    stat_net_worth: (
       <>
-        <div className="stats">
-          <button
-            type="button"
-            className={expandedStat === "networth" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-            onClick={() => toggleStat("networth")}
-          >
-            <div className="stat-top">
-              <div className="stat-top-main">
-                <span className="stat-value">{fmtMoneyShort(netWorthWithAssets)}</span>
-                <span className="stat-label-row">
-                  <Landmark className="stat-icon" aria-hidden="true" />
-                  <span className="stat-label">Net Worth</span>
-                </span>
-              </div>
-              <Sparkline points={netWorthSpark} color="var(--accent)" />
-            </div>
-            {monthsSpan > 1 && (
-              <span className={netWorthDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
-                {netWorthDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(netWorthDelta))} over {monthsSpan}mo
+        <button
+          type="button"
+          className={expandedStat === "networth" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          onClick={() => toggleStat("networth")}
+        >
+          <div className="stat-top">
+            <div className="stat-top-main">
+              <span className="stat-value">{fmtMoneyShort(netWorthWithAssets)}</span>
+              <span className="stat-label-row">
+                <Landmark className="stat-icon" aria-hidden="true" />
+                <span className="stat-label">Net Worth</span>
               </span>
-            )}
-          </button>
-          <button
-            type="button"
-            className={expandedStat === "cash" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-            onClick={() => toggleStat("cash")}
-          >
-            <div className="stat-top">
-              <div className="stat-top-main">
-                <span className="stat-value">{fmtMoneyShort(cash)}</span>
-                <span className="stat-label-row">
-                  <Wallet className="stat-icon" aria-hidden="true" />
-                  <span className="stat-label">Cash</span>
-                </span>
-              </div>
-              <Sparkline points={cashSpark} color="var(--info)" />
             </div>
-            {monthsSpan > 1 && (
-              <span className={cashDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
-                {cashDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(cashDelta))} over {monthsSpan}mo
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
-            className={expandedStat === "debt" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-            onClick={() => toggleStat("debt")}
-          >
-            <div className="stat-top">
-              <div className="stat-top-main">
-                <span
-                  className={
-                    debt === 0 ? "stat-value" : debtTrendingDown ? "stat-value report-good" : "stat-value report-over-budget"
-                  }
-                >
-                  {fmtMoneyShort(debt)}
-                </span>
-                <span className="stat-label-row">
-                  {debt !== 0 && !debtTrendingDown ? (
-                    <AlertTriangle className="stat-icon" style={{ color: "var(--negative)" }} aria-hidden="true" />
-                  ) : (
-                    <CreditCard className="stat-icon" aria-hidden="true" />
-                  )}
-                  <span className="stat-label">Debt</span>
-                </span>
-              </div>
-              <Sparkline points={debtSpark} color={debtTrendingDown ? "var(--positive)" : "var(--negative)"} />
-            </div>
-            {monthsSpan > 1 && (
-              <span className={debtDelta <= 0 ? "stat-delta up" : "stat-delta down"}>
-                {debtDelta <= 0 ? "▼" : "▲"} {fmtMoneyShort(Math.abs(debtDelta))} over {monthsSpan}mo
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
-            className={expandedStat === "investments" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-            onClick={() => toggleStat("investments")}
-          >
-            <div className="stat-top">
-              <div className="stat-top-main">
-                <span className="stat-value">{fmtMoneyShort(investments)}</span>
-                <span className="stat-label-row">
-                  <LineChartIcon className="stat-icon" aria-hidden="true" />
-                  <span className="stat-label">Investments</span>
-                </span>
-              </div>
-              <Sparkline points={investmentsSpark} color="#8A5FB0" />
-            </div>
-            {monthsSpan > 1 && (
-              <span className={investmentsDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
-                {investmentsDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(investmentsDelta))} over {monthsSpan}mo
-              </span>
-            )}
-          </button>
-        </div>
-
+            <Sparkline points={netWorthSpark} color="var(--accent)" />
+          </div>
+          {monthsSpan > 1 && (
+            <span className={netWorthDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+              {netWorthDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(netWorthDelta))} over {monthsSpan}mo
+            </span>
+          )}
+        </button>
         <StatDetailPanel
-          isOpen={expandedStat !== null}
-          title={expandedStat ? STAT_LABELS[expandedStat] : null}
-          rows={expandedStat ? breakdowns[expandedStat] : null}
-          changeRows={expandedStat ? changeBreakdowns[expandedStat] : null}
+          isOpen={expandedStat === "networth"}
+          title="Net Worth"
+          rows={breakdowns.networth}
+          changeRows={changeBreakdowns.networth}
           changeLabel={monthsSpan > 1 ? `over ${monthsSpan}mo` : undefined}
-          changeGoodDirection={expandedStat ? changeGoodDirection[expandedStat] : "up"}
+          changeGoodDirection="up"
+          emptyMessage="No accounts contribute to this yet."
+          onClose={() => setExpandedStat(null)}
+        />
+      </>
+    ),
+
+    stat_cash: (
+      <>
+        <button
+          type="button"
+          className={expandedStat === "cash" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          onClick={() => toggleStat("cash")}
+        >
+          <div className="stat-top">
+            <div className="stat-top-main">
+              <span className="stat-value">{fmtMoneyShort(cash)}</span>
+              <span className="stat-label-row">
+                <Wallet className="stat-icon" aria-hidden="true" />
+                <span className="stat-label">Cash</span>
+              </span>
+            </div>
+            <Sparkline points={cashSpark} color="var(--info)" />
+          </div>
+          {monthsSpan > 1 && (
+            <span className={cashDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+              {cashDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(cashDelta))} over {monthsSpan}mo
+            </span>
+          )}
+        </button>
+        <StatDetailPanel
+          isOpen={expandedStat === "cash"}
+          title="Cash"
+          rows={breakdowns.cash}
+          changeRows={changeBreakdowns.cash}
+          changeLabel={monthsSpan > 1 ? `over ${monthsSpan}mo` : undefined}
+          changeGoodDirection="up"
+          emptyMessage="No accounts contribute to this yet."
+          onClose={() => setExpandedStat(null)}
+        />
+      </>
+    ),
+
+    stat_debt: (
+      <>
+        <button
+          type="button"
+          className={expandedStat === "debt" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          onClick={() => toggleStat("debt")}
+        >
+          <div className="stat-top">
+            <div className="stat-top-main">
+              <span
+                className={
+                  debt === 0 ? "stat-value" : debtTrendingDown ? "stat-value report-good" : "stat-value report-over-budget"
+                }
+              >
+                {fmtMoneyShort(debt)}
+              </span>
+              <span className="stat-label-row">
+                {debt !== 0 && !debtTrendingDown ? (
+                  <AlertTriangle className="stat-icon" style={{ color: "var(--negative)" }} aria-hidden="true" />
+                ) : (
+                  <CreditCard className="stat-icon" aria-hidden="true" />
+                )}
+                <span className="stat-label">Debt</span>
+              </span>
+            </div>
+            <Sparkline points={debtSpark} color={debtTrendingDown ? "var(--positive)" : "var(--negative)"} />
+          </div>
+          {monthsSpan > 1 && (
+            <span className={debtDelta <= 0 ? "stat-delta up" : "stat-delta down"}>
+              {debtDelta <= 0 ? "▼" : "▲"} {fmtMoneyShort(Math.abs(debtDelta))} over {monthsSpan}mo
+            </span>
+          )}
+        </button>
+        <StatDetailPanel
+          isOpen={expandedStat === "debt"}
+          title="Debt"
+          rows={breakdowns.debt}
+          changeRows={changeBreakdowns.debt}
+          changeLabel={monthsSpan > 1 ? `over ${monthsSpan}mo` : undefined}
+          changeGoodDirection="down"
+          emptyMessage="No accounts contribute to this yet."
+          onClose={() => setExpandedStat(null)}
+        />
+      </>
+    ),
+
+    stat_investments: (
+      <>
+        <button
+          type="button"
+          className={expandedStat === "investments" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          onClick={() => toggleStat("investments")}
+        >
+          <div className="stat-top">
+            <div className="stat-top-main">
+              <span className="stat-value">{fmtMoneyShort(investments)}</span>
+              <span className="stat-label-row">
+                <LineChartIcon className="stat-icon" aria-hidden="true" />
+                <span className="stat-label">Investments</span>
+              </span>
+            </div>
+            <Sparkline points={investmentsSpark} color="#8A5FB0" />
+          </div>
+          {monthsSpan > 1 && (
+            <span className={investmentsDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+              {investmentsDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(investmentsDelta))} over {monthsSpan}mo
+            </span>
+          )}
+        </button>
+        <StatDetailPanel
+          isOpen={expandedStat === "investments"}
+          title="Investments"
+          rows={breakdowns.investments}
+          changeRows={changeBreakdowns.investments}
+          changeLabel={monthsSpan > 1 ? `over ${monthsSpan}mo` : undefined}
+          changeGoodDirection="up"
           emptyMessage="No accounts contribute to this yet."
           onClose={() => setExpandedStat(null)}
         />
@@ -604,124 +668,117 @@ export function DashboardView({
       </>
     ),
 
-    trend_spending: (
-      <div className="grid-2">
-        <div className="card">
-          <div className="card-head">
-            <span className="reports-section-title">Net worth trend</span>
-          </div>
-          <LineChart
-            points={netWorthHistory.map((p) => ({ label: p.month_label, value: parseFloat(p.value) + assetsTotal }))}
-            height={210}
-          />
-          <p className="account-col" style={{ marginTop: 8 }}>
-            {netWorthDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(netWorthDelta))} over this period
+    net_worth_trend: (
+      <div className="card">
+        <div className="card-head">
+          <span className="reports-section-title">Net worth trend</span>
+        </div>
+        <LineChart
+          points={netWorthHistory.map((p) => ({ label: p.month_label, value: parseFloat(p.value) + assetsTotal }))}
+          height={210}
+        />
+        <p className="account-col" style={{ marginTop: 8 }}>
+          {netWorthDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(netWorthDelta))} over this period
+        </p>
+        {assetsTotal !== 0 && (
+          <p className="modal-message-secondary" style={{ marginTop: 4 }}>
+            Includes Property &amp; Valuables at their current value throughout — since they only carry a value as of
+            today, past points assume that same value applied back then too.
           </p>
-          {assetsTotal !== 0 && (
-            <p className="modal-message-secondary" style={{ marginTop: 4 }}>
-              Includes Property &amp; Valuables at their current value throughout — since they only carry a value as
-              of today, past points assume that same value applied back then too.
-            </p>
-          )}
-        </div>
-        <div className="card">
-          <div className="card-head">
-            <span className="reports-section-title">Spending by category</span>
-          </div>
-          {donutData.length > 0 ? (
-            <div className="donut-with-legend">
-              <DonutChart
-                data={donutData}
-                size={132}
-                center={{ value: fmtMoneyShort(donutTotal), label: "this month" }}
-              />
-              <div>
-                {donutData.map((d) => (
-                  <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
-                    <CategoryIcon category={d.label} className="category-legend-icon" />
-                    <span className="chart-legend-swatch" style={{ background: d.color }}></span>
-                    {d.label}
-                    <span className="account-col" style={{ marginLeft: "auto" }}>
-                      {fmtMoneyShort(d.value)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <p className="empty-state">No spending yet this month.</p>
-          )}
-        </div>
+        )}
       </div>
     ),
 
-    budget_bills: (
-      <div className="grid-2">
-        <div className="card">
-          <div className="card-head">
-            <span className="reports-section-title">{report?.month_label ?? "This month"}'s budget</span>
-          </div>
-          {GROUP_ORDER.map((group) => {
-            const lines = (report?.budget_actuals ?? []).filter((b) => b.budget_group === group);
-            if (lines.length === 0) return null;
-            const budgeted = lines.reduce((s, b) => s + parseFloat(b.budgeted), 0);
-            const actual = lines.reduce((s, b) => s + parseFloat(b.actual), 0);
-            const pct = budgeted ? Math.min(100, (actual / budgeted) * 100) : 0;
-            const over = group === "income" ? actual < budgeted : actual > budgeted;
-            return (
-              <div
-                key={group}
-                className="clickable-row"
-                style={{ marginBottom: 14, padding: 4, borderRadius: 6 }}
-                onClick={onOpenBudget}
-                title="Go to the Budget tab"
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: 6 }}>
-                  <span className="cell-with-icon" style={{ fontWeight: 600 }}>
-                    <BudgetGroupIcon group={group} className="category-legend-icon" />
-                    {GROUP_LABELS[group]}
-                  </span>
-                  <span className="account-col">
-                    {formatAmount(actual)} of {formatAmount(budgeted)}
-                  </span>
-                </div>
-                <div className="progress-track">
-                  <div
-                    className="progress-fill"
-                    style={{ width: `${pct}%`, background: over ? "var(--negative)" : undefined }}
-                  />
-                </div>
-              </div>
-            );
-          })}
-          {(report?.budget_actuals ?? []).length === 0 && <p className="empty-state">No budget lines yet.</p>}
+    spend_by_category: (
+      <div className="card">
+        <div className="card-head">
+          <span className="reports-section-title">Spending by category</span>
         </div>
-        <div className="card">
-          <div className="card-head">
-            <span className="reports-section-title">Upcoming bills</span>
+        {donutData.length > 0 ? (
+          <div className="donut-with-legend">
+            <DonutChart data={donutData} size={132} center={{ value: fmtMoneyShort(donutTotal), label: "this month" }} />
+            <div>
+              {donutData.map((d) => (
+                <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
+                  <CategoryIcon category={d.label} className="category-legend-icon" />
+                  <span className="chart-legend-swatch" style={{ background: d.color }}></span>
+                  {d.label}
+                  <span className="account-col" style={{ marginLeft: "auto" }}>
+                    {fmtMoneyShort(d.value)}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-          {upcoming.length > 0 ? (
-            upcoming.map((r) => (
-              <div
-                className="suggested-row clickable-row"
-                key={r.id}
-                onClick={onOpenRecurring}
-                title="Go to the Recurring tab"
-              >
-                <span className="row-icon-badge">
-                  <CategoryIcon category={r.category} />
+        ) : (
+          <p className="empty-state">No spending yet this month.</p>
+        )}
+      </div>
+    ),
+
+    budget_report: (
+      <div className="card">
+        <div className="card-head">
+          <span className="reports-section-title">{report?.month_label ?? "This month"}'s budget</span>
+        </div>
+        {GROUP_ORDER.map((group) => {
+          const lines = (report?.budget_actuals ?? []).filter((b) => b.budget_group === group);
+          if (lines.length === 0) return null;
+          const budgeted = lines.reduce((s, b) => s + parseFloat(b.budgeted), 0);
+          const actual = lines.reduce((s, b) => s + parseFloat(b.actual), 0);
+          const pct = budgeted ? Math.min(100, (actual / budgeted) * 100) : 0;
+          const over = group === "income" ? actual < budgeted : actual > budgeted;
+          return (
+            <div
+              key={group}
+              className="clickable-row"
+              style={{ marginBottom: 14, padding: 4, borderRadius: 6 }}
+              onClick={onOpenBudget}
+              title="Go to the Budget tab"
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", marginBottom: 6 }}>
+                <span className="cell-with-icon" style={{ fontWeight: 600 }}>
+                  <BudgetGroupIcon group={group} className="category-legend-icon" />
+                  {GROUP_LABELS[group]}
                 </span>
-                <div className="suggested-info">
-                  <div className="account-name-cell">{r.merchant}</div>
-                  <span className="account-col">{r.next_date}</span>
-                </div>
-                <span className="suggested-amt">{formatAmount(r.amount)}</span>
+                <span className="account-col">
+                  {formatAmount(actual)} of {formatAmount(budgeted)}
+                </span>
               </div>
-            ))
-          ) : (
-            <p className="empty-state">Nothing due soon.</p>
-          )}
+              <div className="progress-track">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${pct}%`, background: over ? "var(--negative)" : undefined }}
+                />
+              </div>
+            </div>
+          );
+        })}
+        {(report?.budget_actuals ?? []).length === 0 && <p className="empty-state">No budget lines yet.</p>}
+      </div>
+    ),
+
+    upcoming_bills: (
+      <div className="card">
+        <div className="card-head">
+          <span className="reports-section-title">Upcoming bills</span>
         </div>
+        {upcoming.length > 0 ? (
+          upcoming.map((r) => (
+            <div className="suggested-row clickable-row" key={r.id} onClick={onOpenRecurring} title="Go to the Recurring tab">
+              <span className="row-icon-badge">
+                <CategoryIcon category={r.category} />
+              </span>
+              <div className="suggested-info">
+                <div className="account-name-cell">{r.merchant}</div>
+                <span className="account-col">{r.next_date}</span>
+              </div>
+              <span className="suggested-amt">{formatAmount(r.amount)}</span>
+            </div>
+          ))
+        ) : (
+          <p className="empty-state">Nothing due soon.</p>
+        )}
       </div>
     ),
 
@@ -765,6 +822,39 @@ export function DashboardView({
           </tbody>
         </table>
       </div>
+    ),
+
+    income_vs_expenses: cashFlow ? (
+      <div className="card">
+        <div className="card-head">
+          <span className="reports-section-title">Income vs. expenses</span>
+        </div>
+        <BarChart
+          data={cashFlow.months.map((m) => ({
+            label: m.month_label,
+            values: [
+              { value: parseFloat(m.income), color: "var(--positive)", name: "Income" },
+              { value: parseFloat(m.expense), color: "var(--negative)", name: "Expenses" },
+            ],
+          }))}
+          height={210}
+        />
+        <div className="chart-legend">
+          <div className="chart-legend-item">
+            <span className="chart-legend-swatch" style={{ background: "var(--positive)" }}></span>
+            Income · {formatAmount(cashFlow.total_income)}
+          </div>
+          <div className="chart-legend-item">
+            <span className="chart-legend-swatch" style={{ background: "var(--negative)" }}></span>
+            Expenses · {formatAmount(cashFlow.total_expense)}
+          </div>
+        </div>
+        <div className="clickable-row" onClick={onOpenCashFlow} title="Go to the Cash Flow tab" style={{ marginTop: 4 }}>
+          <span className="category-link">View Cash Flow →</span>
+        </div>
+      </div>
+    ) : (
+      <p className="empty-state">Loading…</p>
     ),
 
     top_merchants: (
@@ -896,35 +986,134 @@ export function DashboardView({
         </div>
       </div>
     ),
+
+    todays_gain_loss: (
+      <div className="stat">
+        <div className="stat-top-main">
+          {holdingsWithDayCount > 0 ? (
+            <span className={totalDayGain < 0 ? "stat-value report-over-budget" : "stat-value"}>
+              {totalDayGain > 0 ? "+" : ""}
+              {formatAmount(totalDayGain.toFixed(2))}
+            </span>
+          ) : (
+            <span className="stat-value stat-value-muted">—</span>
+          )}
+          <span className="stat-label-row">
+            <span className="stat-label">Today's gain/loss</span>
+          </span>
+        </div>
+        {holdingsWithDayCount > 0 && totalDayGainPct !== null ? (
+          <span className={totalDayGainPct >= 0 ? "stat-delta up" : "stat-delta down"}>
+            {totalDayGainPct >= 0 ? "▲" : "▼"} {Math.abs(totalDayGainPct).toFixed(2)}%
+          </span>
+        ) : (
+          <span className="stat-delta">No live prices today</span>
+        )}
+        <div className="clickable-row" onClick={onOpenInvestments} title="Go to the Investments tab">
+          <span className="category-link">View in Investments →</span>
+        </div>
+      </div>
+    ),
   };
 
-  function moveWidget(index: number, dir: -1 | 1) {
-    const target = index + dir;
-    if (target < 0 || target >= layoutWidgets.length) return;
-    const next = [...layoutWidgets];
-    [next[index], next[target]] = [next[target], next[index]];
-    onSetLayoutWidgets(next);
+  // Parameterized widgets (a specific account/bucket/investment account,
+  // rather than one of the fixed catalog entries above) can't live in
+  // `widgetContent`'s object literal — there's no bounded set of keys to
+  // enumerate. Each returns `null` when its target has been deleted since
+  // it was pinned; the pruning effect in App.tsx removes the dead entry
+  // from the saved layout shortly after, so this is only ever a one-frame
+  // gap rather than a permanently broken widget.
+  function renderAccountWidget(targetId: number): React.ReactNode {
+    const account = accounts.find((a) => a.id === targetId);
+    if (!account) return null;
+    const group = groupOf(account.account_type);
+    const isDebt = group === "credit" || group === "loan";
+    const amount = isDebt ? owedAmount(account) : netWorthContribution(account);
+    return (
+      <div className="stat">
+        <div className="stat-top-main">
+          <span className="stat-value">{formatAmount(amount)}</span>
+          <span className="stat-label-row">
+            <span className="stat-label">{account.name}</span>
+          </span>
+        </div>
+        <span className="stat-delta">
+          {isDebt ? "Owed" : "Balance"}
+          {(account.institution || account.mask) &&
+            ` · ${[account.institution, account.mask ? `••${account.mask}` : null].filter(Boolean).join(" ")}`}
+        </span>
+        <div className="clickable-row" onClick={onOpenAccounts} title="Go to the Accounts tab">
+          <span className="category-link">View in Accounts →</span>
+        </div>
+      </div>
+    );
+  }
+
+  function renderBucketWidget(targetId: number): React.ReactNode {
+    const bucket = buckets.find((b) => b.id === targetId);
+    if (!bucket) return null;
+    const saved = parseFloat(bucket.saved_amount);
+    const target = bucket.target_amount ? parseFloat(bucket.target_amount) : null;
+    const pct = target && target > 0 ? Math.min(100, Math.max(0, (saved / target) * 100)) : null;
+    return (
+      <div className="stat">
+        <div className="stat-top-main">
+          <span className="stat-value">{formatAmount(bucket.saved_amount)}</span>
+          <span className="stat-label-row">
+            <span className="stat-label">{bucket.name}</span>
+          </span>
+        </div>
+        <span className="stat-delta">
+          {bucket.target_amount
+            ? `of ${formatAmount(bucket.target_amount)}${pct !== null ? ` (${Math.round(pct)}%)` : ""}`
+            : "No target set"}
+          {bucket.target_date && ` · ${daysLeft(bucket.target_date)}d left`}
+        </span>
+        <div className="clickable-row" onClick={onOpenBuckets} title="Go to the Buckets tab">
+          <span className="category-link">View in Buckets →</span>
+        </div>
+      </div>
+    );
+  }
+
+  function renderInvestmentWidget(accountName: string): React.ReactNode {
+    const accountHoldings = holdings.filter((h) => h.account_name === accountName);
+    if (accountHoldings.length === 0) return null;
+    const totalValue = accountHoldings.reduce((s, h) => s + parseFloat(h.value), 0);
+    const totalGain = accountHoldings.reduce((s, h) => s + parseFloat(h.gain_loss), 0);
+    return (
+      <div className="stat">
+        <div className="stat-top-main">
+          <span className="stat-value">{formatAmount(totalValue.toFixed(2))}</span>
+          <span className="stat-label-row">
+            <span className="stat-label">{accountName}</span>
+          </span>
+        </div>
+        <span className={totalGain < 0 ? "stat-delta down" : "stat-delta up"}>
+          {totalGain > 0 ? "+" : ""}
+          {formatAmount(totalGain.toFixed(2))} gain/loss
+        </span>
+        <div className="clickable-row" onClick={onOpenInvestments} title="Go to the Investments tab">
+          <span className="category-link">View in Investments →</span>
+        </div>
+      </div>
+    );
+  }
+
+  function renderWidget(id: WidgetId): React.ReactNode {
+    const parsed = parseWidgetId(id);
+    if (parsed.kind === "fixed") return widgetContent[parsed.id];
+    if (parsed.kind === "account") return renderAccountWidget(parsed.targetId);
+    if (parsed.kind === "bucket") return renderBucketWidget(parsed.targetId);
+    return renderInvestmentWidget(parsed.accountName);
   }
 
   function removeWidget(id: WidgetId) {
-    onSetLayoutWidgets(layoutWidgets.filter((w) => w !== id));
+    onSetDashboardLayout(dashboardLayout.filter((item) => item.i !== id));
   }
 
-  // Same drag-and-drop convention as the sidebar nav's own reordering
-  // (App.tsx's `handleNavDrop`/`dragNavTab`) — the ↑/↓ buttons above cover
-  // the same ground for anyone who'd rather click than drag.
-  function handleWidgetDrop(targetId: WidgetId) {
-    if (!dragWidgetId || dragWidgetId === targetId) {
-      setDragWidgetId(null);
-      return;
-    }
-    const next = layoutWidgets.filter((id) => id !== dragWidgetId);
-    next.splice(next.indexOf(targetId), 0, dragWidgetId);
-    onSetLayoutWidgets(next);
-    setDragWidgetId(null);
-  }
-
-  const presetKey = matchingLayoutPreset(layoutWidgets);
+  const presetKey = matchingLayoutPreset(dashboardLayout);
+  const { width, containerRef, mounted } = useContainerWidth();
 
   return (
     <div className="reports-view">
@@ -947,7 +1136,7 @@ export function DashboardView({
           className="month-select"
           value={presetKey}
           title="Layout"
-          onChange={(e) => onSetLayoutWidgets([...LAYOUT_PRESETS[e.target.value as LayoutPresetKey]])}
+          onChange={(e) => onSetDashboardLayout([...LAYOUT_PRESETS[e.target.value as LayoutPresetKey]])}
         >
           {(Object.keys(LAYOUT_PRESETS) as LayoutPresetKey[]).map((key) => (
             <option key={key} value={key}>
@@ -989,38 +1178,34 @@ export function DashboardView({
         </div>
       )}
 
-      {layoutWidgets.map((id, i) => (
-        <div
-          key={id}
-          className={customizeMode ? "dashboard-widget-customizing" : undefined}
-          draggable={customizeMode}
-          onDragStart={() => setDragWidgetId(id)}
-          onDragOver={(e) => customizeMode && e.preventDefault()}
-          onDrop={() => handleWidgetDrop(id)}
-          onDragEnd={() => setDragWidgetId(null)}
-        >
-          {customizeMode && (
-            <div className="dashboard-widget-controls">
-              <button type="button" className="modal-secondary" onClick={() => moveWidget(i, -1)} disabled={i === 0} aria-label="Move up">
-                ↑
-              </button>
-              <button
-                type="button"
-                className="modal-secondary"
-                onClick={() => moveWidget(i, 1)}
-                disabled={i === layoutWidgets.length - 1}
-                aria-label="Move down"
-              >
-                ↓
-              </button>
-              <button type="button" className="modal-secondary" onClick={() => removeWidget(id)} aria-label="Remove widget">
-                ✕
-              </button>
-            </div>
-          )}
-          {widgetContent[id]}
-        </div>
-      ))}
+      <div ref={containerRef}>
+        {mounted && (
+          <GridLayout
+            layout={dashboardLayout}
+            width={width}
+            gridConfig={{ cols: 12, rowHeight: 32, margin: [12, 12] }}
+            dragConfig={{ enabled: customizeMode, handle: ".dashboard-widget-drag-handle" }}
+            resizeConfig={{ enabled: customizeMode }}
+            onLayoutChange={(next) => onSetDashboardLayout(toGridWidgetItems(next))}
+          >
+            {dashboardLayout.map((item) => (
+              <div key={item.i} className={customizeMode ? "dashboard-widget-slot dashboard-widget-customizing" : "dashboard-widget-slot"}>
+                {customizeMode && (
+                  <div className="dashboard-widget-controls">
+                    <span className="dashboard-widget-drag-handle" title="Drag to move" aria-label="Drag to move">
+                      ⠿
+                    </span>
+                    <button type="button" className="modal-secondary" onClick={() => removeWidget(item.i)} aria-label="Remove widget">
+                      ✕
+                    </button>
+                  </div>
+                )}
+                {renderWidget(item.i)}
+              </div>
+            ))}
+          </GridLayout>
+        )}
+      </div>
 
       {customizeMode && (
         <button type="button" className="add-tile" onClick={onOpenAddWidget}>

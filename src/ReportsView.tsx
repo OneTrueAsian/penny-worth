@@ -5,7 +5,7 @@ import { LineChart } from "./charts";
 import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
 import { groupOf, owedAmount } from "./accountGroups";
 import { PinToDashboardButton } from "./PinToDashboardButton";
-import type { WidgetId } from "./dashboardLayout";
+import type { DashboardGridLayout, WidgetId } from "./dashboardLayout";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { netWorthByMember, spendingByMember } from "./memberBreakdowns";
 
@@ -288,17 +288,23 @@ function BucketsOverviewSection({ buckets }: { buckets: Bucket[] }) {
  * `incomeByAccount` above — and for "expense" — any negative amount, see
  * `tagTotals` above, except "Transfer" — money moving between the
  * household's own accounts, same exclusion `Store::monthly_totals` applies
- * on the backend), so it needed no new prop or fetch. Cash Flow's
- * "Income vs. expenses" chart shows one month's totals in dollars; this is
- * the trend those totals form over time, as a rate. */
-function SavingsRateTrendSection({ transactions }: { transactions: Transaction[] }) {
+ * on the backend), so it needed no new fetch. Also excludes a positive
+ * amount on a credit/loan account even if mistakenly categorized "Income"
+ * — a balance adjustment, never real income, same blanket rule
+ * `Store::monthly_totals` applies. */
+function SavingsRateTrendSection({ transactions, accounts }: { transactions: Transaction[]; accounts: Account[] }) {
+  const groupByAccountId = new Map(accounts.map((a) => [a.id, groupOf(a.account_type)]));
   const monthly = new Map<string, { income: number; expense: number }>();
   for (const t of transactions) {
     const month = t.date.slice(0, 7);
     const entry = monthly.get(month) ?? { income: 0, expense: 0 };
     const amount = parseFloat(t.amount);
-    if (t.category === "Income") entry.income += amount;
-    else if (amount < 0 && t.category !== "Transfer") entry.expense += Math.abs(amount);
+    const group = groupByAccountId.get(t.account_id);
+    if (t.category === "Income") {
+      if (group !== "credit" && group !== "loan") entry.income += amount;
+    } else if (amount < 0 && t.category !== "Transfer") {
+      entry.expense += Math.abs(amount);
+    }
     monthly.set(month, entry);
   }
   const points = Array.from(monthly.entries())
@@ -350,7 +356,7 @@ export function DebtPayoffPlannerSection({
   onSetAccountInterestRate,
   onCalculateDebtPayoff,
   onSetAccountExcludedFromDebtPayoff,
-  layoutWidgets,
+  dashboardLayout,
   onPinWidget,
 }: {
   accounts: Account[];
@@ -361,7 +367,7 @@ export function DebtPayoffPlannerSection({
     minimums: { accountId: number; minimumPayment: string }[],
   ) => Promise<DebtPayoffPlan | null>;
   onSetAccountExcludedFromDebtPayoff: (accountId: number, excluded: boolean) => void;
-  layoutWidgets: WidgetId[];
+  dashboardLayout: DashboardGridLayout;
   onPinWidget: (id: WidgetId) => void;
 }) {
   // Every debt with a balance owed is listed — including ones the user has
@@ -397,7 +403,7 @@ export function DebtPayoffPlannerSection({
     <div className="card">
       <div className="card-head">
         <span className="reports-section-title">Debt Payoff Planner</span>
-        <PinToDashboardButton widgetId="debt_payoff" layoutWidgets={layoutWidgets} onPin={onPinWidget} />
+        <PinToDashboardButton widgetId="debt_payoff" dashboardLayout={dashboardLayout} onPin={onPinWidget} />
       </div>
       <table className="ledger">
         <thead>
@@ -515,7 +521,7 @@ export function ReportsView({
   onSetAssetMember,
   onDeleteAsset,
   onOpenBudget,
-  layoutWidgets,
+  dashboardLayout,
   onPinWidget,
 }: {
   report: Report | null;
@@ -540,7 +546,7 @@ export function ReportsView({
   onSetAssetMember: (id: number, memberId: number | null) => void;
   onDeleteAsset: (id: number) => void;
   onOpenBudget: () => void;
-  layoutWidgets: WidgetId[];
+  dashboardLayout: DashboardGridLayout;
   onPinWidget: (id: WidgetId) => void;
 }) {
   const [expandedStat, setExpandedStat] = useState<ReportStatKey | null>(null);
@@ -671,7 +677,7 @@ export function ReportsView({
         <div>
           <div className="card-head">
             <h2 className="reports-section-title">Net Worth by Member</h2>
-            <PinToDashboardButton widgetId="net_worth_by_member" layoutWidgets={layoutWidgets} onPin={onPinWidget} />
+            <PinToDashboardButton widgetId="net_worth_by_member" dashboardLayout={dashboardLayout} onPin={onPinWidget} />
           </div>
           <table className="ledger">
             <thead>
@@ -699,7 +705,7 @@ export function ReportsView({
         </div>
       )}
 
-      <SavingsRateTrendSection transactions={transactions} />
+      <SavingsRateTrendSection transactions={transactions} accounts={accounts} />
 
       <div className="card clickable-row" onClick={onOpenBudget} title="Go to the Budget tab">
         <span className="category-link">This month's budget →</span>

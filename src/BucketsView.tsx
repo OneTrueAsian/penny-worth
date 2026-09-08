@@ -29,7 +29,7 @@ function ColorPicker({ value, onChange }: { value: string | null; onChange: (col
   );
 }
 
-function daysLeft(targetDate: string): number {
+export function daysLeft(targetDate: string): number {
   const target = new Date(targetDate + "T00:00:00");
   const today = new Date(toLocalIsoDate() + "T00:00:00");
   return Math.max(0, Math.round((target.getTime() - today.getTime()) / 86400000));

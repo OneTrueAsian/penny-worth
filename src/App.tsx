@@ -21,7 +21,14 @@ import {
   WelcomeDialog,
   WhatsNewDialog,
 } from "./Modal";
-import { loadDashboardLayout, saveDashboardLayout, type WidgetId } from "./dashboardLayout";
+import {
+  appendWidgetToLayout,
+  loadDashboardLayout,
+  parseWidgetId,
+  saveDashboardLayout,
+  type DashboardGridLayout,
+  type WidgetId,
+} from "./dashboardLayout";
 import { ProfileSwitcher } from "./ProfileSwitcher";
 // `CADENCE_OPTIONS` is used synchronously in the Ledger's own (always-
 // rendered, not tab-gated) bulk "Add to Recurring" control, so
@@ -390,7 +397,7 @@ function App({
   });
   const [navOrder, setNavOrder] = useState<Tab[]>(loadNavOrder);
   const [dragNavTab, setDragNavTab] = useState<Tab | null>(null);
-  const [layoutWidgets, setLayoutWidgetsState] = useState<WidgetId[]>(loadDashboardLayout);
+  const [dashboardLayout, setDashboardLayoutState] = useState<DashboardGridLayout>(loadDashboardLayout);
   const [addWidgetModalOpen, setAddWidgetModalOpen] = useState(false);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [anomalyFlags, setAnomalyFlags] = useState<AnomalyFlag[]>([]);
@@ -935,8 +942,8 @@ function App({
     setThemeStyleState(next);
   }
 
-  function setLayoutWidgets(next: WidgetId[]) {
-    setLayoutWidgetsState(next);
+  function setDashboardLayout(next: DashboardGridLayout) {
+    setDashboardLayoutState(next);
     saveDashboardLayout(next);
   }
 
@@ -946,8 +953,8 @@ function App({
    * from a different starting page. A widget already on the layout is a
    * no-op, matching the modal's "Added" (not a second copy). */
   function addWidgetToDashboard(id: WidgetId, announce: boolean) {
-    if (!layoutWidgets.includes(id)) {
-      setLayoutWidgets([...layoutWidgets, id]);
+    if (!dashboardLayout.some((item) => item.i === id)) {
+      setDashboardLayout(appendWidgetToLayout(dashboardLayout, id));
     }
     if (announce) setStatus("Pinned to Dashboard.", "success");
   }
@@ -1014,6 +1021,14 @@ function App({
   // not state, since bumping it should never itself trigger a render.
   const dataVersionRef = useRef(0);
 
+  // Guards the pinned-widget pruning effect below: accounts/buckets/holdings
+  // all start out as `[]` before their first fetch resolves, which would
+  // otherwise look identical to "this account was deleted" and wipe out
+  // every parameterized widget on first paint.
+  const accountsLoadedRef = useRef(false);
+  const bucketsLoadedRef = useRef(false);
+  const holdingsLoadedRef = useRef(false);
+
   const refresh = useCallback(async () => {
     const [txns, s, accts, cats, flags, tags, members] = await Promise.all([
       invoke<Transaction[]>("list_transactions"),
@@ -1031,6 +1046,7 @@ function App({
     setAnomalyFlags(flags);
     setAllTags(tags);
     setFamilyMembers(members);
+    accountsLoadedRef.current = true;
     dataVersionRef.current++;
   }, []);
 
@@ -1049,6 +1065,7 @@ function App({
 
   const refreshBuckets = useCallback(async () => {
     setBuckets(await invoke<Bucket[]>("list_buckets"));
+    bucketsLoadedRef.current = true;
     dataVersionRef.current++;
   }, []);
 
@@ -1086,6 +1103,7 @@ function App({
 
   const refreshHoldings = useCallback(async () => {
     setHoldings(await invoke<Holding[]>("list_holdings"));
+    holdingsLoadedRef.current = true;
     dataVersionRef.current++;
   }, []);
 
@@ -1164,15 +1182,23 @@ function App({
   }, []);
 
   useEffect(() => {
-    if (activeTab === "cashflow") {
+    // "Income vs. expenses" also needs this data when pinned to the
+    // Dashboard — same fetch, just triggered from a second tab, and it
+    // always shows `cashFlowRange`'s (default: 6 months) totals either way.
+    if (
+      activeTab === "cashflow" ||
+      (activeTab === "dashboard" && dashboardLayout.some((item) => item.i === "income_vs_expenses"))
+    ) {
       refreshCashFlow(cashFlowRange).catch((e) => setStatus(String(e)));
+    }
+    if (activeTab === "cashflow") {
       if (compareLastYear) refreshYoy(cashFlowRange).catch((e) => setStatus(String(e)));
       refreshForecast(forecastDays).catch((e) => setStatus(String(e)));
     }
     // "Top merchants" also needs this data when pinned to the Dashboard —
     // same fetch, just triggered from a second tab, and it always shows
     // `topCategoriesMonth`'s (default: current month) figures either way.
-    if (activeTab === "cashflow" || (activeTab === "dashboard" && layoutWidgets.includes("top_merchants"))) {
+    if (activeTab === "cashflow" || (activeTab === "dashboard" && dashboardLayout.some((item) => item.i === "top_merchants"))) {
       refreshTopCategories(topCategoriesMonth.year, topCategoriesMonth.month).catch((e) => setStatus(String(e)));
     }
   }, [
@@ -1181,12 +1207,31 @@ function App({
     compareLastYear,
     topCategoriesMonth,
     forecastDays,
-    layoutWidgets,
+    dashboardLayout,
     refreshCashFlow,
     refreshYoy,
     refreshTopCategories,
     refreshForecast,
   ]);
+
+  // A pinned account/bucket/investment-account widget outlives the record
+  // it points at — deleting that account or bucket (or losing its last
+  // holding) shouldn't leave a dead, invisible entry sitting in the saved
+  // layout forever, so drop it here once the data confirms it's gone.
+  useEffect(() => {
+    if (!accountsLoadedRef.current || !bucketsLoadedRef.current || !holdingsLoadedRef.current) return;
+    const accountIds = new Set(accounts.map((a) => a.id));
+    const bucketIds = new Set(buckets.map((b) => b.id));
+    const investmentAccountNames = new Set(holdings.map((h) => h.account_name));
+    const pruned = dashboardLayout.filter((item) => {
+      const parsed = parseWidgetId(item.i);
+      if (parsed.kind === "account") return accountIds.has(parsed.targetId);
+      if (parsed.kind === "bucket") return bucketIds.has(parsed.targetId);
+      if (parsed.kind === "investment") return investmentAccountNames.has(parsed.accountName);
+      return true;
+    });
+    if (pruned.length !== dashboardLayout.length) setDashboardLayout(pruned);
+  }, [accounts, buckets, holdings, dashboardLayout]);
 
   const [netWorthHistory, setNetWorthHistory] = useState<NetWorthPoint[]>([]);
   const [accountContributionDeltas, setAccountContributionDeltas] = useState<AccountContributionDelta[]>([]);
@@ -2828,8 +2873,9 @@ function App({
           buckets={buckets}
           categories={usedCategories}
           topCategoriesData={topCategoriesData}
-          layoutWidgets={layoutWidgets}
-          onSetLayoutWidgets={setLayoutWidgets}
+          cashFlow={cashFlow}
+          dashboardLayout={dashboardLayout}
+          onSetDashboardLayout={setDashboardLayout}
           onOpenAddWidget={() => setAddWidgetModalOpen(true)}
           onOpenLedger={() => setActiveTab("ledger")}
           onOpenRecurring={() => setActiveTab("recurring")}
@@ -2837,6 +2883,8 @@ function App({
           onOpenCashFlow={() => setActiveTab("cashflow")}
           onOpenInvestments={() => setActiveTab("investments")}
           onOpenReports={() => setActiveTab("reports")}
+          onOpenAccounts={() => setActiveTab("accounts")}
+          onOpenBuckets={() => setActiveTab("buckets")}
         />
         </Suspense>
       )}
@@ -3637,7 +3685,7 @@ function App({
           onDelete={handleDeleteHolding}
           livePricesEnabled={livePriceSettings?.enabled ?? false}
           onFetchQuote={handleFetchLiveQuote}
-          layoutWidgets={layoutWidgets}
+          dashboardLayout={dashboardLayout}
           onPinWidget={(id) => addWidgetToDashboard(id, true)}
         />
         </Suspense>
@@ -3670,7 +3718,7 @@ function App({
           onSetAccountInterestRate={handleSetAccountInterestRate}
           onCalculateDebtPayoff={handleCalculateDebtPayoff}
           onSetAccountExcludedFromDebtPayoff={handleSetAccountExcludedFromDebtPayoff}
-          layoutWidgets={layoutWidgets}
+          dashboardLayout={dashboardLayout}
           onPinWidget={(id) => addWidgetToDashboard(id, true)}
         />
         </Suspense>
@@ -3928,7 +3976,7 @@ function App({
           onSetAssetMember={handleSetAssetMember}
           onDeleteAsset={handleDeleteAsset}
           onOpenBudget={() => setActiveTab("budget")}
-          layoutWidgets={layoutWidgets}
+          dashboardLayout={dashboardLayout}
           onPinWidget={(id) => addWidgetToDashboard(id, true)}
         />
         </Suspense>
@@ -4001,9 +4049,12 @@ function App({
       )}
       {addWidgetModalOpen && (
         <AddWidgetDialog
-          currentWidgets={layoutWidgets}
+          dashboardLayout={dashboardLayout}
           onAdd={(id) => addWidgetToDashboard(id, false)}
           onCancel={() => setAddWidgetModalOpen(false)}
+          accounts={accounts}
+          buckets={buckets}
+          holdings={holdings}
         />
       )}
       {manageCategoriesOpen && (

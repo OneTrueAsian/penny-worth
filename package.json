@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "e2e": "node e2e/run-all.mjs",
     "tauri": "tauri",
     "tauri:dev:sandbox": "cross-env PENNYWORTH_DB_DIR=$INIT_CWD/.dev-sandbox tauri dev"
   },
@@ -20,7 +21,8 @@
     "fuse.js": "^7.5.0",
     "lucide-react": "^1.42.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-grid-layout": "^2.2.4"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

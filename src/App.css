@@ -378,12 +378,13 @@
   color-scheme: dark;
 }
 
-/* Futuristic — the angular icon set (src/icons.tsx) picks up a faint neon
-   glow to match the theme's HUD look, on hover and when a nav item is
-   active. Scoped to the palette attribute so no other theme is affected. */
-[data-palette="futuristic"] .nav-item:hover .ico,
-[data-palette="futuristic"] .nav-item-active .ico,
-[data-palette="futuristic"] .profile-switcher-toggle:hover .ico {
+/* Sidebar nav icons pick up a faint glow in the theme's own accent color
+   on hover and when a nav item is active — originally a Futuristic-only
+   HUD touch, extended to every theme since it reads well everywhere
+   `--accent` is defined (every palette defines it). */
+.nav-item:hover .ico,
+.nav-item-active .ico,
+.profile-switcher-toggle:hover .ico {
   filter: drop-shadow(0 0 4px var(--accent));
 }
 
@@ -1419,16 +1420,28 @@ button:disabled {
   gap: 8px;
 }
 
+/* Every grid item's own content wrapper — react-grid-layout sizes the
+   item itself from the layout's declared h (a row-count estimate, tuned
+   per widget in dashboardLayout.ts but never exact), so real content
+   taller than that estimate scrolls inside its own card instead of
+   visually bleeding into the widget below (items are absolutely
+   positioned, so overflow would otherwise silently overlap). */
+.dashboard-widget-slot {
+  height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+}
+
 .dashboard-widget-customizing {
   border: 1.5px dashed var(--border-strong);
   border-radius: 16px;
   padding: 10px;
-  cursor: grab;
 }
 
 .dashboard-widget-controls {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   gap: 4px;
   margin-bottom: 8px;
 }
@@ -1440,6 +1453,42 @@ button:disabled {
   border-radius: 7px;
   font-size: 13px;
   line-height: 1;
+}
+
+/* Only this handle initiates a drag (see DashboardView.tsx's dragConfig)
+   — several widgets have their own clickable rows/buttons, so the whole
+   card can't be grabbable without fighting those. */
+.dashboard-widget-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--text-muted);
+  cursor: grab;
+  font-size: 15px;
+  line-height: 1;
+  user-select: none;
+}
+
+.dashboard-widget-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* react-grid-layout's own drag placeholder defaults to a fixed red box —
+   recolor to the theme's own accent so it reads correctly in every
+   palette instead of looking like an error state. */
+.react-grid-item.react-grid-placeholder {
+  background: var(--accent);
+  opacity: 0.15;
+  border-radius: 16px;
+}
+
+/* react-resizable's default corner handle is a fixed near-black triangle
+   — near-invisible against a dark surface, so invert it in dark mode. */
+[data-theme="dark"] .react-resizable-handle {
+  filter: invert(1);
 }
 
 .bucket-card {
@@ -3678,6 +3727,18 @@ button:disabled {
   font-size: 0.9em;
 }
 
+.widget-search-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 13.5px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  margin-bottom: 10px;
+}
+
 .widget-group-title {
   font-weight: 600;
   margin: 14px 0 6px 0;
@@ -3719,7 +3780,8 @@ button:disabled {
   white-space: nowrap;
 }
 
-.category-manage-row input {
+.category-manage-row input,
+.category-manage-row select {
   font-family: inherit;
   font-size: 13.5px;
   padding: 4px 8px;
