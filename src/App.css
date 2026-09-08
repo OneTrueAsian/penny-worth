@@ -1241,7 +1241,8 @@ button:disabled {
   color: var(--negative);
 }
 
-.account-card .type-badge svg {
+.account-card .type-badge svg,
+.account-card .type-badge img {
   width: 18px;
   height: 18px;
 }
@@ -1423,6 +1424,17 @@ button:disabled {
   border: 1.5px dashed var(--border-strong);
   border-radius: 16px;
   padding: 10px;
+  cursor: grab;
+}
+
+/* A compact card (stat/account/bucket/investment) inside a shared `.stats`
+   row, in Customize mode. The dashed frame + padding lives on the row's
+   outer wrapper (`.dashboard-widget-customizing`, one per row rather than
+   one per card — see DashboardView.tsx) so 4 small cards don't each add
+   their own border and padding on top of the grid's own gap, which read
+   as an oversized gap between rows. This wrapper only needs the drag
+   affordance; its own controls bar sits directly above the card. */
+.dashboard-stat-wrap {
   cursor: grab;
 }
 
@@ -1684,9 +1696,35 @@ button:disabled {
   flex: none;
 }
 
-.row-icon-badge svg {
+.row-icon-badge svg,
+.row-icon-badge img {
   width: 15px;
   height: 15px;
+}
+
+/* Bundled Noun Project PNG icons (src/assets/icons/, credited in Settings
+   ▸ Icon credits) — raster line art on a transparent background, so
+   unlike the SVG icon set they can't recolor via `currentColor`. Inverted
+   to white in every dark context instead, so they stay visible rather
+   than a black silhouette vanishing into a dark surface. Scoped to this
+   class only — never applied to the existing `.ico`/lucide SVG icons,
+   which are already theme-correct and would be double-inverted by this. */
+.icon-img {
+  display: block;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .icon-img,
+  :root[data-palette="futuristic"]:not([data-theme="light"]) .icon-img {
+    filter: invert(1);
+  }
+}
+
+:root[data-theme="dark"] .icon-img,
+:root[data-palette="aurora"] .icon-img,
+:root[data-palette="midnight_emerald"] .icon-img,
+:root[data-palette="futuristic"][data-theme="dark"] .icon-img {
+  filter: invert(1);
 }
 
 .cell-with-icon {
@@ -3708,6 +3746,30 @@ button:disabled {
 
 .category-manage-row:last-child {
   border-bottom: none;
+}
+
+/* "+ Add widget" dialog only — a 2-column grid of boxed rows instead of one
+   tall single-column list, so the catalog (now 13 entries once the stat
+   cards count as 4 of their own) reads as a compact picker rather than a
+   long scroll. Also drops the list's own max-height/scroll (the modal
+   panel itself already scrolls as a whole — see .modal-panel) so this
+   doesn't nest a second scrollbar inside the first. */
+.category-manage-list.widget-catalog-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: none;
+  overflow: visible;
+}
+
+.category-manage-list.widget-catalog-list .category-manage-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.category-manage-list.widget-catalog-list .category-manage-row:last-child {
+  border-bottom: 1px solid var(--border);
 }
 
 .category-manage-name {

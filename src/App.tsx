@@ -21,7 +21,7 @@ import {
   WelcomeDialog,
   WhatsNewDialog,
 } from "./Modal";
-import { loadDashboardLayout, saveDashboardLayout, type WidgetId } from "./dashboardLayout";
+import { loadDashboardLayout, parseWidgetId, saveDashboardLayout, type WidgetId } from "./dashboardLayout";
 import { ProfileSwitcher } from "./ProfileSwitcher";
 // `CADENCE_OPTIONS` is used synchronously in the Ledger's own (always-
 // rendered, not tab-gated) bulk "Add to Recurring" control, so
@@ -1014,6 +1014,15 @@ function App({
   // not state, since bumping it should never itself trigger a render.
   const dataVersionRef = useRef(0);
 
+  // A pinned account/bucket/investment-account widget's dead-reference
+  // pruning effect (below) needs to tell "this account was deleted" apart
+  // from "accounts just haven't loaded yet" — both start out as `[]`
+  // before their first fetch resolves, which would otherwise look
+  // identical and wipe out every parameterized widget on first paint.
+  const accountsLoadedRef = useRef(false);
+  const bucketsLoadedRef = useRef(false);
+  const holdingsLoadedRef = useRef(false);
+
   const refresh = useCallback(async () => {
     const [txns, s, accts, cats, flags, tags, members] = await Promise.all([
       invoke<Transaction[]>("list_transactions"),
@@ -1031,6 +1040,7 @@ function App({
     setAnomalyFlags(flags);
     setAllTags(tags);
     setFamilyMembers(members);
+    accountsLoadedRef.current = true;
     dataVersionRef.current++;
   }, []);
 
@@ -1049,6 +1059,7 @@ function App({
 
   const refreshBuckets = useCallback(async () => {
     setBuckets(await invoke<Bucket[]>("list_buckets"));
+    bucketsLoadedRef.current = true;
     dataVersionRef.current++;
   }, []);
 
@@ -1086,8 +1097,28 @@ function App({
 
   const refreshHoldings = useCallback(async () => {
     setHoldings(await invoke<Holding[]>("list_holdings"));
+    holdingsLoadedRef.current = true;
     dataVersionRef.current++;
   }, []);
+
+  // A pinned account/bucket/investment-account widget outlives the record
+  // it points at — deleting that account or bucket (or losing its last
+  // holding) shouldn't leave a dead, invisible entry sitting in the saved
+  // layout forever, so drop it here once the data confirms it's gone.
+  useEffect(() => {
+    if (!accountsLoadedRef.current || !bucketsLoadedRef.current || !holdingsLoadedRef.current) return;
+    const accountIds = new Set(accounts.map((a) => a.id));
+    const bucketIds = new Set(buckets.map((b) => b.id));
+    const investmentAccountNames = new Set(holdings.map((h) => h.account_name));
+    const pruned = layoutWidgets.filter((id) => {
+      const parsed = parseWidgetId(id);
+      if (parsed.kind === "account") return accountIds.has(parsed.targetId);
+      if (parsed.kind === "bucket") return bucketIds.has(parsed.targetId);
+      if (parsed.kind === "investment") return investmentAccountNames.has(parsed.accountName);
+      return true;
+    });
+    if (pruned.length !== layoutWidgets.length) setLayoutWidgets(pruned);
+  }, [accounts, buckets, holdings, layoutWidgets]);
 
   const [cashFlow, setCashFlow] = useState<CashFlow | null>(null);
   const [cashFlowRange, setCashFlowRange] = useState(6);
@@ -2837,6 +2868,8 @@ function App({
           onOpenCashFlow={() => setActiveTab("cashflow")}
           onOpenInvestments={() => setActiveTab("investments")}
           onOpenReports={() => setActiveTab("reports")}
+          onOpenAccounts={() => setActiveTab("accounts")}
+          onOpenBuckets={() => setActiveTab("buckets")}
         />
         </Suspense>
       )}
@@ -4002,6 +4035,9 @@ function App({
       {addWidgetModalOpen && (
         <AddWidgetDialog
           currentWidgets={layoutWidgets}
+          accounts={accounts}
+          buckets={buckets}
+          holdings={holdings}
           onAdd={(id) => addWidgetToDashboard(id, false)}
           onCancel={() => setAddWidgetModalOpen(false)}
         />

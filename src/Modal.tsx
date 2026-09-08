@@ -1,8 +1,8 @@
 import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
-import type { Account, CategoryTransaction, FamilyMember, MonthExpenseDetail, ReportBudgetLine } from "./types";
+import type { Account, Bucket, CategoryTransaction, FamilyMember, Holding, MonthExpenseDetail, ReportBudgetLine } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
-import { WIDGET_CATALOG, type WidgetId } from "./dashboardLayout";
+import { accountWidgetId, bucketWidgetId, investmentWidgetId, WIDGET_CATALOG, type WidgetId } from "./dashboardLayout";
 
 /** Shared shell: a dimmed overlay behind a centered panel. Clicking the
  * overlay (not the panel) cancels, matching how a native dialog behaves —
@@ -1036,19 +1036,81 @@ export function ConfirmInvertDialog({
   );
 }
 
-/** Two groups — the 6 always-available core widgets, and the 4 report
- * sections that can also be pinned here from their home tab (Cash Flow,
- * Investments, Reports). Adding one here is the exact same action as
- * clicking "Pin to Dashboard" on its home tab — both just add the id to
+/** One "pick a specific account/bucket/investment account, then Add" row
+ * inside the "Pin a specific item" group below — a `<select>` since the
+ * options are open-ended (however many accounts/buckets the user has),
+ * unlike the fixed catalog rows above which are just a static "Add"
+ * button per row. */
+function PinItemRow<T>({
+  label,
+  options,
+  getKey,
+  getLabel,
+  onAdd,
+}: {
+  label: string;
+  options: T[];
+  getKey: (item: T) => string;
+  getLabel: (item: T) => string;
+  onAdd: (item: T) => void;
+}) {
+  const [selectedKey, setSelectedKey] = useState("");
+  const selectedItem = options.find((o) => getKey(o) === selectedKey);
+
+  return (
+    <li className="category-manage-row">
+      <span className="category-manage-name">{label}</span>
+      {options.length === 0 ? (
+        <span className="modal-message-secondary">None available</span>
+      ) : (
+        <>
+          <select value={selectedKey} onChange={(e) => setSelectedKey(e.target.value)}>
+            <option value="">Choose…</option>
+            {options.map((o) => (
+              <option key={getKey(o)} value={getKey(o)}>
+                {getLabel(o)}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="modal-secondary"
+            disabled={!selectedItem}
+            onClick={() => {
+              if (!selectedItem) return;
+              onAdd(selectedItem);
+              setSelectedKey("");
+            }}
+          >
+            Add
+          </button>
+        </>
+      )}
+    </li>
+  );
+}
+
+/** Two catalog groups — the 9 always-available core widgets, and the 4
+ * report sections that can also be pinned here from their home tab (Cash
+ * Flow, Investments, Reports) — plus a "Pin a specific item" picker for
+ * one particular account/bucket/investment account, since those aren't a
+ * bounded catalog. Adding a catalog widget here is the exact same action
+ * as clicking "Pin to Dashboard" on its home tab — both just add the id to
  * the layout — so a widget already on the Dashboard shows "Added" instead
  * of a duplicate Add button, and clicking Add doesn't close the dialog,
  * so more than one can be added in a row. */
 export function AddWidgetDialog({
   currentWidgets,
+  accounts,
+  buckets,
+  holdings,
   onAdd,
   onCancel,
 }: {
   currentWidgets: WidgetId[];
+  accounts: Account[];
+  buckets: Bucket[];
+  holdings: Holding[];
   onAdd: (id: WidgetId) => void;
   onCancel: () => void;
 }) {
@@ -1057,12 +1119,17 @@ export function AddWidgetDialog({
     { title: "Pinned reports", items: WIDGET_CATALOG.filter((w) => w.group === "report") },
   ];
 
+  const pinnableAccounts = accounts.filter((a) => !currentWidgets.includes(accountWidgetId(a.id)));
+  const pinnableBuckets = buckets.filter((b) => !currentWidgets.includes(bucketWidgetId(b.id)));
+  const investmentAccountNames = Array.from(new Set(holdings.map((h) => h.account_name))).sort();
+  const pinnableInvestmentAccounts = investmentAccountNames.filter((name) => !currentWidgets.includes(investmentWidgetId(name)));
+
   return (
-    <ModalShell title="Add widget" onCancel={onCancel}>
+    <ModalShell title="Add widget" onCancel={onCancel} wide>
       {groups.map((g) => (
         <div key={g.title}>
           <p className="modal-message-secondary widget-group-title">{g.title}</p>
-          <ul className="category-manage-list">
+          <ul className="category-manage-list widget-catalog-list">
             {g.items.map((w) => {
               const added = currentWidgets.includes(w.id);
               return (
@@ -1077,6 +1144,32 @@ export function AddWidgetDialog({
           </ul>
         </div>
       ))}
+      <div>
+        <p className="modal-message-secondary widget-group-title">Pin a specific item</p>
+        <ul className="category-manage-list">
+          <PinItemRow
+            label="Account"
+            options={pinnableAccounts}
+            getKey={(a) => String(a.id)}
+            getLabel={(a) => a.name}
+            onAdd={(a) => onAdd(accountWidgetId(a.id))}
+          />
+          <PinItemRow
+            label="Bucket"
+            options={pinnableBuckets}
+            getKey={(b) => String(b.id)}
+            getLabel={(b) => b.name}
+            onAdd={(b) => onAdd(bucketWidgetId(b.id))}
+          />
+          <PinItemRow
+            label="Investment account"
+            options={pinnableInvestmentAccounts}
+            getKey={(name) => name}
+            getLabel={(name) => name}
+            onAdd={(name) => onAdd(investmentWidgetId(name))}
+          />
+        </ul>
+      </div>
       <div className="modal-actions">
         <button type="button" onClick={onCancel}>
           Done

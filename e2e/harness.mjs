@@ -13,7 +13,7 @@
 // launches the compiled .exe directly, not the vite dev server).
 
 import { spawn } from "node:child_process";
-import { Socket } from "node:net";
+import net, { Socket } from "node:net";
 import { remote } from "webdriverio";
 import path from "node:path";
 import fs from "node:fs";
@@ -23,8 +23,24 @@ const CARGO_BIN = "C:\\Users\\joeyf\\.cargo\\bin";
 const TAURI_DRIVER = path.join(CARGO_BIN, "tauri-driver.exe");
 const MSEDGEDRIVER = path.join(CARGO_BIN, "msedgedriver.exe");
 const APP_EXE = path.resolve("target/debug/pennyworth.exe");
-const PORT = 4445;
-const NATIVE_PORT = 9516;
+
+// Asks the OS for a free ephemeral port (bind to :0, read what it picked,
+// release it) rather than a hardcoded one — lets multiple specs run
+// concurrently (see run-all.mjs) each with their own tauri-driver instance
+// instead of fighting over one fixed port. The tiny window between
+// releasing the probe socket and tauri-driver binding it is the same
+// accepted tradeoff the `get-port` npm package makes; fine for local test
+// parallelism at the concurrency levels this suite runs at.
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.on("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -56,6 +72,8 @@ function freshTestDbDir() {
 
 export async function launchApp({ dbDir } = {}) {
   const testDbDir = dbDir ?? freshTestDbDir();
+  const PORT = await getFreePort();
+  const NATIVE_PORT = await getFreePort();
 
   const driverProcess = spawn(
     TAURI_DRIVER,

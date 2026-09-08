@@ -3,6 +3,7 @@ import type { Account, Bucket, FamilyMember } from "./types";
 import { ProgressRing } from "./charts";
 import { formatAmount, toLocalIsoDate } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { BucketIcon } from "./bucketIcons";
 
 const BUCKET_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9", "#B0526A", "#5FA85E"];
 
@@ -29,7 +30,7 @@ function ColorPicker({ value, onChange }: { value: string | null; onChange: (col
   );
 }
 
-function daysLeft(targetDate: string): number {
+export function daysLeft(targetDate: string): number {
   const target = new Date(targetDate + "T00:00:00");
   const today = new Date(toLocalIsoDate() + "T00:00:00");
   return Math.max(0, Math.round((target.getTime() - today.getTime()) / 86400000));
@@ -292,7 +293,10 @@ export function BucketsView({
                 )}
                 <div className="bucket-card-main">
                   <div className="bucket-card-header">
-                    <h3>{b.name}</h3>
+                    <h3 className="cell-with-icon">
+                      <BucketIcon name={b.name} className="category-legend-icon" />
+                      {b.name}
+                    </h3>
                     {confirmingDeleteId === b.id ? (
                       <span className="row-delete-confirm">
                         <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>

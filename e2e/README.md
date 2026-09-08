@@ -53,3 +53,27 @@ config/runner) — `import { launchApp } from "./harness.mjs"`, do things with
 `app.browser` (a `webdriverio` remote client), then `await app.close()`.
 `app.browser.$(selector)` / `$$(selector)` are plain CSS selectors against
 the real rendered DOM.
+
+## Running the full suite
+
+```
+node e2e/run-all.mjs                 # smoke.mjs + every feature*.mjs, concurrency 4
+node e2e/run-all.mjs --concurrency=8  # verified stable on this machine, ~6x faster than sequential
+node e2e/run-all.mjs --concurrency=1  # one at a time, for debugging a flaky-looking failure in isolation
+```
+
+Specs run concurrently by default because they're already fully isolated
+from each other: each `launchApp()` call gets its own throwaway SQLite file
+(see "Data safety" above) *and*, since `harness.mjs` asks the OS for a free
+port per call instead of using a hardcoded one, its own `tauri-driver`
+instance — no two specs share any state, so there's nothing for
+parallel runs to race on. Measured on this machine across all 52 specs:
+304.5s sequential -> 86.7s at concurrency 4 -> 50.9s at concurrency 8, all
+52/52 passing at every level.
+
+If a spec ever *does* fail only when run concurrently (never in isolation),
+that's a real isolation bug worth fixing, not a race to paper over —
+re-run it alone (or at `--concurrency=1`) first to confirm it's not simply
+a flaky assertion, then look for accidental shared state (a hardcoded port,
+a fixed temp path, anything read from the real AppData folder instead of
+`PENNYWORTH_DB_DIR`).

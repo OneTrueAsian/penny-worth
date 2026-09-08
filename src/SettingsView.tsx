@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AppSettings, Backup, LivePriceProviderId, LivePriceSettings, Profile, ThemeStyle } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { CHANGELOG } from "./changelog";
+import { ICON_CREDITS } from "./iconCredits";
 
 const LIVE_PRICE_PROVIDERS: Record<
   LivePriceProviderId,
@@ -561,6 +562,41 @@ function ReleaseNotesSection({ currentVersion }: { currentVersion: string | null
   );
 }
 
+/** Attribution for the bundled Noun Project icons (src/assets/icons/,
+ * see iconCredits.ts) used for several account, category, and bucket
+ * icons — each one is licensed CC BY 3.0, which requires crediting the
+ * work and its creator. */
+function IconCreditsSection() {
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">Icon credits</span>
+      </div>
+      <p className="modal-message-secondary">
+        Several account, category, and bucket icons are from The Noun Project, used under CC BY 3.0 — credited to
+        their creators below.
+      </p>
+      <button
+        type="button"
+        className="modal-secondary"
+        onClick={() => openUrl("https://creativecommons.org/licenses/by/3.0/")}
+      >
+        View CC BY 3.0 license →
+      </button>
+      <ul className="category-manage-list" style={{ marginTop: 12 }}>
+        {ICON_CREDITS.map((c) => (
+          <li key={c.name} className="category-manage-row">
+            <span className="category-manage-name">
+              {c.description} <span className="modal-message-secondary">(Noun Project ID {c.nounProjectId})</span>
+            </span>
+            <span className="account-col">{c.author}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function SettingsView({
   appVersion,
   dataFileLocation,
@@ -631,6 +667,7 @@ export function SettingsView({
         onSetEnvelopeCapsEnabled={onSetEnvelopeCapsEnabled}
       />
       <ReleaseNotesSection currentVersion={appVersion} />
+      <IconCreditsSection />
     </div>
   );
 }

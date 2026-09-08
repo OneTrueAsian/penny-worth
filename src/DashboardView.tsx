@@ -23,10 +23,13 @@ import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 import { groupOf, netWorthContribution, owedAmount } from "./accountGroups";
 import { netWorthByMember } from "./memberBreakdowns";
+import { daysLeft } from "./BucketsView";
 import {
   LAYOUT_PRESETS,
   LAYOUT_PRESET_LABELS,
   matchingLayoutPreset,
+  parseWidgetId,
+  type FixedWidgetId,
   type LayoutPresetKey,
   type WidgetId,
 } from "./dashboardLayout";
@@ -137,6 +140,22 @@ const STAT_LABELS: Record<StatKey, string> = {
   investments: "Investments",
 };
 
+const STAT_KEY_BY_WIDGET: Partial<Record<WidgetId, StatKey>> = {
+  stat_net_worth: "networth",
+  stat_cash: "cash",
+  stat_debt: "debt",
+  stat_investments: "investments",
+};
+
+/** Every widget rendered as a small `.stat`-styled card rather than a
+ * full-width report — the 4 stat cards plus any pinned account/bucket/
+ * investment-account widget. Grouped in the layout below into one shared
+ * row per contiguous run, so pinning a few accounts doesn't stretch each
+ * one to the full Dashboard width. */
+function isCompactWidget(id: WidgetId): boolean {
+  return id in STAT_KEY_BY_WIDGET || id.startsWith("account:") || id.startsWith("bucket:") || id.startsWith("investment:");
+}
+
 export function DashboardView({
   accounts,
   netWorthHistory,
@@ -164,6 +183,8 @@ export function DashboardView({
   onOpenCashFlow,
   onOpenInvestments,
   onOpenReports,
+  onOpenAccounts,
+  onOpenBuckets,
 }: {
   accounts: Account[];
   netWorthHistory: NetWorthPoint[];
@@ -224,6 +245,8 @@ export function DashboardView({
   onOpenCashFlow: () => void;
   onOpenInvestments: () => void;
   onOpenReports: () => void;
+  onOpenAccounts: () => void;
+  onOpenBuckets: () => void;
 }) {
   const [expandedStat, setExpandedStat] = useState<StatKey | null>(null);
   const [showBudgetAlerts, setShowBudgetAlerts] = useState(false);
@@ -429,117 +452,111 @@ export function DashboardView({
   // existing section here (unchanged) rather than restructuring them is
   // deliberate: the customization system should only ever reorder/hide
   // widgets, never change what's inside one.
-  const widgetContent: Record<WidgetId, React.ReactNode> = {
-    stats: (
-      <>
-        <div className="stats">
-          <button
-            type="button"
-            className={expandedStat === "networth" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-            onClick={() => toggleStat("networth")}
-          >
-            <div className="stat-top">
-              <div className="stat-top-main">
-                <span className="stat-value">{fmtMoneyShort(netWorthWithAssets)}</span>
-                <span className="stat-label-row">
-                  <Landmark className="stat-icon" aria-hidden="true" />
-                  <span className="stat-label">Net Worth</span>
-                </span>
-              </div>
-              <Sparkline points={netWorthSpark} color="var(--accent)" />
-            </div>
-            {monthsSpan > 1 && (
-              <span className={netWorthDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
-                {netWorthDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(netWorthDelta))} over {monthsSpan}mo
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
-            className={expandedStat === "cash" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-            onClick={() => toggleStat("cash")}
-          >
-            <div className="stat-top">
-              <div className="stat-top-main">
-                <span className="stat-value">{fmtMoneyShort(cash)}</span>
-                <span className="stat-label-row">
-                  <Wallet className="stat-icon" aria-hidden="true" />
-                  <span className="stat-label">Cash</span>
-                </span>
-              </div>
-              <Sparkline points={cashSpark} color="var(--info)" />
-            </div>
-            {monthsSpan > 1 && (
-              <span className={cashDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
-                {cashDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(cashDelta))} over {monthsSpan}mo
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
-            className={expandedStat === "debt" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-            onClick={() => toggleStat("debt")}
-          >
-            <div className="stat-top">
-              <div className="stat-top-main">
-                <span
-                  className={
-                    debt === 0 ? "stat-value" : debtTrendingDown ? "stat-value report-good" : "stat-value report-over-budget"
-                  }
-                >
-                  {fmtMoneyShort(debt)}
-                </span>
-                <span className="stat-label-row">
-                  {debt !== 0 && !debtTrendingDown ? (
-                    <AlertTriangle className="stat-icon" style={{ color: "var(--negative)" }} aria-hidden="true" />
-                  ) : (
-                    <CreditCard className="stat-icon" aria-hidden="true" />
-                  )}
-                  <span className="stat-label">Debt</span>
-                </span>
-              </div>
-              <Sparkline points={debtSpark} color={debtTrendingDown ? "var(--positive)" : "var(--negative)"} />
-            </div>
-            {monthsSpan > 1 && (
-              <span className={debtDelta <= 0 ? "stat-delta up" : "stat-delta down"}>
-                {debtDelta <= 0 ? "▼" : "▲"} {fmtMoneyShort(Math.abs(debtDelta))} over {monthsSpan}mo
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
-            className={expandedStat === "investments" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
-            onClick={() => toggleStat("investments")}
-          >
-            <div className="stat-top">
-              <div className="stat-top-main">
-                <span className="stat-value">{fmtMoneyShort(investments)}</span>
-                <span className="stat-label-row">
-                  <LineChartIcon className="stat-icon" aria-hidden="true" />
-                  <span className="stat-label">Investments</span>
-                </span>
-              </div>
-              <Sparkline points={investmentsSpark} color="#8A5FB0" />
-            </div>
-            {monthsSpan > 1 && (
-              <span className={investmentsDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
-                {investmentsDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(investmentsDelta))} over {monthsSpan}mo
-              </span>
-            )}
-          </button>
+  const widgetContent: Record<FixedWidgetId, React.ReactNode> = {
+    stat_net_worth: (
+      <button
+        type="button"
+        className={expandedStat === "networth" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+        onClick={() => toggleStat("networth")}
+      >
+        <div className="stat-top">
+          <div className="stat-top-main">
+            <span className="stat-value">{fmtMoneyShort(netWorthWithAssets)}</span>
+            <span className="stat-label-row">
+              <Landmark className="stat-icon" aria-hidden="true" />
+              <span className="stat-label">Net Worth</span>
+            </span>
+          </div>
+          <Sparkline points={netWorthSpark} color="var(--accent)" />
         </div>
+        {monthsSpan > 1 && (
+          <span className={netWorthDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+            {netWorthDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(netWorthDelta))} over {monthsSpan}mo
+          </span>
+        )}
+      </button>
+    ),
 
-        <StatDetailPanel
-          isOpen={expandedStat !== null}
-          title={expandedStat ? STAT_LABELS[expandedStat] : null}
-          rows={expandedStat ? breakdowns[expandedStat] : null}
-          changeRows={expandedStat ? changeBreakdowns[expandedStat] : null}
-          changeLabel={monthsSpan > 1 ? `over ${monthsSpan}mo` : undefined}
-          changeGoodDirection={expandedStat ? changeGoodDirection[expandedStat] : "up"}
-          emptyMessage="No accounts contribute to this yet."
-          onClose={() => setExpandedStat(null)}
-        />
-      </>
+    stat_cash: (
+      <button
+        type="button"
+        className={expandedStat === "cash" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+        onClick={() => toggleStat("cash")}
+      >
+        <div className="stat-top">
+          <div className="stat-top-main">
+            <span className="stat-value">{fmtMoneyShort(cash)}</span>
+            <span className="stat-label-row">
+              <Wallet className="stat-icon" aria-hidden="true" />
+              <span className="stat-label">Cash</span>
+            </span>
+          </div>
+          <Sparkline points={cashSpark} color="var(--info)" />
+        </div>
+        {monthsSpan > 1 && (
+          <span className={cashDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+            {cashDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(cashDelta))} over {monthsSpan}mo
+          </span>
+        )}
+      </button>
+    ),
+
+    stat_debt: (
+      <button
+        type="button"
+        className={expandedStat === "debt" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+        onClick={() => toggleStat("debt")}
+      >
+        <div className="stat-top">
+          <div className="stat-top-main">
+            <span
+              className={
+                debt === 0 ? "stat-value" : debtTrendingDown ? "stat-value report-good" : "stat-value report-over-budget"
+              }
+            >
+              {fmtMoneyShort(debt)}
+            </span>
+            <span className="stat-label-row">
+              {debt !== 0 && !debtTrendingDown ? (
+                <AlertTriangle className="stat-icon" style={{ color: "var(--negative)" }} aria-hidden="true" />
+              ) : (
+                <CreditCard className="stat-icon" aria-hidden="true" />
+              )}
+              <span className="stat-label">Debt</span>
+            </span>
+          </div>
+          <Sparkline points={debtSpark} color={debtTrendingDown ? "var(--positive)" : "var(--negative)"} />
+        </div>
+        {monthsSpan > 1 && (
+          <span className={debtDelta <= 0 ? "stat-delta up" : "stat-delta down"}>
+            {debtDelta <= 0 ? "▼" : "▲"} {fmtMoneyShort(Math.abs(debtDelta))} over {monthsSpan}mo
+          </span>
+        )}
+      </button>
+    ),
+
+    stat_investments: (
+      <button
+        type="button"
+        className={expandedStat === "investments" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+        onClick={() => toggleStat("investments")}
+      >
+        <div className="stat-top">
+          <div className="stat-top-main">
+            <span className="stat-value">{fmtMoneyShort(investments)}</span>
+            <span className="stat-label-row">
+              <LineChartIcon className="stat-icon" aria-hidden="true" />
+              <span className="stat-label">Investments</span>
+            </span>
+          </div>
+          <Sparkline points={investmentsSpark} color="#8A5FB0" />
+        </div>
+        {monthsSpan > 1 && (
+          <span className={investmentsDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
+            {investmentsDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(investmentsDelta))} over {monthsSpan}mo
+          </span>
+        )}
+      </button>
     ),
 
     runway: monthsOfRunway !== null && (
@@ -898,6 +915,98 @@ export function DashboardView({
     ),
   };
 
+  // Parameterized widgets (a specific account/bucket/investment account,
+  // rather than one of the fixed catalog entries above) can't live in
+  // `widgetContent`'s object literal — there's no bounded set of keys to
+  // enumerate. Each returns `null` when its target has been deleted since
+  // it was pinned; the pruning effect in App.tsx removes the dead entry
+  // from the saved layout shortly after, so this is only ever a one-frame
+  // gap rather than a permanently broken widget.
+  function renderAccountWidget(targetId: number): React.ReactNode {
+    const account = accounts.find((a) => a.id === targetId);
+    if (!account) return null;
+    const group = groupOf(account.account_type);
+    const isDebt = group === "credit" || group === "loan";
+    const amount = isDebt ? owedAmount(account) : netWorthContribution(account);
+    return (
+      <div className="stat">
+        <div className="stat-top-main">
+          <span className="stat-value">{formatAmount(amount)}</span>
+          <span className="stat-label-row">
+            <span className="stat-label">{account.name}</span>
+          </span>
+        </div>
+        <span className="stat-delta">
+          {isDebt ? "Owed" : "Balance"}
+          {(account.institution || account.mask) &&
+            ` · ${[account.institution, account.mask ? `••${account.mask}` : null].filter(Boolean).join(" ")}`}
+        </span>
+        <div className="clickable-row" onClick={onOpenAccounts} title="Go to the Accounts tab">
+          <span className="category-link">View in Accounts →</span>
+        </div>
+      </div>
+    );
+  }
+
+  function renderBucketWidget(targetId: number): React.ReactNode {
+    const bucket = buckets.find((b) => b.id === targetId);
+    if (!bucket) return null;
+    const saved = parseFloat(bucket.saved_amount);
+    const target = bucket.target_amount ? parseFloat(bucket.target_amount) : null;
+    const pct = target && target > 0 ? Math.min(100, Math.max(0, (saved / target) * 100)) : null;
+    return (
+      <div className="stat">
+        <div className="stat-top-main">
+          <span className="stat-value">{formatAmount(bucket.saved_amount)}</span>
+          <span className="stat-label-row">
+            <span className="stat-label">{bucket.name}</span>
+          </span>
+        </div>
+        <span className="stat-delta">
+          {bucket.target_amount
+            ? `of ${formatAmount(bucket.target_amount)}${pct !== null ? ` (${Math.round(pct)}%)` : ""}`
+            : "No target set"}
+          {bucket.target_date && ` · ${daysLeft(bucket.target_date)}d left`}
+        </span>
+        <div className="clickable-row" onClick={onOpenBuckets} title="Go to the Buckets tab">
+          <span className="category-link">View in Buckets →</span>
+        </div>
+      </div>
+    );
+  }
+
+  function renderInvestmentWidget(accountName: string): React.ReactNode {
+    const accountHoldings = holdings.filter((h) => h.account_name === accountName);
+    if (accountHoldings.length === 0) return null;
+    const totalValue = accountHoldings.reduce((s, h) => s + parseFloat(h.value), 0);
+    const totalGain = accountHoldings.reduce((s, h) => s + parseFloat(h.gain_loss), 0);
+    return (
+      <div className="stat">
+        <div className="stat-top-main">
+          <span className="stat-value">{formatAmount(totalValue.toFixed(2))}</span>
+          <span className="stat-label-row">
+            <span className="stat-label">{accountName}</span>
+          </span>
+        </div>
+        <span className={totalGain < 0 ? "stat-delta down" : "stat-delta up"}>
+          {totalGain > 0 ? "+" : ""}
+          {formatAmount(totalGain.toFixed(2))} gain/loss
+        </span>
+        <div className="clickable-row" onClick={onOpenInvestments} title="Go to the Investments tab">
+          <span className="category-link">View in Investments →</span>
+        </div>
+      </div>
+    );
+  }
+
+  function renderWidget(id: WidgetId): React.ReactNode {
+    const parsed = parseWidgetId(id);
+    if (parsed.kind === "fixed") return widgetContent[parsed.id];
+    if (parsed.kind === "account") return renderAccountWidget(parsed.targetId);
+    if (parsed.kind === "bucket") return renderBucketWidget(parsed.targetId);
+    return renderInvestmentWidget(parsed.accountName);
+  }
+
   function moveWidget(index: number, dir: -1 | 1) {
     const target = index + dir;
     if (target < 0 || target >= layoutWidgets.length) return;
@@ -925,6 +1034,29 @@ export function DashboardView({
   }
 
   const presetKey = matchingLayoutPreset(layoutWidgets);
+
+  // Groups consecutive compact-card ids (the 4 stat cards, plus any pinned
+  // account/bucket/investment-account widget) into one shared row
+  // (rendered as the same 4-column `.stats` grid the combined stats
+  // widget used to be), while every other id still renders solo as a
+  // full-width report — so a run of small cards still reads as one row
+  // instead of each stretching to the full Dashboard width, in the common
+  // case where they haven't been split apart by another widget dragged in
+  // between them.
+  type LayoutRow = { key: WidgetId; ids: WidgetId[]; startIndex: number; isCompactRow: boolean };
+  const layoutRows = useMemo(() => {
+    const rows: LayoutRow[] = [];
+    layoutWidgets.forEach((id, index) => {
+      const compact = isCompactWidget(id);
+      const last = rows[rows.length - 1];
+      if (compact && last?.isCompactRow) {
+        last.ids.push(id);
+      } else {
+        rows.push({ key: id, ids: [id], startIndex: index, isCompactRow: compact });
+      }
+    });
+    return rows;
+  }, [layoutWidgets]);
 
   return (
     <div className="reports-view">
@@ -989,38 +1121,102 @@ export function DashboardView({
         </div>
       )}
 
-      {layoutWidgets.map((id, i) => (
-        <div
-          key={id}
-          className={customizeMode ? "dashboard-widget-customizing" : undefined}
-          draggable={customizeMode}
-          onDragStart={() => setDragWidgetId(id)}
-          onDragOver={(e) => customizeMode && e.preventDefault()}
-          onDrop={() => handleWidgetDrop(id)}
-          onDragEnd={() => setDragWidgetId(null)}
-        >
-          {customizeMode && (
-            <div className="dashboard-widget-controls">
-              <button type="button" className="modal-secondary" onClick={() => moveWidget(i, -1)} disabled={i === 0} aria-label="Move up">
-                ↑
-              </button>
-              <button
-                type="button"
-                className="modal-secondary"
-                onClick={() => moveWidget(i, 1)}
-                disabled={i === layoutWidgets.length - 1}
-                aria-label="Move down"
-              >
-                ↓
-              </button>
-              <button type="button" className="modal-secondary" onClick={() => removeWidget(id)} aria-label="Remove widget">
-                ✕
-              </button>
+      {layoutRows.map((row) =>
+        row.isCompactRow ? (
+          <div key={row.key} className={customizeMode ? "dashboard-widget-customizing" : undefined}>
+            <div className="stats">
+              {row.ids.map((id, offset) => {
+                const index = row.startIndex + offset;
+                return (
+                  <div
+                    key={id}
+                    className={customizeMode ? "dashboard-stat-wrap" : undefined}
+                    draggable={customizeMode}
+                    onDragStart={() => setDragWidgetId(id)}
+                    onDragOver={(e) => customizeMode && e.preventDefault()}
+                    onDrop={() => handleWidgetDrop(id)}
+                    onDragEnd={() => setDragWidgetId(null)}
+                  >
+                    {customizeMode && (
+                      <div className="dashboard-widget-controls">
+                        <button
+                          type="button"
+                          className="modal-secondary"
+                          onClick={() => moveWidget(index, -1)}
+                          disabled={index === 0}
+                          aria-label="Move up"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="modal-secondary"
+                          onClick={() => moveWidget(index, 1)}
+                          disabled={index === layoutWidgets.length - 1}
+                          aria-label="Move down"
+                        >
+                          ↓
+                        </button>
+                        <button type="button" className="modal-secondary" onClick={() => removeWidget(id)} aria-label="Remove widget">
+                          ✕
+                        </button>
+                      </div>
+                    )}
+                    {renderWidget(id)}
+                  </div>
+                );
+              })}
             </div>
-          )}
-          {widgetContent[id]}
-        </div>
-      ))}
+            <StatDetailPanel
+              isOpen={expandedStat !== null && row.ids.some((id) => STAT_KEY_BY_WIDGET[id] === expandedStat)}
+              title={expandedStat ? STAT_LABELS[expandedStat] : null}
+              rows={expandedStat ? breakdowns[expandedStat] : null}
+              changeRows={expandedStat ? changeBreakdowns[expandedStat] : null}
+              changeLabel={monthsSpan > 1 ? `over ${monthsSpan}mo` : undefined}
+              changeGoodDirection={expandedStat ? changeGoodDirection[expandedStat] : "up"}
+              emptyMessage="No accounts contribute to this yet."
+              onClose={() => setExpandedStat(null)}
+            />
+          </div>
+        ) : (
+          <div
+            key={row.key}
+            className={customizeMode ? "dashboard-widget-customizing" : undefined}
+            draggable={customizeMode}
+            onDragStart={() => setDragWidgetId(row.ids[0])}
+            onDragOver={(e) => customizeMode && e.preventDefault()}
+            onDrop={() => handleWidgetDrop(row.ids[0])}
+            onDragEnd={() => setDragWidgetId(null)}
+          >
+            {customizeMode && (
+              <div className="dashboard-widget-controls">
+                <button
+                  type="button"
+                  className="modal-secondary"
+                  onClick={() => moveWidget(row.startIndex, -1)}
+                  disabled={row.startIndex === 0}
+                  aria-label="Move up"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  className="modal-secondary"
+                  onClick={() => moveWidget(row.startIndex, 1)}
+                  disabled={row.startIndex === layoutWidgets.length - 1}
+                  aria-label="Move down"
+                >
+                  ↓
+                </button>
+                <button type="button" className="modal-secondary" onClick={() => removeWidget(row.ids[0])} aria-label="Remove widget">
+                  ✕
+                </button>
+              </div>
+            )}
+            {renderWidget(row.ids[0])}
+          </div>
+        ),
+      )}
 
       {customizeMode && (
         <button type="button" className="add-tile" onClick={onOpenAddWidget}>

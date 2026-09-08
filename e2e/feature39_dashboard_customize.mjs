@@ -21,7 +21,7 @@ try {
   const removeButtons = await app.browser.$$(".dashboard-widget-controls button:last-child");
   if (removeButtons.length === 0) throw new Error("expected at least one widget remove (✕) control in Customize mode");
   const widgetCountBefore = removeButtons.length;
-  await removeButtons[1].click(); // remove the 2nd widget (runway, in the default layout)
+  await removeButtons[4].click(); // remove "runway" — 5th control in the default layout, after the 4 stat cards
 
   const layoutAfterRemove = await app.browser.execute(() =>
     JSON.parse(localStorage.getItem("meadow-dashboard-layout")),

@@ -1,10 +1,13 @@
-/** The 6 always-available Dashboard widgets, plus the 4 report sections
+/** The 9 always-available Dashboard widgets, plus the 4 report sections
  * that can also be pinned onto the Dashboard from their home tab (Cash
  * Flow, Investments, Reports). "Pinning" and picking a widget from the
  * "+ Add widget" modal are the same operation — both just add the id to
  * the current layout — so there's no separate "unlocked" concept to track. */
 export type CoreWidgetId =
-  | "stats"
+  | "stat_net_worth"
+  | "stat_cash"
+  | "stat_debt"
+  | "stat_investments"
   | "runway"
   | "needs_a_look"
   | "trend_spending"
@@ -13,10 +16,55 @@ export type CoreWidgetId =
 
 export type PinnedReportWidgetId = "top_merchants" | "debt_payoff" | "allocation" | "net_worth_by_member";
 
-export type WidgetId = CoreWidgetId | PinnedReportWidgetId;
+/** The fixed, always-the-same-shape widgets — the ones `WIDGET_CATALOG`
+ * and `LAYOUT_PRESETS` enumerate. */
+export type FixedWidgetId = CoreWidgetId | PinnedReportWidgetId;
 
-export const WIDGET_CATALOG: { id: WidgetId; label: string; group: "core" | "report" }[] = [
-  { id: "stats", label: "Stat cards", group: "core" },
+/** A widget scoped to one specific account/bucket/investment account,
+ * chosen by the user from the "+ Add widget" dialog rather than picked
+ * from the fixed catalog. Holdings have no `account_id` (InvestmentsView
+ * already groups them by `account_name`), so investment widgets key by
+ * name — the same string that page already treats as the account's
+ * identity. */
+export type AccountWidgetId = `account:${number}`;
+export type BucketWidgetId = `bucket:${number}`;
+export type InvestmentWidgetId = `investment:${string}`;
+
+export type WidgetId = FixedWidgetId | AccountWidgetId | BucketWidgetId | InvestmentWidgetId;
+
+export function accountWidgetId(accountId: number): AccountWidgetId {
+  return `account:${accountId}`;
+}
+export function bucketWidgetId(bucketId: number): BucketWidgetId {
+  return `bucket:${bucketId}`;
+}
+export function investmentWidgetId(accountName: string): InvestmentWidgetId {
+  return `investment:${accountName}`;
+}
+
+export function parseWidgetId(
+  id: WidgetId,
+):
+  | { kind: "fixed"; id: FixedWidgetId }
+  | { kind: "account"; targetId: number }
+  | { kind: "bucket"; targetId: number }
+  | { kind: "investment"; accountName: string } {
+  if (id.startsWith("account:")) return { kind: "account", targetId: Number(id.slice("account:".length)) };
+  if (id.startsWith("bucket:")) return { kind: "bucket", targetId: Number(id.slice("bucket:".length)) };
+  if (id.startsWith("investment:")) return { kind: "investment", accountName: id.slice("investment:".length) };
+  return { kind: "fixed", id: id as FixedWidgetId };
+}
+
+/** The 4 stat-card widgets — kept as one contiguous list so DashboardView
+ * can lay out however many of them are still on the layout, and adjacent to
+ * each other, as one shared row instead of 4 full-width stacked cards. */
+export const STAT_WIDGET_IDS: readonly WidgetId[] = ["stat_net_worth", "stat_cash", "stat_debt", "stat_investments"];
+
+export const WIDGET_CATALOG: { id: FixedWidgetId; label: string; group: "core" | "report" }[] = [
+  { id: "stat_net_worth", label: "Net Worth", group: "core" },
+  { id: "stat_cash", label: "Cash", group: "core" },
+  { id: "stat_debt", label: "Debt", group: "core" },
+  { id: "stat_investments", label: "Investments", group: "core" },
   { id: "runway", label: "Runway", group: "core" },
   { id: "needs_a_look", label: "Needs a look", group: "core" },
   { id: "trend_spending", label: "Trend & spending", group: "core" },
@@ -30,8 +78,25 @@ export const WIDGET_CATALOG: { id: WidgetId; label: string; group: "core" | "rep
 
 const CATALOG_IDS = new Set(WIDGET_CATALOG.map((w) => w.id));
 
+/** A saved id is either one of the fixed catalog entries, or a
+ * well-formed reference to a specific account/bucket/investment account.
+ * Whether that *target* still exists is checked at render time
+ * (DashboardView has the live data; this module doesn't) — a dead
+ * reference is pruned from the saved layout once App.tsx notices the
+ * target is gone. */
+function isValidWidgetId(id: unknown): id is WidgetId {
+  if (typeof id !== "string") return false;
+  if (CATALOG_IDS.has(id as FixedWidgetId)) return true;
+  if (/^(account|bucket):\d+$/.test(id)) return true;
+  if (/^investment:.+$/.test(id)) return true;
+  return false;
+}
+
 export const DEFAULT_LAYOUT: WidgetId[] = [
-  "stats",
+  "stat_net_worth",
+  "stat_cash",
+  "stat_debt",
+  "stat_investments",
   "runway",
   "needs_a_look",
   "trend_spending",
@@ -41,8 +106,26 @@ export const DEFAULT_LAYOUT: WidgetId[] = [
 
 export const LAYOUT_PRESETS = {
   default: DEFAULT_LAYOUT,
-  bills_focus: ["stats", "needs_a_look", "budget_bills", "debt_payoff", "recent_transactions"],
-  investor_focus: ["stats", "trend_spending", "allocation", "net_worth_by_member", "runway"],
+  bills_focus: [
+    "stat_net_worth",
+    "stat_cash",
+    "stat_debt",
+    "stat_investments",
+    "needs_a_look",
+    "budget_bills",
+    "debt_payoff",
+    "recent_transactions",
+  ],
+  investor_focus: [
+    "stat_net_worth",
+    "stat_cash",
+    "stat_debt",
+    "stat_investments",
+    "trend_spending",
+    "allocation",
+    "net_worth_by_member",
+    "runway",
+  ],
 } satisfies Record<string, WidgetId[]>;
 
 export type LayoutPresetKey = keyof typeof LAYOUT_PRESETS;
@@ -58,14 +141,18 @@ const STORAGE_KEY = "meadow-dashboard-layout";
 /** Same try/parse/catch-fallback shape as `loadNavOrder`/`theme` in
  * App.tsx — a per-viewer arrangement, not app data, so it lives in
  * localStorage. Drops any id from a future/older version of the catalog
- * this build doesn't recognize, rather than erroring. */
+ * this build doesn't recognize, rather than erroring. A saved layout from
+ * before the stat cards were split back out carries the single legacy
+ * "stats" id — expanded in place into the 4 new ids so an upgrading user's
+ * arrangement doesn't just lose its stat row. */
 export function loadDashboardLayout(): WidgetId[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_LAYOUT;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return DEFAULT_LAYOUT;
-    const filtered = parsed.filter((id): id is WidgetId => CATALOG_IDS.has(id));
+    const expanded = parsed.flatMap((id) => (id === "stats" ? STAT_WIDGET_IDS : [id]));
+    const filtered = expanded.filter(isValidWidgetId);
     return filtered.length > 0 ? filtered : DEFAULT_LAYOUT;
   } catch {
     return DEFAULT_LAYOUT;
