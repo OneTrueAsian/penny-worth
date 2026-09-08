@@ -34,8 +34,8 @@ try {
   if (!pinnedText.includes("Pinned")) throw new Error(`expected the button to flip to "Pinned", got "${pinnedText}"`);
   console.log("Allocation's Pin to Dashboard button flipped to:", pinnedText);
 
-  const layout = await app.browser.execute(() => JSON.parse(localStorage.getItem("meadow-dashboard-grid-layout")));
-  if (!layout.some((item) => item.i === "allocation")) {
+  const layout = await app.browser.execute(() => JSON.parse(localStorage.getItem("meadow-dashboard-layout")));
+  if (!layout.includes("allocation")) {
     throw new Error(`expected "allocation" in the persisted layout, got ${JSON.stringify(layout)}`);
   }
 

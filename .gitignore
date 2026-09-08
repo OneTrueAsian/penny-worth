@@ -48,7 +48,3 @@ db-backups/
 *.p12
 *.pem
 *.key
-
-# Local planning/scratch notes from AI-assisted work sessions — useful on
-# this machine, not something other clones of the repo need.
-/Claude outputs/

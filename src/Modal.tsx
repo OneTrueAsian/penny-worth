@@ -1,15 +1,8 @@
 import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
-import type { Account, Bucket, CategoryTransaction, FamilyMember, Holding, MonthExpenseDetail, ReportBudgetLine } from "./types";
+import type { Account, CategoryTransaction, FamilyMember, MonthExpenseDetail, ReportBudgetLine } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
-import {
-  WIDGET_CATALOG,
-  accountWidgetId,
-  bucketWidgetId,
-  investmentWidgetId,
-  type DashboardGridLayout,
-  type WidgetId,
-} from "./dashboardLayout";
+import { WIDGET_CATALOG, type WidgetId } from "./dashboardLayout";
 
 /** Shared shell: a dimmed overlay behind a centered panel. Clicking the
  * overlay (not the panel) cancels, matching how a native dialog behaves —
@@ -1050,162 +1043,40 @@ export function ConfirmInvertDialog({
  * the layout — so a widget already on the Dashboard shows "Added" instead
  * of a duplicate Add button, and clicking Add doesn't close the dialog,
  * so more than one can be added in a row. */
-/** One "pick a specific item, then Add" row for the "Pin a specific item"
- * group — the dropdown sits right in the row (no second screen), and
- * already-pinned items drop out of the options list instead of showing a
- * disabled "Added" state, since there's a fresh one to pick every time. */
-function PinItemRow<T>({
-  label,
-  options,
-  getKey,
-  getLabel,
-  onAdd,
-}: {
-  label: string;
-  options: T[];
-  getKey: (item: T) => string;
-  getLabel: (item: T) => string;
-  onAdd: (item: T) => void;
-}) {
-  const [selectedKey, setSelectedKey] = useState("");
-  const selectedItem = options.find((o) => getKey(o) === selectedKey);
-
-  return (
-    <li className="category-manage-row">
-      <span className="category-manage-name">{label}</span>
-      {options.length === 0 ? (
-        <span className="modal-message-secondary">None available</span>
-      ) : (
-        <>
-          <select value={selectedKey} onChange={(e) => setSelectedKey(e.target.value)}>
-            <option value="">Choose…</option>
-            {options.map((o) => (
-              <option key={getKey(o)} value={getKey(o)}>
-                {getLabel(o)}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="modal-secondary"
-            disabled={!selectedItem}
-            onClick={() => {
-              if (!selectedItem) return;
-              onAdd(selectedItem);
-              setSelectedKey("");
-            }}
-          >
-            Add
-          </button>
-        </>
-      )}
-    </li>
-  );
-}
-
 export function AddWidgetDialog({
-  dashboardLayout,
+  currentWidgets,
   onAdd,
   onCancel,
-  accounts,
-  buckets,
-  holdings,
 }: {
-  dashboardLayout: DashboardGridLayout;
+  currentWidgets: WidgetId[];
   onAdd: (id: WidgetId) => void;
   onCancel: () => void;
-  accounts: Account[];
-  buckets: Bucket[];
-  holdings: Holding[];
 }) {
-  const [search, setSearch] = useState("");
-  const query = search.trim().toLowerCase();
-
-  // Widgets already on the Dashboard drop out of their group entirely
-  // (same convention `PinItemRow` below already uses for accounts/
-  // buckets/investment accounts) rather than staying in the list as a
-  // disabled "Added" row — with 17 fixed widgets across 3 groups, keeping
-  // every already-added one visible just to say "Added" was most of the
-  // list's length once a layout filled in.
   const groups: { title: string; items: typeof WIDGET_CATALOG }[] = [
-    { title: "Stat cards", items: WIDGET_CATALOG.filter((w) => w.group === "stats") },
     { title: "Core widgets", items: WIDGET_CATALOG.filter((w) => w.group === "core") },
     { title: "Pinned reports", items: WIDGET_CATALOG.filter((w) => w.group === "report") },
   ];
 
-  const isPinned = (id: WidgetId) => dashboardLayout.some((item) => item.i === id);
-  const pinnableAccounts = accounts.filter((a) => !isPinned(accountWidgetId(a.id)));
-  const pinnableBuckets = buckets.filter((b) => !isPinned(bucketWidgetId(b.id)));
-  const investmentAccountNames = Array.from(new Set(holdings.map((h) => h.account_name))).sort();
-  const pinnableInvestmentAccounts = investmentAccountNames.filter((name) => !isPinned(investmentWidgetId(name)));
-
-  const anyMatch =
-    !query ||
-    WIDGET_CATALOG.some((w) => !isPinned(w.id) && w.label.toLowerCase().includes(query));
-
   return (
-    <ModalShell title="Add widget" onCancel={onCancel} wide>
-      <input
-        className="widget-search-input"
-        type="search"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search widgets…"
-        aria-label="Search widgets"
-      />
-      {groups.map((g) => {
-        const available = g.items.filter((w) => !isPinned(w.id));
-        const matching = query ? available.filter((w) => w.label.toLowerCase().includes(query)) : available;
-        if (query && matching.length === 0) return null;
-        return (
-          <div key={g.title}>
-            <p className="modal-message-secondary widget-group-title">{g.title}</p>
-            {matching.length === 0 ? (
-              <p className="modal-message-secondary">Everything here is already on your Dashboard.</p>
-            ) : (
-              <ul className="category-manage-list">
-                {matching.map((w) => (
-                  <li key={w.id} className="category-manage-row">
-                    <span className="category-manage-name">{w.label}</span>
-                    <button type="button" className="modal-secondary" onClick={() => onAdd(w.id)}>
-                      Add
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        );
-      })}
-      {!anyMatch && <p className="modal-message-secondary">No widgets match "{search.trim()}".</p>}
-      {!query && (
-        <div>
-          <p className="modal-message-secondary widget-group-title">Pin a specific item</p>
+    <ModalShell title="Add widget" onCancel={onCancel}>
+      {groups.map((g) => (
+        <div key={g.title}>
+          <p className="modal-message-secondary widget-group-title">{g.title}</p>
           <ul className="category-manage-list">
-            <PinItemRow
-              label="Account"
-              options={pinnableAccounts}
-              getKey={(a) => String(a.id)}
-              getLabel={(a) => a.name}
-              onAdd={(a) => onAdd(accountWidgetId(a.id))}
-            />
-            <PinItemRow
-              label="Bucket"
-              options={pinnableBuckets}
-              getKey={(b) => String(b.id)}
-              getLabel={(b) => b.name}
-              onAdd={(b) => onAdd(bucketWidgetId(b.id))}
-            />
-            <PinItemRow
-              label="Investment account"
-              options={pinnableInvestmentAccounts}
-              getKey={(name) => name}
-              getLabel={(name) => name}
-              onAdd={(name) => onAdd(investmentWidgetId(name))}
-            />
+            {g.items.map((w) => {
+              const added = currentWidgets.includes(w.id);
+              return (
+                <li key={w.id} className="category-manage-row">
+                  <span className="category-manage-name">{w.label}</span>
+                  <button type="button" className="modal-secondary" disabled={added} onClick={() => onAdd(w.id)}>
+                    {added ? "Added" : "Add"}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
-      )}
+      ))}
       <div className="modal-actions">
         <button type="button" onClick={onCancel}>
           Done

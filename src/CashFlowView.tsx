@@ -4,7 +4,7 @@ import { BarChart, DonutChart, LineChart, fmtMoneyShort } from "./charts";
 import { formatAmount } from "./format";
 import { DebtPayoffPlannerSection } from "./ReportsView";
 import { PinToDashboardButton } from "./PinToDashboardButton";
-import type { DashboardGridLayout, WidgetId } from "./dashboardLayout";
+import type { WidgetId } from "./dashboardLayout";
 
 const CATEGORY_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9"];
 const FORECAST_DAY_OPTIONS = [30, 60, 90];
@@ -28,7 +28,7 @@ export function CashFlowView({
   onSetAccountInterestRate,
   onCalculateDebtPayoff,
   onSetAccountExcludedFromDebtPayoff,
-  dashboardLayout,
+  layoutWidgets,
   onPinWidget,
 }: {
   cashFlow: CashFlow | null;
@@ -67,7 +67,7 @@ export function CashFlowView({
   /** The Dashboard's current widget layout, and a way to add to it — powers
    * the "Pin to Dashboard" button next to Top merchants and, further down,
    * the Debt Payoff Planner. */
-  dashboardLayout: DashboardGridLayout;
+  layoutWidgets: WidgetId[];
   onPinWidget: (id: WidgetId) => void;
 }) {
   // Local to this view (like `expandedStat`/`showBudgetAlerts` on the
@@ -201,9 +201,6 @@ export function CashFlowView({
               <span className="reports-section-title">
                 {compareLastYear ? "Net cash flow — this year vs. last year" : "Income vs. expenses"}
               </span>
-              {!compareLastYear && (
-                <PinToDashboardButton widgetId="income_vs_expenses" dashboardLayout={dashboardLayout} onPin={onPinWidget} />
-              )}
             </div>
             <BarChart
               data={barData}
@@ -260,7 +257,7 @@ export function CashFlowView({
                       size={132}
                       center={{ value: fmtMoneyShort(donutTotal), label: selectedMonthLabel }}
                     />
-                    <div className="donut-legend-list">
+                    <div>
                       {donutData.map((d) => (
                         <div className="chart-legend-item" key={d.label} style={{ marginBottom: 8 }}>
                           <span className="chart-legend-swatch" style={{ background: d.color }}></span>
@@ -309,7 +306,7 @@ export function CashFlowView({
                       </option>
                     ))}
                   </select>
-                  <PinToDashboardButton widgetId="top_merchants" dashboardLayout={dashboardLayout} onPin={onPinWidget} />
+                  <PinToDashboardButton widgetId="top_merchants" layoutWidgets={layoutWidgets} onPin={onPinWidget} />
                 </div>
               </div>
               {!topCategoriesData ? (
@@ -382,7 +379,7 @@ export function CashFlowView({
           onSetAccountInterestRate={onSetAccountInterestRate}
           onCalculateDebtPayoff={onCalculateDebtPayoff}
           onSetAccountExcludedFromDebtPayoff={onSetAccountExcludedFromDebtPayoff}
-          dashboardLayout={dashboardLayout}
+          layoutWidgets={layoutWidgets}
           onPinWidget={onPinWidget}
         />
       )}

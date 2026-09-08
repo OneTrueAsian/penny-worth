@@ -29,7 +29,7 @@ function ColorPicker({ value, onChange }: { value: string | null; onChange: (col
   );
 }
 
-export function daysLeft(targetDate: string): number {
+function daysLeft(targetDate: string): number {
   const target = new Date(targetDate + "T00:00:00");
   const today = new Date(toLocalIsoDate() + "T00:00:00");
   return Math.max(0, Math.round((target.getTime() - today.getTime()) / 86400000));
@@ -292,7 +292,7 @@ export function BucketsView({
                 )}
                 <div className="bucket-card-main">
                   <div className="bucket-card-header">
-                    <h3 title={b.name}>{b.name}</h3>
+                    <h3>{b.name}</h3>
                     {confirmingDeleteId === b.id ? (
                       <span className="row-delete-confirm">
                         <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>

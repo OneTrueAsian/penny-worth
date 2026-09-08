@@ -1,4 +1,4 @@
-import type { DashboardGridLayout, WidgetId } from "./dashboardLayout";
+import type { WidgetId } from "./dashboardLayout";
 
 /** The same control appears next to 4 report sections (Cash Flow's Top
  * merchants and Debt Payoff Planner, Investments' Allocation, Reports' Net
@@ -9,14 +9,14 @@ import type { DashboardGridLayout, WidgetId } from "./dashboardLayout";
  * Customize-mode action, not something the source page exposes. */
 export function PinToDashboardButton({
   widgetId,
-  dashboardLayout,
+  layoutWidgets,
   onPin,
 }: {
   widgetId: WidgetId;
-  dashboardLayout: DashboardGridLayout;
+  layoutWidgets: WidgetId[];
   onPin: (id: WidgetId) => void;
 }) {
-  const pinned = dashboardLayout.some((item) => item.i === widgetId);
+  const pinned = layoutWidgets.includes(widgetId);
   if (pinned) {
     return <span className="pin-widget-pinned">Pinned ✓</span>;
   }
