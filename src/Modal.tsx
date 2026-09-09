@@ -176,7 +176,7 @@ export function WhatsNewDialog({
   onClose: () => void;
 }) {
   return (
-    <ModalShell title={`What's new in ${version}`} onCancel={onClose}>
+    <ModalShell title={`What's new in ${version}`} onCancel={onClose} wide>
       <ul className="modal-changelog-list">
         {notes.map((note, i) => (
           <li key={i}>{note}</li>
