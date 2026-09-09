@@ -476,24 +476,35 @@ export function RecurringView({
 
   return (
     <div className="buckets-view">
-      <div className="stats">
-        <div className="stat">
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Recurring</h1>
+          <p className="view-sub">
+            {recurring.length} known bill{recurring.length === 1 ? "" : "s"} and income
+            {candidates.length > 0
+              ? ` — ${candidates.length} suggestion${candidates.length === 1 ? "" : "s"} to review.`
+              : " — nothing flagged for review."}
+          </p>
+        </div>
+      </div>
+      <div className="stats" style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}>
+        <div className="stat tint-red">
           <span className="stat-value">{formatAmount(totals.monthly_expense)}</span>
           <span className="stat-label">Monthly recurring expenses</span>
         </div>
-        <div className="stat">
+        <div className="stat tint-blue">
           <span className="stat-value">{formatAmount(totals.monthly_income)}</span>
           <span className="stat-label">Recurring income (est.)</span>
         </div>
-        <div className="stat">
+        <div className="stat tint-red">
           <span className="stat-value">{formatAmount(totals.annual_expense)}</span>
           <span className="stat-label">Annual recurring expenses</span>
         </div>
-        <div className="stat">
+        <div className="stat tint-blue">
           <span className="stat-value">{formatAmount(totals.annual_income)}</span>
           <span className="stat-label">Annual recurring income (est.)</span>
         </div>
-        <div className="stat">
+        <div className="stat tint-accent">
           <span className="stat-value">{recurring.length}</span>
           <span className="stat-label">Active items</span>
         </div>

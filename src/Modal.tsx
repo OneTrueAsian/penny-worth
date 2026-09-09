@@ -1155,7 +1155,7 @@ export function AddWidgetDialog({
             onAdd={(a) => onAdd(accountWidgetId(a.id))}
           />
           <PinItemRow
-            label="Bucket"
+            label="Goal"
             options={pinnableBuckets}
             getKey={(b) => String(b.id)}
             getLabel={(b) => b.name}

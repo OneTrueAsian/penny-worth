@@ -1,6 +1,6 @@
 import Fuse from "fuse.js";
 import type { Account, Bucket, Recurring, Transaction } from "./types";
-import { groupOf } from "./accountGroups";
+import { isIncomeTransaction } from "./accountGroups";
 import { toLocalIsoDate } from "./format";
 
 /** Everything a question might need — all of it already sitting in App.tsx
@@ -83,10 +83,11 @@ export function findMember(phrase: string, transactions: Transaction[]): string 
 
 export type Metric = "sum" | "avg" | "count" | "max" | "min";
 
-/** "income" specifically means `category === "Income"`, not "amount >= 0"
- * — a refund or other positive-but-uncategorized amount is neither income
- * nor expense, matching this app's existing (and intentional) convention.
- * "expense" is any negative amount, regardless of category. */
+/** "income" means whatever `isIncomeTransaction` (accountGroups.ts) counts
+ * as income — a positive amount that isn't a Transfer or a credit/loan
+ * account's own balance-side entry, the same rule Cash Flow's backend uses,
+ * regardless of what the transaction is actually categorized as. "expense"
+ * is any negative amount, regardless of category. */
 export type Sign = "expense" | "income" | "both";
 
 export type Subject = { type: "category" | "merchant" | "account" | "member"; value: string };
@@ -171,7 +172,6 @@ function aggregate(matches: Transaction[], metric: Metric, sign: Sign): number {
 
 export function runQuery(query: Query, ctx: QaContext): QueryResult {
   const askedAboutTransferDirectly = query.subject?.type === "category" && query.subject.value === "Transfer";
-  const groupByAccountId = new Map(ctx.accounts.map((a) => [a.id, groupOf(a.account_type)]));
   const matches = ctx.transactions.filter((t) => {
     if (query.sign === "expense") {
       if (parseFloat(t.amount) >= 0) return false;
@@ -181,13 +181,7 @@ export function runQuery(query: Query, ctx: QaContext): QueryResult {
       // Transfer category itself.
       if (t.category === "Transfer" && !askedAboutTransferDirectly) return false;
     }
-    if (query.sign === "income") {
-      if (t.category !== "Income") return false;
-      // A credit/loan payment mistakenly categorized "Income" is still
-      // never real income — same blanket rule as `Store::monthly_totals`.
-      const group = groupByAccountId.get(t.account_id);
-      if (group === "credit" || group === "loan") return false;
-    }
+    if (query.sign === "income" && !isIncomeTransaction(t, ctx.accounts)) return false;
     if (query.subject && !matchesSubject(t, query.subject)) return false;
     if (query.period && !inRange(t.date, query.period)) return false;
     return true;

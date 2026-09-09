@@ -54,6 +54,7 @@ function bucket(overrides: Partial<Bucket> = {}): Bucket {
     member_name: null,
     sinking_amount: null,
     color: null,
+    icon_key: null,
     ...overrides,
   } as Bucket;
 }

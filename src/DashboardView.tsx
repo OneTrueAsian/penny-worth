@@ -27,10 +27,13 @@ import { daysLeft } from "./BucketsView";
 import {
   LAYOUT_PRESETS,
   LAYOUT_PRESET_LABELS,
+  loadCustomLayoutPresets,
   matchingLayoutPreset,
   parseWidgetId,
+  saveCustomLayoutPresets,
   type FixedWidgetId,
   type LayoutPresetKey,
+  type SavedLayoutPreset,
   type WidgetId,
 } from "./dashboardLayout";
 import { answerLedgerQuestion, LEDGER_QA_EXAMPLES, type QaResult } from "./ledgerQa";
@@ -185,6 +188,8 @@ export function DashboardView({
   onOpenReports,
   onOpenAccounts,
   onOpenBuckets,
+  onAddTransaction,
+  onAddAccount,
 }: {
   accounts: Account[];
   netWorthHistory: NetWorthPoint[];
@@ -247,12 +252,38 @@ export function DashboardView({
   onOpenReports: () => void;
   onOpenAccounts: () => void;
   onOpenBuckets: () => void;
+  /** Quick actions panel — same triggers the Ledger toolbar's "Add
+   * transaction…" button and Accounts' "Add account…" button already use. */
+  onAddTransaction: () => void;
+  onAddAccount: () => void;
 }) {
   const [expandedStat, setExpandedStat] = useState<StatKey | null>(null);
   const [showBudgetAlerts, setShowBudgetAlerts] = useState(false);
   const [checklistDismissed, setChecklistDismissed] = useState(loadChecklistDismissed);
   const [customizeMode, setCustomizeMode] = useState(false);
   const [dragWidgetId, setDragWidgetId] = useState<WidgetId | null>(null);
+  const [customPresets, setCustomPresets] = useState<SavedLayoutPreset[]>(loadCustomLayoutPresets);
+  const [savingLayout, setSavingLayout] = useState(false);
+  const [newLayoutName, setNewLayoutName] = useState("");
+
+  function saveCurrentLayout() {
+    const name = newLayoutName.trim();
+    if (!name) return;
+    const snapshot: SavedLayoutPreset = { name, widgets: layoutWidgets };
+    // Saving under a name that's already in use replaces it, rather than
+    // accumulating duplicates — same rule as the Ledger's saved filters.
+    const next = [...customPresets.filter((p) => p.name !== name), snapshot];
+    setCustomPresets(next);
+    saveCustomLayoutPresets(next);
+    setNewLayoutName("");
+    setSavingLayout(false);
+  }
+
+  function deleteCustomLayout(name: string) {
+    const next = customPresets.filter((p) => p.name !== name);
+    setCustomPresets(next);
+    saveCustomLayoutPresets(next);
+  }
 
   function dismissChecklist() {
     setChecklistDismissed(true);
@@ -456,106 +487,106 @@ export function DashboardView({
     stat_net_worth: (
       <button
         type="button"
-        className={expandedStat === "networth" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+        className={
+          expandedStat === "networth"
+            ? "stat stat-hero tint-accent stat-clickable stat-expanded"
+            : "stat stat-hero tint-accent stat-clickable"
+        }
         onClick={() => toggleStat("networth")}
       >
         <div className="stat-top">
-          <div className="stat-top-main">
-            <span className="stat-value">{fmtMoneyShort(netWorthWithAssets)}</span>
-            <span className="stat-label-row">
-              <Landmark className="stat-icon" aria-hidden="true" />
-              <span className="stat-label">Net Worth</span>
-            </span>
-          </div>
-          <Sparkline points={netWorthSpark} color="var(--accent)" />
+          <span className="mini-ico accent">
+            <Landmark aria-hidden="true" />
+          </span>
+          <span className="stat-label">Net Worth</span>
         </div>
+        <span className="stat-value">{formatAmount(netWorthWithAssets)}</span>
         {monthsSpan > 1 && (
           <span className={netWorthDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
             {netWorthDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(netWorthDelta))} over {monthsSpan}mo
           </span>
         )}
+        <Sparkline points={netWorthSpark} color="var(--accent)" width={160} fluid />
       </button>
     ),
 
     stat_cash: (
       <button
         type="button"
-        className={expandedStat === "cash" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+        className={
+          expandedStat === "cash" ? "stat stat-hero tint-blue stat-clickable stat-expanded" : "stat stat-hero tint-blue stat-clickable"
+        }
         onClick={() => toggleStat("cash")}
       >
         <div className="stat-top">
-          <div className="stat-top-main">
-            <span className="stat-value">{fmtMoneyShort(cash)}</span>
-            <span className="stat-label-row">
-              <Wallet className="stat-icon" aria-hidden="true" />
-              <span className="stat-label">Cash</span>
-            </span>
-          </div>
-          <Sparkline points={cashSpark} color="var(--info)" />
+          <span className="mini-ico blue">
+            <Wallet aria-hidden="true" />
+          </span>
+          <span className="stat-label">Cash</span>
         </div>
+        <span className="stat-value">{formatAmount(cash)}</span>
         {monthsSpan > 1 && (
           <span className={cashDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
             {cashDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(cashDelta))} over {monthsSpan}mo
           </span>
         )}
+        <Sparkline points={cashSpark} color="var(--info)" width={160} fluid />
       </button>
     ),
 
     stat_debt: (
       <button
         type="button"
-        className={expandedStat === "debt" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+        className={
+          expandedStat === "debt" ? "stat stat-hero tint-red stat-clickable stat-expanded" : "stat stat-hero tint-red stat-clickable"
+        }
         onClick={() => toggleStat("debt")}
       >
         <div className="stat-top">
-          <div className="stat-top-main">
-            <span
-              className={
-                debt === 0 ? "stat-value" : debtTrendingDown ? "stat-value report-good" : "stat-value report-over-budget"
-              }
-            >
-              {fmtMoneyShort(debt)}
-            </span>
-            <span className="stat-label-row">
-              {debt !== 0 && !debtTrendingDown ? (
-                <AlertTriangle className="stat-icon" style={{ color: "var(--negative)" }} aria-hidden="true" />
-              ) : (
-                <CreditCard className="stat-icon" aria-hidden="true" />
-              )}
-              <span className="stat-label">Debt</span>
-            </span>
-          </div>
-          <Sparkline points={debtSpark} color={debtTrendingDown ? "var(--positive)" : "var(--negative)"} />
+          <span className="mini-ico red">
+            {debt !== 0 && !debtTrendingDown ? <AlertTriangle aria-hidden="true" /> : <CreditCard aria-hidden="true" />}
+          </span>
+          <span className="stat-label">Debt</span>
         </div>
+        <span
+          className={
+            debt === 0 ? "stat-value" : debtTrendingDown ? "stat-value report-good" : "stat-value report-over-budget"
+          }
+        >
+          {formatAmount(debt)}
+        </span>
         {monthsSpan > 1 && (
           <span className={debtDelta <= 0 ? "stat-delta up" : "stat-delta down"}>
             {debtDelta <= 0 ? "▼" : "▲"} {fmtMoneyShort(Math.abs(debtDelta))} over {monthsSpan}mo
           </span>
         )}
+        <Sparkline points={debtSpark} color={debtTrendingDown ? "var(--positive)" : "var(--negative)"} width={160} fluid />
       </button>
     ),
 
     stat_investments: (
       <button
         type="button"
-        className={expandedStat === "investments" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+        className={
+          expandedStat === "investments"
+            ? "stat stat-hero tint-purple stat-clickable stat-expanded"
+            : "stat stat-hero tint-purple stat-clickable"
+        }
         onClick={() => toggleStat("investments")}
       >
         <div className="stat-top">
-          <div className="stat-top-main">
-            <span className="stat-value">{fmtMoneyShort(investments)}</span>
-            <span className="stat-label-row">
-              <LineChartIcon className="stat-icon" aria-hidden="true" />
-              <span className="stat-label">Investments</span>
-            </span>
-          </div>
-          <Sparkline points={investmentsSpark} color="#8A5FB0" />
+          <span className="mini-ico purple">
+            <LineChartIcon aria-hidden="true" />
+          </span>
+          <span className="stat-label">Investments</span>
         </div>
+        <span className="stat-value">{formatAmount(investments)}</span>
         {monthsSpan > 1 && (
           <span className={investmentsDelta >= 0 ? "stat-delta up" : "stat-delta down"}>
             {investmentsDelta >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(investmentsDelta))} over {monthsSpan}mo
           </span>
         )}
+        <Sparkline points={investmentsSpark} color="#8A5FB0" width={160} fluid />
       </button>
     ),
 
@@ -968,8 +999,8 @@ export function DashboardView({
             : "No target set"}
           {bucket.target_date && ` · ${daysLeft(bucket.target_date)}d left`}
         </span>
-        <div className="clickable-row" onClick={onOpenBuckets} title="Go to the Buckets tab">
-          <span className="category-link">View in Buckets →</span>
+        <div className="clickable-row" onClick={onOpenBuckets} title="Go to the Goals tab">
+          <span className="category-link">View in Goals →</span>
         </div>
       </div>
     );
@@ -1033,7 +1064,7 @@ export function DashboardView({
     setDragWidgetId(null);
   }
 
-  const presetKey = matchingLayoutPreset(layoutWidgets);
+  const presetKey = matchingLayoutPreset(layoutWidgets, customPresets);
 
   // Groups consecutive compact-card ids (the 4 stat cards, plus any pinned
   // account/bucket/investment-account widget) into one shared row
@@ -1060,6 +1091,26 @@ export function DashboardView({
 
   return (
     <div className="reports-view">
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Dashboard</h1>
+          <p className="view-sub">Your accounts, budget, and goals at a glance.</p>
+        </div>
+      </div>
+      <div className="quick-actions">
+        <button type="button" onClick={onAddTransaction}>
+          + Add transaction
+        </button>
+        <button type="button" className="modal-secondary" onClick={onAddAccount}>
+          + Add account
+        </button>
+        <button type="button" className="modal-secondary" onClick={onOpenBudget}>
+          Set budget
+        </button>
+        <button type="button" className="modal-secondary" onClick={onOpenBuckets}>
+          Update goals
+        </button>
+      </div>
       <LedgerQaBox
         onAsk={(question) =>
           answerLedgerQuestion(question, {
@@ -1079,11 +1130,24 @@ export function DashboardView({
           className="month-select"
           value={presetKey}
           title="Layout"
-          onChange={(e) => onSetLayoutWidgets([...LAYOUT_PRESETS[e.target.value as LayoutPresetKey]])}
+          onChange={(e) => {
+            const value = e.target.value;
+            if (value.startsWith("custom:")) {
+              const found = customPresets.find((p) => p.name === value.slice("custom:".length));
+              if (found) onSetLayoutWidgets([...found.widgets]);
+            } else {
+              onSetLayoutWidgets([...LAYOUT_PRESETS[value as LayoutPresetKey]]);
+            }
+          }}
         >
           {(Object.keys(LAYOUT_PRESETS) as LayoutPresetKey[]).map((key) => (
             <option key={key} value={key}>
               {LAYOUT_PRESET_LABELS[key]}
+            </option>
+          ))}
+          {customPresets.map((p) => (
+            <option key={p.name} value={`custom:${p.name}`}>
+              {p.name}
             </option>
           ))}
           {presetKey === "custom" && (
@@ -1092,6 +1156,50 @@ export function DashboardView({
             </option>
           )}
         </select>
+        {presetKey === "custom" &&
+          (savingLayout ? (
+            <form
+              className="saved-filter-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveCurrentLayout();
+              }}
+            >
+              <input
+                autoFocus
+                value={newLayoutName}
+                onChange={(e) => setNewLayoutName(e.target.value)}
+                placeholder='e.g. "Weekly check-in"'
+              />
+              <button type="submit" className="btn-sm" disabled={!newLayoutName.trim()}>
+                Save
+              </button>
+              <button
+                type="button"
+                className="modal-secondary btn-sm"
+                onClick={() => {
+                  setSavingLayout(false);
+                  setNewLayoutName("");
+                }}
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <button type="button" className="modal-secondary btn-sm" onClick={() => setSavingLayout(true)}>
+              + Save as…
+            </button>
+          ))}
+        {presetKey.startsWith("custom:") && (
+          <button
+            type="button"
+            className="modal-secondary btn-sm"
+            title="Delete this saved report"
+            onClick={() => deleteCustomLayout(presetKey.slice("custom:".length))}
+          >
+            Delete
+          </button>
+        )}
         <button type="button" className="modal-secondary" onClick={() => setCustomizeMode((v) => !v)}>
           {customizeMode ? "Done" : "Customize"}
         </button>

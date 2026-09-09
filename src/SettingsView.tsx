@@ -266,27 +266,14 @@ function LivePricesSection({
 const THEME_STYLE_OPTIONS: { id: ThemeStyle; label: string; description: string }[] = [
   {
     id: "classic",
-    label: "Classic",
-    description:
-      "Penny Worth's original look, with its own Light/Dark/System toggle at the bottom of the sidebar.",
-  },
-  {
-    id: "aurora",
-    label: "Aurora",
-    description:
-      "A colorful reskin — navy backgrounds with lavender, mint, and coral accents. Always dark, regardless of the sidebar's Light/Dark/System setting.",
-  },
-  {
-    id: "midnight_emerald",
-    label: "Midnight Emerald",
-    description:
-      "A jewel-toned reskin — near-black green backgrounds with an emerald accent and warm copper/champagne highlights. Always dark, regardless of the sidebar's Light/Dark/System setting.",
+    label: "Slate",
+    description: "Penny Worth's default look, following the header's Light/Dark/System toggle.",
   },
   {
     id: "futuristic",
     label: "Futuristic",
     description:
-      "A neon cyberpunk reskin — electric cyan, violet, and magenta-red accents, plus Orbitron and Share Tech Mono type, and its own angular sidebar icon set. Unlike Aurora and Midnight Emerald, it has both a light and a dark mode, following the sidebar's Light/Dark/System toggle below.",
+      "A neon cyberpunk reskin — electric cyan, violet, and magenta-red accents, plus Orbitron and Share Tech Mono type, and its own angular sidebar icon set. Also follows the header's Light/Dark/System toggle.",
   },
 ];
 
@@ -573,7 +560,7 @@ function IconCreditsSection() {
         <span className="reports-section-title">Icon credits</span>
       </div>
       <p className="modal-message-secondary">
-        Several account, category, and bucket icons are from The Noun Project, used under CC BY 3.0 — credited to
+        Several account, category, and goal icons are from The Noun Project, used under CC BY 3.0 — credited to
         their creators below.
       </p>
       <button
@@ -644,6 +631,12 @@ export function SettingsView({
 }) {
   return (
     <div className="reports-view">
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Settings</h1>
+          <p className="view-sub">Appearance, profile, and local data.</p>
+        </div>
+      </div>
       <AppearanceSection themeStyle={themeStyle} onSetThemeStyle={onSetThemeStyle} />
       <ProfilesSection
         profiles={profiles}

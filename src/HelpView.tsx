@@ -61,24 +61,43 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
       "what changed",
       "customize",
       "pin widget",
+      "add widget",
+      "pin account",
+      "pin goal",
+      "pin investment",
+      "layout",
+      "save layout",
+      "custom layout",
+      "named layout",
+      "bills focus",
+      "investor focus",
+      "quick actions",
       "get started",
       "checklist",
       "ask pennyworth",
     ],
     node: (
       <li>
-        <strong>Dashboard</strong> — net worth, cash, debt, and investments
-        at a glance (click any of the four for a breakdown of{" "}
+        <strong>Dashboard</strong> — a row of <strong>Quick
+        actions</strong> (add a transaction or account, jump to Budget or
+        Goals) sits above net worth, cash, debt, and investments at a
+        glance (click any of the four for a breakdown of{" "}
         <strong>what changed</strong> and which accounts drove it), this
         month's spending by category, recent transactions, and an{" "}
         <strong>Insights</strong> feed that surfaces things worth a look on
         its own: a category on pace to go over budget, a month-over-month
         jump, an unusually large charge — and good news too, like a
         category you meaningfully cut back on. The layout is yours:
-        pin/unpin widgets, drag to reorder, or pick a preset from{" "}
-        <strong>"Customize"</strong>. New here also see a{" "}
-        <strong>Get started</strong> checklist and the{" "}
-        <strong>Ask Pennyworth</strong> question box (see FAQ below).
+        pin/unpin widgets, drag to reorder, or use{" "}
+        <strong>"+ Add widget…"</strong> to pin one specific account, goal,
+        or investment account, not just the fixed catalog. Pick a built-in
+        preset — Default, Bills Focus, Investor Focus — from the{" "}
+        <strong>Layout</strong> dropdown, or, once you've customized the
+        layout yourself, <strong>"+ Save as…"</strong> to name and keep
+        your own arrangement right alongside them — switch back to it any
+        time from the same dropdown, or delete it when you no longer need
+        it. New here also see a <strong>Get started</strong> checklist and
+        the <strong>Ask Pennyworth</strong> question box (see FAQ below).
       </li>
     ),
   },
@@ -116,7 +135,7 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
         several rows, in bulk — splitting a transaction across multiple
         categories, applying a payment toward a debt account, and — for
         households tracking more than one person — assigning any account,
-        transaction, bucket, asset, or recurring item to a family member
+        transaction, goal, asset, or recurring item to a family member
         via <strong>"Manage family members…"</strong>.
       </li>
     ),
@@ -134,12 +153,26 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
     ),
   },
   {
-    tags: ["buckets", "savings goal", "target amount", "contribution"],
+    tags: [
+      "goals",
+      "savings goal",
+      "target amount",
+      "contribution",
+      "icon",
+      "color",
+      "auto-contribute",
+      "sinking fund",
+      "family member",
+    ],
     node: (
       <li>
-        <strong>Buckets</strong> — savings goals with a target amount/date,
-        optionally linked to an account, with a running total and
-        contribution history.
+        <strong>Goals</strong> — savings goals with a target amount/date,
+        optionally linked to an account and, for households, a family
+        member, with a running total and contribution history. Pick a
+        custom <strong>icon</strong> and <strong>color</strong> for each
+        one, and set an optional <strong>"Auto-contribute
+        monthly"</strong> amount for something like insurance or gifts
+        that only comes due once a year (see FAQ).
       </li>
     ),
   },
@@ -226,14 +259,14 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
     ),
   },
   {
-    tags: ["reports", "net worth", "property", "valuables", "csv", "pdf", "setup import", "savings rate", "buckets overview"],
+    tags: ["reports", "net worth", "property", "valuables", "csv", "pdf", "setup import", "savings rate", "goals overview"],
     node: (
       <li>
         <strong>Reports</strong> — total saved, all-time income, spending
         by tag, a savings-rate trend, <strong>Property &
         Valuables</strong> (manually tracked assets like a home or a
         vehicle, folded into your net worth), net worth by family member,
-        quick summaries linking back to Buckets and Budget, and the CSV/PDF
+        quick summaries linking back to Goals and Budget, and the CSV/PDF
         export and setup-data import/export tools described below. Account
         balances and net worth by <em>account</em> live on the Accounts tab
         instead.
@@ -252,8 +285,7 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
       "theme",
       "dark mode",
       "light mode",
-      "aurora",
-      "midnight emerald",
+      "slate",
       "futuristic",
     ],
     node: (
@@ -264,8 +296,7 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
         your backup history with a manual "Back up now" and per-backup
         restore, an optional live stock-price integration for the
         Investments tab, and <strong>appearance</strong>: Light/Dark/System
-        plus four visual styles — Classic, Aurora, Midnight Emerald, and
-        Futuristic (see FAQ).
+        plus two visual styles — Slate and Futuristic (see FAQ).
       </li>
     ),
   },
@@ -319,7 +350,7 @@ const BULK_SETUP_ENTRY: HelpEntry = {
     "accounts",
     "categories",
     "budgets",
-    "buckets",
+    "goals",
     "holdings",
     "investments",
     "import setup data",
@@ -327,7 +358,7 @@ const BULK_SETUP_ENTRY: HelpEntry = {
   node: (
     <>
       <p>
-        If you'd rather set up accounts, categories, budgets, buckets, and
+        If you'd rather set up accounts, categories, budgets, goals, and
         investment holdings in bulk instead of one at a time through the
         UI, use the two buttons on the <strong>Reports</strong> tab:
       </p>
@@ -335,7 +366,7 @@ const BULK_SETUP_ENTRY: HelpEntry = {
         <li>
           <strong>"Download setup template…"</strong> saves one CSV file
           with a section for each of Accounts / Categories / Budgets /
-          Buckets / Holdings, with one example row in each section to show
+          Goals / Holdings, with one example row in each section to show
           the expected columns. Opens and saves fine in Excel.
         </li>
         <li>
@@ -496,6 +527,22 @@ const FAQ_ENTRIES: FaqEntry[] = [
     ),
   },
   {
+    question: "What does a goal's \"Auto-contribute monthly\" do?",
+    tags: ["auto-contribute", "sinking fund", "goal", "monthly", "automatic", "insurance", "gifts"],
+    answer: (
+      <p>
+        It turns the goal into a sinking fund for an irregular annual cost —
+        insurance, gifts, an annual subscription — that's easier to save for
+        a little at a time than all at once. The next time you open the app
+        after a new calendar month starts, Penny Worth logs that amount as a
+        contribution automatically (you'll see a one-time notice naming
+        which goal(s) it applied to) — at most once per goal per month, and
+        independently of any manual contribution you also log that month,
+        so the two never skip or double up on each other.
+      </p>
+    ),
+  },
+  {
     question: "Can I split one transaction across multiple categories?",
     tags: ["split", "transaction", "categories"],
     answer: (
@@ -557,6 +604,23 @@ const FAQ_ENTRIES: FaqEntry[] = [
     ),
   },
   {
+    question: "Can I save my own Dashboard layout?",
+    tags: ["dashboard", "layout", "save layout", "custom layout", "named layout", "preset", "customize", "delete layout"],
+    answer: (
+      <p>
+        Yes — customize the layout (pin/unpin widgets, drag to reorder,
+        or "+ Add widget…" to pin a specific account/goal/investment
+        account) until the Layout dropdown shows "Custom (unsaved)," then
+        click <strong>"+ Save as…"</strong> and give it a name. It's saved
+        right alongside the built-in Default/Bills Focus/Investor Focus
+        presets — pick it from the same dropdown any time to switch back,
+        or select it and click <strong>"Delete"</strong> to remove it.
+        Saving under a name you've already used replaces that layout
+        rather than creating a second copy.
+      </p>
+    ),
+  },
+  {
     question: "How do automatic backups work, and can I restore one?",
     tags: ["backup", "restore", "automatic", "data safety"],
     answer: (
@@ -571,17 +635,15 @@ const FAQ_ENTRIES: FaqEntry[] = [
   },
   {
     question: "Can I change how Penny Worth looks?",
-    tags: ["appearance", "theme", "dark mode", "light mode", "aurora", "midnight emerald", "futuristic", "style", "color"],
+    tags: ["appearance", "theme", "dark mode", "light mode", "slate", "futuristic", "style", "color"],
     answer: (
       <p>
         Yes — the Settings tab has an Appearance section with a Light/Dark/
-        System toggle plus four visual styles: <strong>Classic</strong>{" "}
-        (the original look, following that toggle), <strong>Aurora</strong>{" "}
-        and <strong>Midnight Emerald</strong> (always-dark reskins with
-        their own accent colors), and <strong>Futuristic</strong> (a neon
-        style with its own type and sidebar icons, the only one of the
-        three reskins that still follows Light/Dark/System). Switching is
-        instant and purely visual — nothing about your data changes.
+        System toggle (now in the header) plus two visual styles:{" "}
+        <strong>Slate</strong> (the default look) and{" "}
+        <strong>Futuristic</strong> (a neon style with its own type and
+        sidebar icons). Both follow the Light/Dark/System toggle. Switching
+        is instant and purely visual — nothing about your data changes.
       </p>
     ),
   },
@@ -605,7 +667,7 @@ const FAQ_ENTRIES: FaqEntry[] = [
         <ul>
           <li>
             <strong>Family members</strong> — tag any account, transaction,
-            bucket, asset, or recurring item with who it belongs to, then
+            goal, asset, or recurring item with who it belongs to, then
             filter down to just one person wherever a member filter appears.
             Everyone still shares the same file and sees the same data;
             it's attribution, not separation. Manage them from the Ledger
@@ -666,7 +728,7 @@ const FAQ_ENTRIES: FaqEntry[] = [
         "what's my net worth" directly from your own data, with no internet
         connection or account required. It matches a set of question shapes
         rather than truly understanding free-form English, so it works best
-        one question at a time, using the exact category, account, bucket,
+        one question at a time, using the exact category, account, goal,
         or merchant names you use elsewhere in the app. Click "Tips &amp;
         examples" on the box itself for phrasing guidance and the full list
         of what it understands.
@@ -705,6 +767,12 @@ export function HelpView() {
 
   return (
     <div className="reports-view help-view">
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Help</h1>
+          <p className="view-sub">Search across every topic below, or just browse.</p>
+        </div>
+      </div>
       <input
         type="search"
         className="help-search"

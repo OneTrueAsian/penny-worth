@@ -454,6 +454,7 @@ pub struct BucketDto {
     pub member_name: Option<String>,
     pub sinking_amount: Option<String>,
     pub color: Option<String>,
+    pub icon_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1504,6 +1505,7 @@ pub fn create_bucket(
     account_id: Option<i64>,
     sinking_amount: Option<String>,
     color: Option<String>,
+    icon_key: Option<String>,
     state: tauri::State<AppStateHandle>,
 ) -> Result<i64, String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
@@ -1512,7 +1514,15 @@ pub fn create_bucket(
     let sinking_amount = sinking_amount.map(|a| parse_amount(&a)).transpose()?;
     state
         .store
-        .create_bucket(&name, target_amount, target_date, account_id, sinking_amount, color.as_deref())
+        .create_bucket(
+            &name,
+            target_amount,
+            target_date,
+            account_id,
+            sinking_amount,
+            color.as_deref(),
+            icon_key.as_deref(),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -1534,6 +1544,7 @@ pub fn list_buckets(state: tauri::State<AppStateHandle>) -> Result<Vec<BucketDto
             member_name: b.member_name,
             sinking_amount: b.sinking_amount.map(|a| a.to_string()),
             color: b.color,
+            icon_key: b.icon_key,
         })
         .collect())
 }
@@ -1546,6 +1557,7 @@ pub fn update_bucket_details(
     account_id: Option<i64>,
     sinking_amount: Option<String>,
     color: Option<String>,
+    icon_key: Option<String>,
     state: tauri::State<AppStateHandle>,
 ) -> Result<(), String> {
     let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
@@ -1554,7 +1566,15 @@ pub fn update_bucket_details(
     let sinking_amount = sinking_amount.map(|a| parse_amount(&a)).transpose()?;
     state
         .store
-        .update_bucket_details(id, target_amount, target_date, account_id, sinking_amount, color.as_deref())
+        .update_bucket_details(
+            id,
+            target_amount,
+            target_date,
+            account_id,
+            sinking_amount,
+            color.as_deref(),
+            icon_key.as_deref(),
+        )
         .map_err(|e| e.to_string())
 }
 

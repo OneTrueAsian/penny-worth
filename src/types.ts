@@ -56,7 +56,7 @@ export type AppSettings = {
  * in localStorage, never sent to the backend. Every style but "classic" is
  * dark-only by design, so it ignores the sidebar's separate Light/Dark/
  * System toggle. */
-export type ThemeStyle = "classic" | "aurora" | "midnight_emerald" | "futuristic";
+export type ThemeStyle = "classic" | "futuristic";
 
 export type Insight = {
   severity: "warning" | "info" | "positive";
@@ -134,6 +134,7 @@ export type Bucket = {
   member_name: string | null;
   sinking_amount: string | null;
   color: string | null;
+  icon_key: string | null;
 };
 
 export type SinkingFundContribution = {

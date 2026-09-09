@@ -478,7 +478,7 @@ function resolveSpendQuery(subjectPhrase: string, periodPhrase: string | undefin
 
 function bucketProgressAnswer(phrase: string, ctx: QaContext): string {
   const b = findBucket(phrase, ctx.buckets);
-  if (!b) return `I couldn't find a bucket matching "${phrase.trim()}".`;
+  if (!b) return `I couldn't find a goal matching "${phrase.trim()}".`;
   if (!b.target_amount) return `${b.name} has ${formatAmount(b.saved_amount)} saved (no target set).`;
   const pct = Math.min(100, Math.max(0, (parseFloat(b.saved_amount) / parseFloat(b.target_amount)) * 100));
   return `${b.name} has ${formatAmount(b.saved_amount)} saved of its ${formatAmount(b.target_amount)} target (${pct.toFixed(0)}%).`;

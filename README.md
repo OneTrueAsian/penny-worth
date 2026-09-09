@@ -18,7 +18,7 @@ file on your own computer, and nothing is ever sent anywhere else.
 
 ## Getting started
 
-1. **Add an account** — from the Reports tab ("Add account…"), or you'll be
+1. **Add an account** — from the Accounts tab ("Add account…"), or you'll be
    prompted automatically the first time you import a file. Checking,
    savings, credit card, loan, investment, and "other" are all supported.
 2. **Get your transactions in**, either by importing a CSV from your bank
@@ -30,24 +30,47 @@ file on your own computer, and nothing is ever sent anywhere else.
 
 ## A tour of the tabs
 
-- **Dashboard** — net worth, this month's spending, budget alerts, and an
-  **Insights** feed that surfaces things worth a look on its own: a
-  category on pace to go over budget, a month-over-month spending jump, or
-  an unusually large charge.
+- **Dashboard** — a row of **Quick actions** (add a transaction or account,
+  jump to Budget or Goals) sits above net worth, cash, debt, and
+  investments at a glance (click any of the four for a breakdown of what
+  changed and which accounts drove it), this month's spending by category,
+  recent transactions, and an **Insights** feed that surfaces things worth
+  a look on its own: a category on pace to go over budget, a
+  month-over-month jump, an unusually large charge — and good news too,
+  like a category you meaningfully cut back on. The layout is yours:
+  pin/unpin widgets, drag to reorder, or use **"+ Add widget…"** to pin one
+  specific account, goal, or investment account, not just the fixed
+  catalog. Pick a built-in preset — Default, Bills Focus, Investor Focus —
+  from the Layout dropdown, or, once you've customized the layout
+  yourself, **"+ Save as…"** to name and keep your own arrangement right
+  alongside them — switch back to it any time from the same dropdown, or
+  delete it when you no longer need it.
+- **Accounts** — every account grouped by type (cash, credit, loan,
+  investment, other), with running totals for Total Assets, Total
+  Liabilities, and Net Worth — click any of those for a breakdown of what
+  changed and which accounts drove it. Add, edit, or delete an account
+  here, including its institution, last-4 digits, and which family member
+  it belongs to.
 - **Ledger** — every transaction, filterable by account/category/tag/family
-  member, with inline category correction (one at a time or in bulk),
-  splitting a transaction across multiple categories, tagging, applying a
-  payment toward a debt account, and — for households tracking more than
-  one person — assigning any account, transaction, bucket, asset, or
-  recurring item to a family member via **"Manage family members…"**.
+  member, with inline category correction and tagging — either one at a
+  time or, after selecting several rows, in bulk — splitting a transaction
+  across multiple categories, applying a payment toward a debt account,
+  and — for households tracking more than one person — assigning any
+  account, transaction, goal, asset, or recurring item to a family member
+  via **"Manage family members…"**.
 - **Budget** — this month's budgeted vs. actual per category, with
-  prev/next month navigation and drag-to-reorder. **Click any category
-  name** to see every transaction behind that number and fix any that are
-  miscategorized, right from that screen.
-- **Buckets** — savings goals with a target amount/date, optionally linked
-  to an account, with a running total and contribution history.
+  prev/next month navigation and reordering (drag a row, or use the ↑/↓
+  buttons next to it). Click any category name to see every transaction
+  behind that number and fix any that are miscategorized, right from that
+  screen.
+- **Goals** — savings goals with a target amount/date, optionally linked
+  to an account and, for households, a family member, with a running
+  total and contribution history. Pick a custom icon and color for each
+  one, and set an optional **"Auto-contribute monthly"** amount for
+  something like insurance or gifts that only comes due once a year (see
+  FAQ).
 - **Cash Flow** — income vs. expenses over a 3 or 6 month window (with an
-  optional year-over-year comparison); **click a bar** to see that month's
+  optional year-over-year comparison); click a bar to see that month's
   spending by category and any unusually large charges. The "Top
   categories"/"Top merchants" cards below are scoped to a single month
   (defaulting to the current one, with a picker to look back further) and
@@ -61,22 +84,32 @@ file on your own computer, and nothing is ever sent anywhere else.
   look recurring but aren't tracked yet, so you can add them with one
   click instead of typing them in by hand.
 - **Investments** — holdings per account (shares, price, cost basis) with
-  computed value and gain/loss, plus a **goal projection** calculator that
-  projects a future balance from a starting amount, a monthly
-  contribution, and an assumed annual return. Prices are manual by
-  default; optionally turn on live pricing (Settings tab) to auto-fill a
-  new holding's price by symbol and keep existing ones current
-  automatically.
-- **Reports** — accounts management, net worth breakdown, total saved,
-  all-time income, spending by tag, this month's budget snapshot,
-  **Property & Valuables** (manually tracked assets like a home or a
-  vehicle, folded into your net worth), and the CSV/PDF export and
-  setup-data import/export tools described below.
+  computed value and gain/loss. Click **"Total gain/loss"** or **"Today's
+  gain/loss"** to see which holdings are driving it. Also includes a
+  **goal projection** calculator that projects a future balance from a
+  starting amount, a monthly contribution, and an assumed annual return.
+  Prices are manual by default; optionally turn on live pricing (Settings
+  tab) to auto-fill a new holding's price by symbol and keep existing ones
+  current automatically.
+- **Household** — spending and income broken down by family member for
+  whichever month you're viewing, net worth by person (always as of
+  today — it isn't a monthly figure the way the cards above it are), and
+  a budget grid split by category and person. Anything not assigned to a
+  specific person lands under "Unassigned" — see the Ledger's "Manage
+  family members…" to start attributing accounts and transactions.
+- **Reports** — total saved, all-time income, spending by tag, a
+  savings-rate trend, **Property & Valuables** (manually tracked assets
+  like a home or a vehicle, folded into your net worth), net worth by
+  family member, quick summaries linking back to Goals and Budget, and
+  the CSV/PDF export and setup-data import/export tools described below.
+  Account balances and net worth by *account* live on the Accounts tab
+  instead.
 - **Settings** — separate profiles (completely independent data files you
   can create, switch, rename, and delete — see FAQ), where your data file
   lives (and a button to move it), your backup history with a manual
-  "Back up now" and per-backup restore, and an optional live stock-price
-  integration for the Investments tab.
+  "Back up now" and per-backup restore, an optional live stock-price
+  integration for the Investments tab, and appearance: Light/Dark/System
+  plus two visual styles — Slate and Futuristic (see FAQ).
 
 ## Importing transactions
 
@@ -100,12 +133,12 @@ From the **Ledger** tab, click **"Import transactions…"**:
 
 ## Bulk setup-data import/export
 
-If you'd rather set up accounts, categories, budgets, buckets, and
+If you'd rather set up accounts, categories, budgets, goals, and
 investment holdings in bulk instead of one at a time through the UI, use
 the two buttons on the **Reports** tab:
 
 - **"Download setup template…"** saves one CSV file with a section for
-  each of Accounts / Categories / Budgets / Buckets / Holdings, with one
+  each of Accounts / Categories / Budgets / Goals / Holdings, with one
   example row in each section to show the expected columns. Opens and
   saves fine in Excel.
 - Open it, delete the example rows, fill in your own (keep the section
@@ -165,13 +198,6 @@ import preview and left unchecked by default, so re-importing the same
 statement won't create doubled entries unless you explicitly check it
 back in.
 
-**How does Penny Worth suggest recurring items?**
-The Recurring tab's "Suggested" section looks for a merchant and amount
-that's repeated at least 3 times on a roughly consistent schedule (weekly,
-biweekly, monthly, or annual) but isn't tracked yet. Add it with one click
-to start it, or dismiss it if it's not actually recurring — a dismissed
-suggestion won't reappear.
-
 **How does auto-categorization work?**
 New transactions are matched against rules first — an exact merchant
 match, or a pattern Penny Worth has learned from a category you've
@@ -179,6 +205,13 @@ corrected before. Once you've made at least 10 corrections, a lightweight
 classifier also kicks in for transactions the rules don't cover. Anything
 neither can confidently place is left **Uncategorized** rather than
 guessing — setting it yourself teaches the app for next time.
+
+**How does Penny Worth suggest recurring items?**
+The Recurring tab's "Suggested" section looks for a merchant and amount
+that's repeated at least 3 times on a roughly consistent schedule (weekly,
+biweekly, monthly, or annual) but isn't tracked yet. Add it with one click
+to start it, or dismiss it if it's not actually recurring — a dismissed
+suggestion won't reappear.
 
 **Can I fix a transaction's category after the fact?**
 Yes, several ways: the category dropdown on any Ledger row; selecting
@@ -191,6 +224,32 @@ there (individually or in bulk).
 A new month starts from whatever the closest earlier month had set for
 each category, so you don't need to re-enter every line every month.
 Changing the current month's amount never changes a past month's numbers.
+This copy happens the first time you open a given month — so if you
+browse ahead to a future month before finishing your edits (amount,
+group, or the 90% "Cap" toggle) in the current one, that future month
+locks in whatever the current month looked like at that moment and won't
+retroactively pick up later changes. Finish editing the current month
+first, then move forward.
+
+**What does a goal's "Auto-contribute monthly" do?**
+It turns the goal into a sinking fund for an irregular annual cost —
+insurance, gifts, an annual subscription — that's easier to save for a
+little at a time than all at once. The next time you open the app after a
+new calendar month starts, Penny Worth logs that amount as a contribution
+automatically (you'll see a one-time notice naming which goal(s) it
+applied to) — at most once per goal per month, and independently of any
+manual contribution you also log that month, so the two never skip or
+double up on each other.
+
+**Can I save my own Dashboard layout?**
+Yes — customize the layout (pin/unpin widgets, drag to reorder, or "+ Add
+widget…" to pin a specific account/goal/investment account) until the
+Layout dropdown shows "Custom (unsaved)," then click **"+ Save as…"** and
+give it a name. It's saved right alongside the built-in Default/Bills
+Focus/Investor Focus presets — pick it from the same dropdown any time to
+switch back, or select it and click **"Delete"** to remove it. Saving
+under a name you've already used replaces that layout rather than
+creating a second copy.
 
 **Can I split one transaction across multiple categories?**
 Yes — the Ledger's "Split →" control on any transaction lets you divide
@@ -230,6 +289,13 @@ open it, keeping the most recent 15 (Settings tab — also has a manual
 restoring is itself reversible), then loads the restored data immediately
 — no restart needed.
 
+**Can I change how Penny Worth looks?**
+Yes — the Settings tab has an Appearance section with a Light/Dark/System
+toggle (in the header) plus two visual styles: **Slate** (the default
+look) and **Futuristic** (a neon style with its own type and sidebar
+icons). Both follow the Light/Dark/System toggle. Switching is instant
+and purely visual — nothing about your data changes.
+
 **Can I move my data file to a different folder?**
 Yes — "Move data file…" on the Settings tab copies your live database to
 a new folder you pick and starts using it right away. The old file is
@@ -242,7 +308,7 @@ that one file to back it up or move it to another computer.
 **Can Penny Worth track spending for multiple people?**
 Two different ways, depending on what you actually want:
 
-- **Family members** — tag any account, transaction, bucket, asset, or
+- **Family members** — tag any account, transaction, goal, asset, or
   recurring item with who it belongs to, then filter down to just one
   person wherever a member filter appears. Everyone still shares the same
   file and sees the same data; it's attribution, not separation. Manage
@@ -268,3 +334,13 @@ manual. Alpha Vantage's free tier is capped at 25 requests/day, which
 comfortably covers casual use; Twelve Data's free tier raises that to 800
 requests/day for a larger portfolio; Finnhub's free tier allows 60
 requests/minute instead, so there's no daily limit to track at all.
+
+**Can I ask questions about my spending in plain English?**
+Yes — the "Ask Pennyworth" box at the top of the Dashboard answers
+questions like "how much did I spend on dining out in July" or "what's my
+net worth" directly from your own data, with no internet connection or
+account required. It matches a set of question shapes rather than truly
+understanding free-form English, so it works best one question at a time,
+using the exact category, account, goal, or merchant names you use
+elsewhere in the app. Click "Tips & examples" on the box itself for
+phrasing guidance and the full list of what it understands.

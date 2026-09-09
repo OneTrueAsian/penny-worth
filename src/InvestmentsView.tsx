@@ -61,15 +61,15 @@ function GoalProjectionCalculator({ currentTotal }: { currentTotal: number }) {
       </form>
 
       <div className="stats">
-        <div className="stat">
+        <div className="stat tint-purple">
           <span className="stat-value">{formatAmount(finalBalance.toFixed(2))}</span>
           <span className="stat-label">Projected in {years} years</span>
         </div>
-        <div className="stat">
+        <div className="stat tint-blue">
           <span className="stat-value">{formatAmount(totalContributed.toFixed(2))}</span>
           <span className="stat-label">Total contributed</span>
         </div>
-        <div className="stat">
+        <div className="stat tint-teal">
           <span className="stat-value">{formatAmount(totalGrowth.toFixed(2))}</span>
           <span className="stat-label">Projected growth</span>
         </div>
@@ -362,18 +362,29 @@ export function InvestmentsView({
 
   return (
     <div className="buckets-view">
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Investments</h1>
+          <p className="view-sub">
+            {byAccount.size} account{byAccount.size === 1 ? "" : "s"}, {holdings.length} holding
+            {holdings.length === 1 ? "" : "s"}.
+          </p>
+        </div>
+      </div>
       <div className="stats">
-        <div className="stat">
+        <div className="stat tint-accent">
           <span className="stat-value">{formatAmount(totalValue.toFixed(2))}</span>
           <span className="stat-label">Portfolio value</span>
         </div>
-        <div className="stat">
+        <div className="stat tint-blue">
           <span className="stat-value">{formatAmount(totalCost.toFixed(2))}</span>
           <span className="stat-label">Cost basis</span>
         </div>
         <button
           type="button"
-          className={expandedGainStat === "total" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          className={
+            expandedGainStat === "total" ? "stat tint-purple stat-clickable stat-expanded" : "stat tint-purple stat-clickable"
+          }
           onClick={() => setExpandedGainStat((s) => (s === "total" ? null : "total"))}
         >
           <span className={totalGain < 0 ? "stat-value report-over-budget" : "stat-value"}>
@@ -384,7 +395,9 @@ export function InvestmentsView({
         </button>
         <button
           type="button"
-          className={expandedGainStat === "day" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          className={
+            expandedGainStat === "day" ? "stat tint-teal stat-clickable stat-expanded" : "stat tint-teal stat-clickable"
+          }
           onClick={() => setExpandedGainStat((s) => (s === "day" ? null : "day"))}
         >
           {holdingsWithDayCount > 0 ? (

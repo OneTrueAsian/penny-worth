@@ -232,7 +232,7 @@ const NAV_ITEMS: { id: Tab; label: string; icon: string; group: NavGroup }[] = [
   { id: "ledger", label: "Ledger", icon: "swap", group: "money" },
   { id: "recurring", label: "Recurring", icon: "repeat", group: "money" },
   { id: "budget", label: "Budget", icon: "pie", group: "planning" },
-  { id: "buckets", label: "Buckets", icon: "flag", group: "planning" },
+  { id: "buckets", label: "Goals", icon: "flag", group: "planning" },
   { id: "cashflow", label: "Cash Flow", icon: "trend", group: "insights" },
   { id: "investments", label: "Investments", icon: "barchart", group: "insights" },
   { id: "household", label: "Household", icon: "users", group: "insights" },
@@ -1663,9 +1663,18 @@ function App({
     memberId: number | null,
     sinkingAmount: string | null,
     color: string | null,
+    iconKey: string | null,
   ) {
     try {
-      const id = await invoke<number>("create_bucket", { name, targetAmount, targetDate, accountId, sinkingAmount, color });
+      const id = await invoke<number>("create_bucket", {
+        name,
+        targetAmount,
+        targetDate,
+        accountId,
+        sinkingAmount,
+        color,
+        iconKey,
+      });
       if (memberId !== null) {
         await invoke("set_bucket_member", { id, memberId });
       }
@@ -1689,9 +1698,10 @@ function App({
     accountId: number | null,
     sinkingAmount: string | null,
     color: string | null,
+    iconKey: string | null,
   ) {
     try {
-      await invoke("update_bucket_details", { id, targetAmount, targetDate, accountId, sinkingAmount, color });
+      await invoke("update_bucket_details", { id, targetAmount, targetDate, accountId, sinkingAmount, color, iconKey });
       await refreshBuckets();
       // Same reasoning as handleCreateBucket: a sinking amount just added
       // (or changed) here was invisible to the launch-time check, so catch
@@ -2322,7 +2332,7 @@ function App({
         `${summary.accounts_created} account(s)`,
         `${summary.categories_created} categor${summary.categories_created === 1 ? "y" : "ies"}`,
         `${summary.budgets_set} budget line(s)`,
-        `${summary.buckets_created} bucket(s)`,
+        `${summary.buckets_created} goal(s)`,
         `${summary.holdings_created} holding(s)`,
       ];
       let message = `Setup import done: ${parts.join(", ")}.`;
@@ -2707,24 +2717,7 @@ function App({
             </button>
           ))}
         </nav>
-        <div className="sidebar-foot">
-          {appVersion && <p className="sidebar-version">v{appVersion}</p>}
-          {themeStyle === "aurora" || themeStyle === "midnight_emerald" ? (
-            <p className="sidebar-theme-note">This theme is always dark</p>
-          ) : (
-            <div className="theme-toggle" role="group" aria-label="Theme">
-              {(["light", "dark", "system"] as Theme[]).map((t) => (
-                <button
-                  key={t}
-                  className={theme === t ? "theme-toggle-active" : ""}
-                  onClick={() => setTheme(t)}
-                >
-                  {t[0].toUpperCase() + t.slice(1)}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <div className="sidebar-foot">{appVersion && <p className="sidebar-version">v{appVersion}</p>}</div>
       </aside>
 
       <div className="main">
@@ -2733,7 +2726,15 @@ function App({
             <h1>Penny Worth</h1>
             <p className="subtitle">Get your penny's worth.</p>
           </div>
-          {activeTab === "ledger" && (
+          <div className="topbar-actions">
+            <div className="theme-toggle" role="group" aria-label="Theme">
+              {(["light", "dark", "system"] as Theme[]).map((t) => (
+                <button key={t} className={theme === t ? "theme-toggle-active" : ""} onClick={() => setTheme(t)}>
+                  {t[0].toUpperCase() + t.slice(1)}
+                </button>
+              ))}
+            </div>
+            {activeTab === "ledger" && (
             <div className="import-controls">
               <select
                 className="account-select"
@@ -2822,6 +2823,7 @@ function App({
               </div>
             </div>
           )}
+          </div>
         </header>
 
         <div className="page">
@@ -2870,8 +2872,22 @@ function App({
           onOpenReports={() => setActiveTab("reports")}
           onOpenAccounts={() => setActiveTab("accounts")}
           onOpenBuckets={() => setActiveTab("buckets")}
+          onAddTransaction={() => setNewTransactionOpen(true)}
+          onAddAccount={handleNewAccount}
         />
         </Suspense>
+      )}
+
+      {activeTab === "ledger" && (
+        <div className="page-top">
+          <div>
+            <h1 className="view-title">Ledger</h1>
+            <p className="view-sub">
+              {transactions.length} transaction{transactions.length === 1 ? "" : "s"} across {accounts.length} account
+              {accounts.length === 1 ? "" : "s"}.
+            </p>
+          </div>
+        </div>
       )}
 
       {activeTab === "ledger" && pendingImport && (
@@ -3011,21 +3027,25 @@ function App({
 
       {activeTab === "ledger" && stats && (
         <div className="stats">
-          <div className="stat">
+          <div className="stat tint-accent">
             <span className="stat-value">{stats.total}</span>
             <span className="stat-label">Transactions</span>
           </div>
-          <div className="stat">
+          <div className="stat tint-blue">
             <span className="stat-value">{stats.auto_categorized}</span>
             <span className="stat-label">Auto-categorized</span>
           </div>
-          <div className="stat">
+          <div className="stat tint-teal">
             <span className="stat-value">{stats.user_confirmed}</span>
             <span className="stat-label">Corrected by you</span>
           </div>
           <button
             type="button"
-            className={filterCategory === UNCATEGORIZED_FILTER ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+            className={
+              filterCategory === UNCATEGORIZED_FILTER
+                ? "stat tint-red stat-clickable stat-expanded"
+                : "stat tint-red stat-clickable"
+            }
             onClick={() => setFilterCategory((c) => (c === UNCATEGORIZED_FILTER ? "all" : UNCATEGORIZED_FILTER))}
             title="Filter the ledger to only transactions that need a category"
           >
@@ -3826,7 +3846,7 @@ function App({
 
           {pendingSetupImport.preview.buckets.length > 0 && (
             <>
-              <h2 className="reports-section-title">Buckets</h2>
+              <h2 className="reports-section-title">Goals</h2>
               <table className="dup-review-table">
                 <thead>
                   <tr>
@@ -3846,7 +3866,7 @@ function App({
                           type="checkbox"
                           checked={pendingSetupImport.includedBuckets.has(row.index)}
                           onChange={() => toggleSetupIncluded("includedBuckets", row.index)}
-                          aria-label={`Include bucket ${row.name}`}
+                          aria-label={`Include goal ${row.name}`}
                         />
                       </td>
                       <td>{row.name}</td>

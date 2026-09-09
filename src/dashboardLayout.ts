@@ -167,16 +167,62 @@ export function saveDashboardLayout(widgets: WidgetId[]) {
   }
 }
 
+/** A user-named arrangement, saved alongside the 3 built-in presets —
+ * same idea as `SavedLedgerFilter` in App.tsx (a per-viewer localStorage
+ * list keyed by name, where saving under a name already in use replaces
+ * it rather than accumulating duplicates). Its dropdown `<option value>`
+ * is `custom:${name}` — see `matchingLayoutPreset` below. */
+export type SavedLayoutPreset = { name: string; widgets: WidgetId[] };
+
+const CUSTOM_PRESETS_STORAGE_KEY = "meadow-dashboard-custom-layouts";
+
+export function loadCustomLayoutPresets(): SavedLayoutPreset[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PRESETS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (p): p is SavedLayoutPreset =>
+          !!p && typeof p === "object" && typeof (p as SavedLayoutPreset).name === "string" &&
+          Array.isArray((p as SavedLayoutPreset).widgets),
+      )
+      .map((p) => ({ name: p.name, widgets: p.widgets.filter(isValidWidgetId) }))
+      .filter((p) => p.widgets.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomLayoutPresets(presets: SavedLayoutPreset[]) {
+  try {
+    localStorage.setItem(CUSTOM_PRESETS_STORAGE_KEY, JSON.stringify(presets));
+  } catch {
+    // per-viewer preference only — fine to skip if storage is unavailable
+  }
+}
+
 /** Which named preset (if any) the current layout exactly matches, by
  * order and contents — used to drive the Layout dropdown's selected value
  * and its "Custom (unsaved)" fallback. Purely derived from `widgets`
  * rather than tracked as its own piece of state, so there's no way for it
- * to drift out of sync with a hand-edited layout. */
-export function matchingLayoutPreset(widgets: WidgetId[]): LayoutPresetKey | "custom" {
+ * to drift out of sync with a hand-edited layout. Checks the 3 built-in
+ * presets first, then any saved custom ones (returned as `custom:${name}`,
+ * matching their dropdown `<option value>`). */
+export function matchingLayoutPreset(
+  widgets: WidgetId[],
+  customPresets: SavedLayoutPreset[] = [],
+): LayoutPresetKey | `custom:${string}` | "custom" {
   for (const key of Object.keys(LAYOUT_PRESETS) as LayoutPresetKey[]) {
     const preset = LAYOUT_PRESETS[key];
     if (preset.length === widgets.length && preset.every((id, i) => id === widgets[i])) {
       return key;
+    }
+  }
+  for (const custom of customPresets) {
+    if (custom.widgets.length === widgets.length && custom.widgets.every((id, i) => id === widgets[i])) {
+      return `custom:${custom.name}`;
     }
   }
   return "custom";

@@ -160,6 +160,12 @@ export function CashFlowView({
 
   return (
     <div className="reports-view">
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Cash Flow</h1>
+          <p className="view-sub">Income vs. expenses, forecast, and payoff planning.</p>
+        </div>
+      </div>
       <div className="tabs">
         {(
           [

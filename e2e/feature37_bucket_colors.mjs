@@ -1,5 +1,5 @@
 // E2E test for bucket color-coding: creating a bucket with a chosen swatch
-// tints that bucket's card (a top border, plus the progress ring when it
+// tints that bucket's card (a top border, plus the progress bar when it
 // has a target) and round-trips through the database — list_buckets must
 // hand the color back, not just accept it on write.
 //
@@ -9,7 +9,7 @@ import { launchApp } from "./harness.mjs";
 
 const app = await launchApp();
 try {
-  const bucketsNav = await app.browser.$("button*=Buckets");
+  const bucketsNav = await app.browser.$("button*=Goals");
   await bucketsNav.click();
 
   const addTile = await app.browser.$(".add-tile");

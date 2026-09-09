@@ -449,8 +449,23 @@ export function BudgetView({
     return { group, groupLines, groupBudgeted, groupActual };
   }).filter((s) => s.groupLines.length > 0);
 
+  // Overview totals across expense groups only (fixed/flexible/nonmonthly)
+  // — "income" is budgeted/tracked the opposite direction (meeting or
+  // beating the target is good), so it doesn't belong in a combined
+  // budgeted-vs-actual-vs-remaining figure.
+  const expenseSummaries = groupSummaries.filter((s) => s.group !== "income");
+  const totalBudgeted = expenseSummaries.reduce((s, g) => s + g.groupBudgeted, 0);
+  const totalActual = expenseSummaries.reduce((s, g) => s + g.groupActual, 0);
+  const totalRemaining = totalBudgeted - totalActual;
+
   return (
     <div className="budget-view">
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Budget</h1>
+          <p className="view-sub">{monthLabel}, by group.</p>
+        </div>
+      </div>
       <div className="month-nav">
         <button type="button" className="modal-secondary" onClick={onPrevMonth} aria-label="Previous month">
           ‹
@@ -460,6 +475,25 @@ export function BudgetView({
           ›
         </button>
       </div>
+
+      {expenseSummaries.length > 0 && (
+        <div className="stats" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+          <div className="stat tint-accent">
+            <span className="stat-value">{formatAmount(totalBudgeted.toFixed(2))}</span>
+            <span className="stat-label">Budgeted</span>
+          </div>
+          <div className="stat tint-red">
+            <span className="stat-value">{formatAmount(totalActual.toFixed(2))}</span>
+            <span className="stat-label">Actual</span>
+          </div>
+          <div className="stat tint-blue">
+            <span className={totalRemaining < 0 ? "stat-value report-over-budget" : "stat-value"}>
+              {formatAmount(totalRemaining.toFixed(2))}
+            </span>
+            <span className="stat-label">Remaining</span>
+          </div>
+        </div>
+      )}
 
       {groupSummaries.length > 0 && (
         <div className="group-cards">

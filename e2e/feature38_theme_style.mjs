@@ -1,9 +1,9 @@
-// E2E test for Settings ▸ Appearance's theme picker (Classic/Aurora/
-// Midnight Emerald): selecting a reskin sets the `data-palette` attribute
-// the CSS keys off of, and swaps the sidebar's Light/Dark/System toggle
-// for a static "always dark" note (a dark-only reskin ignoring that
-// toggle would otherwise look broken/inert). Switching back to Classic
-// must restore both.
+// E2E test for Settings ▸ Appearance's theme picker (Slate/Futuristic):
+// selecting Futuristic sets the `data-palette` attribute the CSS keys off
+// of; switching back to Slate clears it. Both themes follow the header's
+// Light/Dark/System toggle now — neither hides it — so this also confirms
+// the toggle lives in the header (`.topbar`), not the sidebar, following
+// its relocation out of `.sidebar-foot`.
 //
 // Run with: node e2e/feature38_theme_style.mjs
 
@@ -29,36 +29,38 @@ try {
   const appearanceHeading = await app.browser.$("//span[contains(@class,'reports-section-title')][text()='Appearance']");
   await appearanceHeading.waitForExist({ timeout: 10000 });
 
-  // Classic (the default): the sidebar toggle is present, no palette set.
-  let palette = await app.browser.execute(() => document.documentElement.getAttribute("data-palette"));
-  if (palette !== null) throw new Error(`expected no data-palette on Classic, got "${palette}"`);
-  let toggle = await app.browser.$(".theme-toggle");
-  if (!(await toggle.isExisting())) throw new Error("expected the Light/Dark/System toggle to exist on Classic");
-
-  await selectTheme(app, "Aurora");
-  palette = await app.browser.execute(() => document.documentElement.getAttribute("data-palette"));
-  if (palette !== "aurora") throw new Error(`expected data-palette="aurora", got "${palette}"`);
-  let note = await app.browser.$(".sidebar-theme-note");
-  if (!(await note.isExisting())) throw new Error("expected the always-dark note to replace the toggle on Aurora");
-  toggle = await app.browser.$(".theme-toggle");
-  if (await toggle.isExisting()) throw new Error("expected the Light/Dark/System toggle to be gone on Aurora");
-  console.log("Aurora: data-palette set, toggle replaced by note — OK");
-
-  await selectTheme(app, "Midnight Emerald");
-  palette = await app.browser.execute(() => document.documentElement.getAttribute("data-palette"));
-  if (palette !== "midnight_emerald") throw new Error(`expected data-palette="midnight_emerald", got "${palette}"`);
-  const accent = await app.browser.execute(() =>
-    getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
+  // Exactly two theme options remain (Slate, Futuristic) — catches a
+  // leftover Aurora/Midnight Emerald row surviving the removal.
+  const optionCount = await app.browser.execute(
+    () => document.querySelectorAll('[role="radiogroup"][aria-label="Theme"] .feature-toggle-row').length,
   );
-  if (accent.toLowerCase() !== "#10b981") throw new Error(`expected Midnight Emerald's --accent to be #10b981, got "${accent}"`);
-  console.log("Midnight Emerald: data-palette set, --accent is #10b981 — OK");
+  if (optionCount !== 2) throw new Error(`expected exactly 2 theme options, found ${optionCount}`);
 
-  await selectTheme(app, "Classic");
+  // Slate (the default, internal id "classic"): the header toggle is
+  // present inside .topbar (not the sidebar), and no palette is set.
+  let palette = await app.browser.execute(() => document.documentElement.getAttribute("data-palette"));
+  if (palette !== null) throw new Error(`expected no data-palette on Slate, got "${palette}"`);
+  let toggleInHeader = await app.browser.execute(() => !!document.querySelector(".topbar .theme-toggle"));
+  if (!toggleInHeader) throw new Error("expected the Light/Dark/System toggle inside .topbar on Slate");
+  let toggleInSidebar = await app.browser.execute(() => !!document.querySelector(".sidebar-foot .theme-toggle"));
+  if (toggleInSidebar) throw new Error("expected the toggle to no longer live in .sidebar-foot");
+  console.log("Slate: data-palette clear, toggle lives in the header — OK");
+
+  await selectTheme(app, "Futuristic");
   palette = await app.browser.execute(() => document.documentElement.getAttribute("data-palette"));
-  if (palette !== null) throw new Error(`expected data-palette to be cleared back to Classic, got "${palette}"`);
-  toggle = await app.browser.$(".theme-toggle");
-  if (!(await toggle.isExisting())) throw new Error("expected the Light/Dark/System toggle to come back on Classic");
-  console.log("Classic: data-palette cleared, toggle restored — OK");
+  if (palette !== "futuristic") throw new Error(`expected data-palette="futuristic", got "${palette}"`);
+  toggleInHeader = await app.browser.execute(() => !!document.querySelector(".topbar .theme-toggle"));
+  if (!toggleInHeader) throw new Error("expected the Light/Dark/System toggle to still exist on Futuristic");
+  const note = await app.browser.$(".sidebar-theme-note");
+  if (await note.isExisting()) throw new Error("expected no always-dark note to exist at all anymore");
+  console.log("Futuristic: data-palette set, toggle still present — OK");
+
+  await selectTheme(app, "Slate");
+  palette = await app.browser.execute(() => document.documentElement.getAttribute("data-palette"));
+  if (palette !== null) throw new Error(`expected data-palette to be cleared back to Slate, got "${palette}"`);
+  toggleInHeader = await app.browser.execute(() => !!document.querySelector(".topbar .theme-toggle"));
+  if (!toggleInHeader) throw new Error("expected the toggle to come back on Slate");
+  console.log("Slate: data-palette cleared, toggle restored — OK");
 
   console.log("FEATURE 38 E2E TEST PASSED");
 } finally {

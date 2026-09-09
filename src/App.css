@@ -1,55 +1,64 @@
+/* Slate — Penny Worth's default look (internal theme id stays "classic",
+   see SettingsView.tsx's THEME_STYLE_OPTIONS — only the label changed, so
+   an existing user's saved `meadow-theme-style` value keeps working with
+   no migration). Palette/type ported from the "Penny Worth Slate" design
+   mockup. The sidebar now matches the current light/dark mode instead of
+   staying permanently dark — --sidebar-* below are close to but distinct
+   from the main --surface-* tokens, same relationship the mockup uses.
+
+   --accent/--positive/--negative/--warning/--info below are darkened from
+   the mockup's own values (#233d7b/#1fbf7a/#ff6060/#a2690c(new)/#3f7cff)
+   where needed to clear WCAG 1.4.3's 4.5:1 minimum for normal text in
+   light mode — computed directly (relative-luminance contrast, not
+   eyeballed): the mockup's green/red/blue ranged 2.25-3.79:1 against
+   white, the same failure class the Classic palette's own colors had
+   before its prior remediation (see git history). --warning has no mockup
+   equivalent (the mockup never needed a distinct third alert hue) so it's
+   a new amber chosen to clear 4.5:1 and sit comfortably apart from
+   --negative. Dark mode's mockup values already clear 4.5:1+ and needed
+   only --accent nudged brighter (4.42→4.64:1 against --surface). */
 :root {
-  --bg: #f5f7f4;
+  --bg: #f5f7fb;
   --surface: #ffffff;
-  --surface-2: #edf1ec;
-  --surface-hover: #e7ece6;
-  --sidebar-bg: #14241f;
-  --sidebar-bg-hover: #1d332c;
-  --sidebar-bg-active: #22392f;
-  --sidebar-text: #b9c9bf;
-  --sidebar-text-dim: #7e948a;
-  --sidebar-text-active: #ffffff;
-  --sidebar-border: #223530;
+  --surface-2: #eef1f7;
+  --surface-hover: #e6e9f0;
+  --sidebar-bg: #fbfbfd;
+  --sidebar-bg-hover: #eef1f7;
+  --sidebar-bg-active: linear-gradient(135deg, #1f3568, #2f4f96);
+  --sidebar-text: #5c6885;
+  --sidebar-text-dim: #a2aabf;
+  --sidebar-text-active: #1c2740;
+  --sidebar-border: #e8ebf3;
 
-  --text: #142420;
-  --text-muted: #5e6e67;
-  /* Darkened from #8b9891 (2.97:1 on white, fails WCAG 1.4.3) to actually
-     clear 4.5:1 — this is real label text (e.g. `.labeled-field-label`),
-     not decoration, so AA applies. Same hue, just dark enough. */
-  --text-faint: #6b7871;
-  --border: #e1e6df;
-  --border-strong: #ccd5cb;
+  --text: #1c2740;
+  --text-muted: #7c879f;
+  --text-faint: #a2aabf;
+  --border: #e8ebf3;
+  --border-strong: #d8deeb;
 
-  /* --accent/--positive/--negative/--warning below are darkened from their
-     original values (#1e9e76 / #1e9e76 / #bd5b3c / #c08a2e) to clear WCAG
-     1.4.3's 4.5:1 minimum for normal text in light mode — the originals
-     ranged 3.0-4.4:1 against white and as low as 2.5:1 against their own
-     "-soft" badge-pill backgrounds (e.g. `.budget-alert-warning`), a real
-     failure on the exact colors this app uses to signal "over budget" /
-     "you're fine". Dark mode's variants already clear 6-8.7:1 and are
-     untouched — this was evidently checked for dark mode and not carried
-     back to light, since the two palettes are declared independently.
-     Same hue as before, just far enough down in lightness to pass. */
-  --accent: #198463;
-  --accent-strong: #157a5b;
-  --accent-soft: #def2e9;
-  --accent-soft-text: #146b4e;
+  --accent: #233d7b;
+  --accent-strong: #3f62ad;
+  --accent-soft: #cfd4e2;
+  --accent-soft-text: #233d7b;
+  --on-accent: #ffffff;
 
-  --positive: #198463;
-  --positive-soft: #def2e9;
-  --negative: #a24e33;
-  --negative-soft: #f7e4dc;
-  --warning: #866120;
-  --warning-soft: #f5e9d2;
-  --info: #3e7cb8;
-  --info-soft: #dce8f5;
+  --positive: #168756;
+  --positive-soft: #deeee7;
+  --negative: #c94c4c;
+  --negative-soft: #f7e6e6;
+  --warning: #a2690c;
+  --warning-soft: #f2eadd;
+  --info: #3970e7;
+  --info-soft: #e3ebfc;
 
-  --shadow-sm: 0 1px 2px rgba(20, 36, 32, 0.06);
-  --shadow-md: 0 6px 20px rgba(20, 36, 32, 0.08);
-  --shadow-lg: 0 16px 40px rgba(20, 36, 32, 0.14);
+  --nav-active-shadow: 0 12px 22px rgba(35, 61, 123, 0.24);
 
-  --font-display: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
-  --font-body: "Public Sans", "Segoe UI", system-ui, sans-serif;
+  --shadow-sm: 0 6px 16px rgba(28, 39, 69, 0.06);
+  --shadow-md: 0 14px 32px rgba(28, 39, 69, 0.08);
+  --shadow-lg: 0 24px 56px rgba(28, 39, 69, 0.14);
+
+  --font-display: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Inter", "Segoe UI", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 
   color-scheme: light;
@@ -67,191 +76,95 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0f1714;
-    --surface: #172420;
-    --surface-2: #1d2b26;
-    --surface-hover: #24332d;
-    --sidebar-bg: #0a100e;
-    --sidebar-bg-hover: #182420;
-    --sidebar-bg-active: #1d2e27;
-    --sidebar-text: #9fb3a8;
-    --sidebar-text-dim: #64766d;
-    --sidebar-text-active: #ffffff;
-    --sidebar-border: #1b2723;
+    --bg: #0c1428;
+    --surface: #101c38;
+    --surface-2: #0a111f;
+    --surface-hover: #131a28;
+    --sidebar-bg: #0e1830;
+    --sidebar-bg-hover: #0a111f;
+    --sidebar-bg-active: linear-gradient(135deg, #3457a0, #4d6fc4);
+    --sidebar-text: #93a0c2;
+    --sidebar-text-dim: #5e6a8c;
+    --sidebar-text-active: #eef1fb;
+    --sidebar-border: #233257;
 
-    --text: #e9f0ec;
-    --text-muted: #94a69c;
-    --text-faint: #6c7c74;
-    --border: #263631;
-    --border-strong: #324741;
+    --text: #eef1fb;
+    --text-muted: #93a0c2;
+    --text-faint: #5e6a8c;
+    --border: #233257;
+    --border-strong: #304674;
 
-    --accent: #35c795;
-    --accent-strong: #4fdbaa;
-    --accent-soft: #163a2c;
-    --accent-soft-text: #6ee3b6;
+    --accent: #6083dc;
+    --accent-strong: #85a0e4;
+    --accent-soft: #1e2f56;
+    --accent-soft-text: #85a0e4;
+    --on-accent: #06231a;
 
-    --positive: #35c795;
-    --positive-soft: #163a2c;
-    --negative: #e0895f;
-    --negative-soft: #3a2a22;
-    --warning: #e0ba5f;
-    --warning-soft: #3a3122;
-    --info: #6fa8dc;
-    --info-soft: #1f2e3a;
+    --positive: #3ddb99;
+    --positive-soft: #183e49;
+    --negative: #ff8a8a;
+    --negative-soft: #3b3047;
+    --warning: #eab54a;
+    --warning-soft: #37383b;
+    --info: #6ea1ff;
+    --info-soft: #21345c;
+
+    --nav-active-shadow: 0 12px 22px rgba(52, 87, 160, 0.35);
 
     color-scheme: dark;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #0f1714;
-  --surface: #172420;
-  --surface-2: #1d2b26;
-  --surface-hover: #24332d;
-  --sidebar-bg: #0a100e;
-  --sidebar-bg-hover: #182420;
-  --sidebar-bg-active: #1d2e27;
-  --sidebar-text: #9fb3a8;
-  --sidebar-text-dim: #64766d;
-  --sidebar-text-active: #ffffff;
-  --sidebar-border: #1b2723;
+  --bg: #0c1428;
+  --surface: #101c38;
+  --surface-2: #0a111f;
+  --surface-hover: #131a28;
+  --sidebar-bg: #0e1830;
+  --sidebar-bg-hover: #0a111f;
+  --sidebar-bg-active: linear-gradient(135deg, #3457a0, #4d6fc4);
+  --sidebar-text: #93a0c2;
+  --sidebar-text-dim: #5e6a8c;
+  --sidebar-text-active: #eef1fb;
+  --sidebar-border: #233257;
 
-  --text: #e9f0ec;
-  --text-muted: #94a69c;
-  --text-faint: #6c7c74;
-  --border: #263631;
-  --border-strong: #324741;
+  --text: #eef1fb;
+  --text-muted: #93a0c2;
+  --text-faint: #5e6a8c;
+  --border: #233257;
+  --border-strong: #304674;
 
-  --accent: #35c795;
-  --accent-strong: #4fdbaa;
-  --accent-soft: #163a2c;
-  --accent-soft-text: #6ee3b6;
+  --accent: #6083dc;
+  --accent-strong: #85a0e4;
+  --accent-soft: #1e2f56;
+  --accent-soft-text: #85a0e4;
+  --on-accent: #06231a;
 
-  --positive: #35c795;
-  --positive-soft: #163a2c;
-  --negative: #e0895f;
-  --negative-soft: #3a2a22;
-  --warning: #e0ba5f;
-  --warning-soft: #3a3122;
-  --info: #6fa8dc;
-  --info-soft: #1f2e3a;
+  --positive: #3ddb99;
+  --positive-soft: #183e49;
+  --negative: #ff8a8a;
+  --negative-soft: #3b3047;
+  --warning: #eab54a;
+  --warning-soft: #37383b;
+  --info: #6ea1ff;
+  --info-soft: #21345c;
 
-  color-scheme: dark;
-}
-
-/* Aurora — an optional reskin selectable in Settings ▸ Appearance
-   (App.tsx's `data-palette` attribute). Same token names as the default
-   theme above, so every component that already reads `var(--*)` picks
-   this up for free. Aurora is dark-only by design (unlike the default
-   theme, it doesn't have a light variant), so it's a single block that
-   doesn't respond to `data-theme`/`prefers-color-scheme` at all. */
-:root[data-palette="aurora"] {
-  --bg: #0f131c;
-  --surface: #1c2028;
-  --surface-2: #262a33;
-  --surface-hover: #31353e;
-  --sidebar-bg: #0a0d15;
-  --sidebar-bg-hover: #151927;
-  --sidebar-bg-active: #1c2136;
-  --sidebar-text: #a6acc9;
-  --sidebar-text-dim: #666c8a;
-  --sidebar-text-active: #ffffff;
-  --sidebar-border: #1a1e2c;
-
-  --text: #eef0fa;
-  --text-muted: #a2a8c9;
-  --text-faint: #7d83a3;
-  --border: #262b38;
-  --border-strong: #383e50;
-
-  --accent: #b6b7ff;
-  --accent-strong: #d3d4ff;
-  --accent-soft: #23263f;
-  --accent-soft-text: #c7c8ff;
-
-  --positive: #4edea3;
-  --positive-soft: #1c3a2e;
-  --negative: #ff8a94;
-  --negative-soft: #3a2129;
-  --warning: #f0c374;
-  --warning-soft: #3a301c;
-  --info: #7dd3fc;
-  --info-soft: #16283a;
-
-  --shadow-sm: 0 1px 2px rgba(5, 7, 13, 0.4);
-  --shadow-md: 0 6px 20px rgba(5, 7, 13, 0.45);
-  --shadow-lg: 0 16px 40px rgba(5, 7, 13, 0.55);
-
-  --font-display: "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
-  --font-body: "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --nav-active-shadow: 0 12px 22px rgba(52, 87, 160, 0.35);
 
   color-scheme: dark;
 }
 
-/* Midnight Emerald — the second optional reskin, built on the named
-   "Midnight Emerald (Dark)" palette (#0F172A / #1E293B / #10B981 /
-   #38BDF8 / #F8FAFC — Tailwind's slate-900/800, emerald-500, sky-400, and
-   slate-50) rather than an invented one: bg, surface, accent, info, and
-   text below are those five colors verbatim, with the rest of the token
-   set filled in from the same slate/emerald/red/amber families so it
-   reads as one deliberate palette rather than five fixed points and a lot
-   of guessing. Same dark-only structure as Aurora above (a single
-   unconditional block, no light variant), and — like Aurora — deliberately
-   leaves --font-* untouched, inheriting the default theme's own
-   typography so the two reskins don't end up typographically identical. */
-:root[data-palette="midnight_emerald"] {
-  --bg: #0f172a;
-  --surface: #1e293b;
-  --surface-2: #263449;
-  --surface-hover: #334155;
-  --sidebar-bg: #0b1120;
-  --sidebar-bg-hover: #16213a;
-  --sidebar-bg-active: #1e293b;
-  --sidebar-text: #94a3b8;
-  --sidebar-text-dim: #64748b;
-  --sidebar-text-active: #f8fafc;
-  --sidebar-border: #1e293b;
-
-  --text: #f8fafc;
-  --text-muted: #94a3b8;
-  --text-faint: #64748b;
-  --border: #263449;
-  --border-strong: #334155;
-
-  --accent: #10b981;
-  --accent-strong: #34d399;
-  --accent-soft: #0f3b2e;
-  --accent-soft-text: #34d399;
-
-  --positive: #10b981;
-  --positive-soft: #0f3b2e;
-  --negative: #f87171;
-  --negative-soft: #3b1219;
-  --warning: #fbbf24;
-  --warning-soft: #3a2e0f;
-  --info: #38bdf8;
-  --info-soft: #0c2a3d;
-
-  --shadow-sm: 0 1px 2px rgba(2, 6, 15, 0.4);
-  --shadow-md: 0 6px 20px rgba(2, 6, 15, 0.45);
-  --shadow-lg: 0 16px 40px rgba(2, 6, 15, 0.55);
-
-  color-scheme: dark;
-}
-
-/* Futuristic — a fourth optional reskin: a neon cyberpunk palette
+/* Futuristic — the second optional reskin: a neon cyberpunk palette
    (electric cyan accent, violet "info", magenta-red "negative") plus its
    own display/mono type (Orbitron, Rajdhani, Share Tech Mono) so it reads
-   as a genuinely different visual identity, not just a recolor — same
-   approach Aurora takes with Plus Jakarta Sans/JetBrains Mono. Unlike
-   Aurora/Midnight Emerald, Futuristic is NOT dark-only: it follows the
-   sidebar's Light/Dark/System toggle like the default theme does, so it
+   as a genuinely different visual identity, not just a recolor. Like
+   Slate above, it follows the header's Light/Dark/System toggle, so it
    needs the same three-block structure as the `:root` block up top — a
    light default, a `prefers-color-scheme: dark` block, and an explicit
    `data-theme="dark"` override. The sidebar rail stays the same near-
-   black in both modes (like Classic's sidebar stays dark-toned in both),
-   so those tokens repeat unchanged across all three blocks below. */
+   black in both modes (Slate's sidebar, by contrast, now follows the
+   current mode — see the `:root` block above), so those tokens repeat
+   unchanged across all three blocks below. */
 :root[data-palette="futuristic"] {
   --bg: #f3f6fb;
   --surface: #ffffff;
@@ -275,6 +188,7 @@
   --accent-strong: #0b5768;
   --accent-soft: #e0f7fb;
   --accent-soft-text: #0b5768;
+  --on-accent: #ffffff;
 
   --positive: #047857;
   --positive-soft: #dcfdf4;
@@ -320,6 +234,7 @@
     --accent-strong: #5cf4ff;
     --accent-soft: #06313d;
     --accent-soft-text: #7be8fb;
+    --on-accent: #06231a;
 
     --positive: #39ff9e;
     --positive-soft: #063a21;
@@ -361,6 +276,7 @@
   --accent-strong: #5cf4ff;
   --accent-soft: #06313d;
   --accent-soft-text: #7be8fb;
+  --on-accent: #06231a;
 
   --positive: #39ff9e;
   --positive-soft: #063a21;
@@ -487,9 +403,9 @@ body {
 }
 
 .nav-item .ico {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
   opacity: 0.9;
 }
 
@@ -500,10 +416,26 @@ body {
 
 .nav-item-active {
   background: var(--sidebar-bg-active);
+  color: #ffffff;
+  box-shadow: var(--nav-active-shadow, none);
+}
+
+/* Slate's active nav item sits on a bold accent gradient (--sidebar-bg-active
+   above) in both light and dark mode, so its text and icon go white rather
+   than the mode-following --sidebar-text-active (which is dark in light
+   mode, sized for the light --sidebar-bg-hover surface, not this gradient —
+   that mismatch was unreadable dark-on-dark text in Slate light mode).
+   Futuristic keeps its existing flat, always-dark active background where
+   --sidebar-text-active is already correct, overridden back below. */
+.nav-item-active .ico {
+  color: #ffffff;
+}
+
+[data-palette="futuristic"] .nav-item-active {
   color: var(--sidebar-text-active);
 }
 
-.nav-item-active .ico {
+[data-palette="futuristic"] .nav-item-active .ico {
   color: var(--accent-strong);
 }
 
@@ -547,18 +479,15 @@ body {
   margin: 0 0 8px 0;
 }
 
-.sidebar-theme-note {
-  text-align: center;
-  font-size: 11px;
-  color: var(--sidebar-text-dim);
-  margin: 0;
-  padding: 6px 4px;
-}
-
+/* Lives in the header (.topbar) now, not the sidebar — styled from the
+   main-content tokens (--surface, --border, --text) rather than the
+   sidebar's own palette, since it's no longer inside the permanently
+   dark-in-Futuristic sidebar rail. */
 .theme-toggle {
   display: flex;
   gap: 4px;
-  background: var(--sidebar-bg-hover);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: 9px;
   padding: 3px;
 }
@@ -567,8 +496,8 @@ body {
   flex: 1;
   border: none;
   background: transparent;
-  color: var(--sidebar-text-dim);
-  padding: 6px 4px;
+  color: var(--text-muted);
+  padding: 6px 11px;
   border-radius: 7px;
   font-size: 11.5px;
   cursor: pointer;
@@ -577,12 +506,13 @@ body {
 
 .theme-toggle button:hover {
   background: transparent;
-  color: var(--sidebar-text-active);
+  color: var(--text);
 }
 
 .theme-toggle button.theme-toggle-active {
-  background: var(--sidebar-bg-active);
-  color: var(--sidebar-text-active);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
 }
 
 .profile-switcher {
@@ -607,9 +537,9 @@ body {
 }
 
 .profile-switcher-toggle .ico {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
   opacity: 0.9;
 }
 
@@ -717,6 +647,12 @@ body {
   font-size: 12.5px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .import-controls {
   display: flex;
   align-items: center;
@@ -806,6 +742,48 @@ body {
   margin: 0 auto;
 }
 
+/* Per-view header — title, one-line description, and that page's primary
+   action button(s) — the first thing every view renders now, replacing
+   reliance on the sidebar's active-item highlight alone to say what page
+   you're on. */
+.page-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.view-title {
+  font-size: 26px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.view-sub {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: none;
+}
+
+.quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
 /* ------------------------------ Buttons ------------------------------ */
 
 button {
@@ -819,7 +797,7 @@ button {
   font-size: 0.92em;
   font-weight: 600;
   font-family: inherit;
-  color: #06231a;
+  color: var(--on-accent);
   background-color: var(--accent);
   cursor: pointer;
   transition: background-color 0.12s ease, border-color 0.12s ease;
@@ -1222,8 +1200,8 @@ button:disabled {
 }
 
 .account-card .type-badge {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   border-radius: 10px;
   background: var(--accent-soft);
   color: var(--accent-soft-text);
@@ -1243,8 +1221,8 @@ button:disabled {
 
 .account-card .type-badge svg,
 .account-card .type-badge img {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
 }
 
 .account-card .info {
@@ -1465,20 +1443,6 @@ button:disabled {
   box-shadow: var(--shadow-sm);
 }
 
-.bucket-card-header-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.bucket-card-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 .goal-ring-wrap {
   position: relative;
   display: flex;
@@ -1673,8 +1637,8 @@ button:disabled {
 
 .category-legend-icon {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
   color: var(--text-muted);
 }
 
@@ -1688,8 +1652,8 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   border-radius: 7px;
   background: var(--surface-2);
   color: var(--text-muted);
@@ -1698,33 +1662,35 @@ button:disabled {
 
 .row-icon-badge svg,
 .row-icon-badge img {
-  width: 15px;
-  height: 15px;
+  width: 19px;
+  height: 19px;
 }
 
 /* Bundled Noun Project PNG icons (src/assets/icons/, credited in Settings
    ▸ Icon credits) — raster line art on a transparent background, so
-   unlike the SVG icon set they can't recolor via `currentColor`. Inverted
-   to white in every dark context instead, so they stay visible rather
-   than a black silhouette vanishing into a dark surface. Scoped to this
-   class only — never applied to the existing `.ico`/lucide SVG icons,
-   which are already theme-correct and would be double-inverted by this. */
+   unlike the SVG icon set they can't recolor via `currentColor`. Forced to
+   solid black in light mode and solid white in dark mode instead of their
+   original mixed source colors — max-contrast monochrome, matching the
+   redesign's icon convention, and guarantees visibility in every context
+   regardless of a given icon's original palette. Scoped to this class
+   only — never applied to the existing `.ico`/lucide SVG icons, which are
+   already theme-correct via `currentColor` and would be double-filtered
+   by this. */
 .icon-img {
   display: block;
+  filter: brightness(0);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .icon-img,
   :root[data-palette="futuristic"]:not([data-theme="light"]) .icon-img {
-    filter: invert(1);
+    filter: brightness(0) invert(1);
   }
 }
 
 :root[data-theme="dark"] .icon-img,
-:root[data-palette="aurora"] .icon-img,
-:root[data-palette="midnight_emerald"] .icon-img,
 :root[data-palette="futuristic"][data-theme="dark"] .icon-img {
-  filter: invert(1);
+  filter: brightness(0) invert(1);
 }
 
 .cell-with-icon {
@@ -1751,6 +1717,23 @@ button:disabled {
   font-family: var(--font-display);
 }
 
+.bucket-ico {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.bucket-ico svg,
+.bucket-ico img {
+  width: 20px;
+  height: 20px;
+  color: var(--text-muted);
+}
+
 .bucket-saved {
   margin: 0;
   font-family: var(--font-mono);
@@ -1762,6 +1745,14 @@ button:disabled {
   font-size: 13px;
   font-weight: 400;
   color: var(--text-muted);
+}
+
+.bucket-meta-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin: 2px 0 0;
 }
 
 .progress-track {
@@ -1870,7 +1861,7 @@ button:disabled {
  * what's actually printed in it. */
 .cat-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.4fr) 152px minmax(70px, 1fr) 134px 134px 134px 130px;
+  grid-template-columns: minmax(230px, 1.4fr) 152px minmax(70px, 1fr) 134px 134px 134px 130px;
   align-items: center;
   gap: 14px;
   padding: 12px 16px;
@@ -1889,7 +1880,7 @@ button:disabled {
 
 .cat-row-name-stack {
   flex: 1;
-  min-width: 0;
+  min-width: 60px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -1934,10 +1925,15 @@ button:disabled {
   justify-self: end;
 }
 
+/* Column, not a wrapping row — same reasoning as `.bucket-new-form` below:
+   inside a `.bucket-card` (~260px wide), two `flex:1; min-width:100px`
+   inputs plus the Add button fit on one line only by each shrinking to
+   its min-width, which was clipping the amount field's placeholder
+   ("Amount (negative = withdrawal)") down to a few characters. */
 .bucket-contribution-form {
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  flex-wrap: wrap;
 }
 
 /* Lives inside a `.buckets-grid` cell (see `.add-tile`) rather than a
@@ -1990,6 +1986,36 @@ button:disabled {
   inset: 4px;
   border-top: 2px solid var(--text-muted);
   transform: rotate(45deg);
+}
+
+.icon-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.icon-picker-swatch {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.icon-picker-swatch svg,
+.icon-picker-swatch img {
+  width: 18px;
+  height: 18px;
+}
+
+.icon-picker-swatch-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
 }
 
 .bucket-new-form input,
@@ -2131,6 +2157,8 @@ button:disabled {
 .stat {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
   gap: 6px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -2138,10 +2166,15 @@ button:disabled {
   padding: 14px 16px;
   box-shadow: var(--shadow-sm);
   /* Dashboard/Accounts render this as a <button> (for the expandable
-     detail panel); the generic button rule below hardcodes a dark
-     on-accent text color for solid-accent buttons, which otherwise
-     leaks in here since nothing overrode it — invisible-looking stat
-     values in every dark theme (Aurora, Midnight Emerald, Futuristic). */
+     detail panel); the generic button rule below sets a --on-accent text
+     color meant for solid-accent buttons, which otherwise leaks in here
+     since nothing overrode it — invisible-looking stat values in every
+     dark theme (Aurora, Midnight Emerald, Futuristic).
+     Same leak for align-items/justify-content (both default to `center`
+     on `button`): left unset here, every stat rendered as a <button>
+     had its icon/label row and value centered instead of pinned to the
+     top-left, while only the sparkline (explicit width:100%) reached
+     the true left edge. */
   color: var(--text);
 }
 
@@ -2190,8 +2223,8 @@ button:disabled {
 
 .stat-icon {
   flex: none;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   color: var(--text-muted);
 }
 
@@ -2228,6 +2261,88 @@ button:disabled {
 
 .stat-expanded {
   border-color: var(--accent);
+}
+
+/* Subtle per-metric tinted backgrounds, applied to any `.stat` tile
+   app-wide (Accounts/Recurring/Budget/Reports/Investments stat rows, and
+   the Dashboard's `.stat-hero` cards below) — a top-to-bottom gradient
+   from the plain surface color into a faint wash of the metric's color,
+   matching the redesign's stat-card treatment. Decorative only (never the
+   sole way a value's sign/status is conveyed — that's still text color/
+   icons), so one set of 5 works for every palette via `color-mix`. */
+.stat.tint-accent {
+  background: linear-gradient(180deg, var(--surface) 0%, color-mix(in srgb, var(--accent) 6%, var(--surface)) 100%);
+}
+
+.stat.tint-blue {
+  background: linear-gradient(180deg, var(--surface) 0%, color-mix(in srgb, var(--info) 8%, var(--surface)) 100%);
+}
+
+.stat.tint-red {
+  background: linear-gradient(180deg, var(--surface) 0%, color-mix(in srgb, var(--negative) 8%, var(--surface)) 100%);
+}
+
+.stat.tint-purple {
+  background: linear-gradient(180deg, var(--surface) 0%, color-mix(in srgb, #8a5fb0 8%, var(--surface)) 100%);
+}
+
+.stat.tint-teal {
+  background: linear-gradient(180deg, var(--surface) 0%, color-mix(in srgb, #1dbed2 8%, var(--surface)) 100%);
+}
+
+/* Dashboard's 4 hero stat cards (Net Worth/Cash/Debt/Investments) — a
+   distinct, larger presentation from the compact `.stat` tiles used
+   elsewhere, layered on top of the tints above via the same `.tint-*`
+   classes. Layout-only here; color comes from `.tint-*` above. */
+.stat-hero {
+  padding: 16px;
+  border-radius: 18px;
+  box-shadow: var(--shadow-md);
+}
+
+.stat-hero .stat-top {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.stat-hero .mini-ico {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.12);
+  flex: none;
+}
+
+.stat-hero .mini-ico svg {
+  width: 20px;
+  height: 20px;
+}
+
+.stat-hero .mini-ico.accent {
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent));
+}
+
+.stat-hero .mini-ico.blue {
+  background: linear-gradient(135deg, var(--accent-strong), var(--info));
+}
+
+.stat-hero .mini-ico.red {
+  background: linear-gradient(135deg, #ff8a83, var(--negative));
+}
+
+.stat-hero .mini-ico.purple {
+  background: linear-gradient(135deg, #a688d9, #8a5fb0);
+}
+
+.stat-hero .stat-spark-fluid {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
 }
 
 .stat-detail-panel .card-head {

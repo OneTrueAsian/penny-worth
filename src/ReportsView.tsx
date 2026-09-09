@@ -3,7 +3,7 @@ import type { Account, Asset, Bucket, DebtPayoffPlan, FamilyMember, Report, Tran
 import { StatDetailPanel } from "./StatDetailPanel";
 import { LineChart } from "./charts";
 import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
-import { groupOf, owedAmount } from "./accountGroups";
+import { groupOf, isIncomeTransaction, owedAmount } from "./accountGroups";
 import { PinToDashboardButton } from "./PinToDashboardButton";
 import type { WidgetId } from "./dashboardLayout";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
@@ -248,7 +248,7 @@ function BucketsOverviewSection({ buckets }: { buckets: Bucket[] }) {
   return (
     <div className="card">
       <div className="card-head">
-        <span className="reports-section-title">Buckets overview</span>
+        <span className="reports-section-title">Goals overview</span>
       </div>
       <div className="buckets-overview-list">
         {buckets.map((b) => {
@@ -283,21 +283,21 @@ function BucketsOverviewSection({ buckets }: { buckets: Bucket[] }) {
 
 /** Savings rate — (income − expenses) ÷ income — trended over every month
  * with transaction history, trailing 12. A purely client-side reduction
- * over the same `transactions` this page already has (matching this file's
- * own existing convention for "income" — the literal "Income" category, see
- * `incomeByAccount` above — and for "expense" — any negative amount, see
- * `tagTotals` above, except "Transfer" — money moving between the
- * household's own accounts, same exclusion `Store::monthly_totals` applies
- * on the backend), so it needed no new prop or fetch. Cash Flow's
- * "Income vs. expenses" chart shows one month's totals in dollars; this is
- * the trend those totals form over time, as a rate. */
-function SavingsRateTrendSection({ transactions }: { transactions: Transaction[] }) {
+ * over the same `transactions`/`accounts` this page already has (income via
+ * `isIncomeTransaction` — the same rule `Store::monthly_totals` uses on the
+ * backend for Cash Flow's own income figure; expense is any negative
+ * amount, see `tagTotals` above, except "Transfer" — money moving between
+ * the household's own accounts, same exclusion the backend applies), so it
+ * needed no new prop or fetch beyond `accounts`. Cash Flow's "Income vs.
+ * expenses" chart shows one month's totals in dollars; this is the trend
+ * those totals form over time, as a rate. */
+function SavingsRateTrendSection({ transactions, accounts }: { transactions: Transaction[]; accounts: Account[] }) {
   const monthly = new Map<string, { income: number; expense: number }>();
   for (const t of transactions) {
     const month = t.date.slice(0, 7);
     const entry = monthly.get(month) ?? { income: 0, expense: 0 };
     const amount = parseFloat(t.amount);
-    if (t.category === "Income") entry.income += amount;
+    if (isIncomeTransaction(t, accounts)) entry.income += amount;
     else if (amount < 0 && t.category !== "Transfer") entry.expense += Math.abs(amount);
     monthly.set(month, entry);
   }
@@ -466,11 +466,11 @@ export function DebtPayoffPlannerSection({
       {plan && (
         <>
           <div className="stats">
-            <div className="stat">
+            <div className="stat tint-accent">
               <span className="stat-value">{plan.total_months !== null ? `${plan.total_months} mo` : "Never"}</span>
               <span className="stat-label">Debt-free in</span>
             </div>
-            <div className="stat">
+            <div className="stat tint-red">
               <span className="stat-value">{formatAmount(plan.total_interest_paid)}</span>
               <span className="stat-label">Total interest</span>
             </div>
@@ -557,7 +557,7 @@ export function ReportsView({
 
   const incomeByAccount = new Map<string, number>();
   for (const t of transactions) {
-    if (t.category !== "Income") continue;
+    if (!isIncomeTransaction(t, accounts)) continue;
     incomeByAccount.set(t.account_name, (incomeByAccount.get(t.account_name) ?? 0) + parseFloat(t.amount));
   }
   const incomeBreakdown = Array.from(incomeByAccount, ([name, amount]) => ({ name, amount }));
@@ -588,33 +588,41 @@ export function ReportsView({
 
   return (
     <div className="reports-view">
-      <div className="reports-toolbar no-print">
-        <button type="button" className="modal-secondary" onClick={onDownloadSetupTemplate}>
-          Download setup template…
-        </button>
-        <button type="button" className="modal-secondary" onClick={onImportSetupData}>
-          Import setup data…
-        </button>
-        <button type="button" className="modal-secondary" onClick={onExportCsv}>
-          Export CSV…
-        </button>
-        <button type="button" className="modal-secondary" onClick={onPrint}>
-          Print / Save as PDF…
-        </button>
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Reports</h1>
+          <p className="view-sub">Net worth, savings, and property.</p>
+        </div>
+        <div className="page-actions no-print">
+          <button type="button" className="modal-secondary" onClick={onDownloadSetupTemplate}>
+            Download setup template…
+          </button>
+          <button type="button" className="modal-secondary" onClick={onImportSetupData}>
+            Import setup data…
+          </button>
+          <button type="button" className="modal-secondary" onClick={onExportCsv}>
+            Export CSV…
+          </button>
+          <button type="button" className="modal-secondary" onClick={onPrint}>
+            Print / Save as PDF…
+          </button>
+        </div>
       </div>
 
       <div className="stats">
         <button
           type="button"
-          className={expandedStat === "totalSaved" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          className={
+            expandedStat === "totalSaved" ? "stat tint-accent stat-clickable stat-expanded" : "stat tint-accent stat-clickable"
+          }
           onClick={() => toggleStat("totalSaved")}
         >
           <span className="stat-value">{formatAmount(report.total_saved)}</span>
-          <span className="stat-label">Total saved (all buckets)</span>
+          <span className="stat-label">Total saved (all goals)</span>
         </button>
         <button
           type="button"
-          className={expandedStat === "income" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          className={expandedStat === "income" ? "stat tint-blue stat-clickable stat-expanded" : "stat tint-blue stat-clickable"}
           onClick={() => toggleStat("income")}
         >
           <span className="stat-value">{formatAmount(report.income_total)}</span>
@@ -622,7 +630,7 @@ export function ReportsView({
         </button>
         <button
           type="button"
-          className={expandedStat === "byTag" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          className={expandedStat === "byTag" ? "stat tint-teal stat-clickable stat-expanded" : "stat tint-teal stat-clickable"}
           onClick={() => toggleStat("byTag")}
         >
           <span className="stat-value">{tagBreakdown.length}</span>
@@ -631,7 +639,9 @@ export function ReportsView({
         {familyMembers.length > 0 && (
           <button
             type="button"
-            className={expandedStat === "byMember" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+            className={
+              expandedStat === "byMember" ? "stat tint-purple stat-clickable stat-expanded" : "stat tint-purple stat-clickable"
+            }
             onClick={() => toggleStat("byMember")}
           >
             <span className="stat-value">{memberBreakdown.length}</span>
@@ -646,7 +656,7 @@ export function ReportsView({
         rows={expandedStat ? topLevelBreakdowns[expandedStat] : null}
         emptyMessage={
           expandedStat === "totalSaved"
-            ? "No savings buckets yet."
+            ? "No savings goals yet."
             : expandedStat === "income"
               ? "No income recorded yet."
               : expandedStat === "byTag"
@@ -699,7 +709,7 @@ export function ReportsView({
         </div>
       )}
 
-      <SavingsRateTrendSection transactions={transactions} />
+      <SavingsRateTrendSection transactions={transactions} accounts={accounts} />
 
       <div className="card clickable-row" onClick={onOpenBudget} title="Go to the Budget tab">
         <span className="category-link">This month's budget →</span>

@@ -334,17 +334,24 @@ export function AccountsView({
 
   return (
     <div className="reports-view">
-      <div className="reports-section-head">
-        <h2 className="reports-section-title">Accounts</h2>
-        <button type="button" onClick={onAddAccount}>
-          Add account…
-        </button>
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Accounts</h1>
+          <p className="view-sub">Every account, grouped by cash, credit, loans, and investments.</p>
+        </div>
+        <div className="page-actions">
+          <button type="button" onClick={onAddAccount}>
+            Add account…
+          </button>
+        </div>
       </div>
 
-      <div className="stats">
+      <div className="stats" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
         <button
           type="button"
-          className={expandedStat === "assets" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          className={
+            expandedStat === "assets" ? "stat tint-accent stat-clickable stat-expanded" : "stat tint-accent stat-clickable"
+          }
           onClick={() => toggleStat("assets")}
         >
           <span className="stat-value">{formatAmount(assetsTotal)}</span>
@@ -352,7 +359,9 @@ export function AccountsView({
         </button>
         <button
           type="button"
-          className={expandedStat === "liabilities" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          className={
+            expandedStat === "liabilities" ? "stat tint-red stat-clickable stat-expanded" : "stat tint-red stat-clickable"
+          }
           onClick={() => toggleStat("liabilities")}
         >
           <span className="stat-value">{formatAmount(liabilities)}</span>
@@ -360,7 +369,9 @@ export function AccountsView({
         </button>
         <button
           type="button"
-          className={expandedStat === "networth" ? "stat stat-clickable stat-expanded" : "stat stat-clickable"}
+          className={
+            expandedStat === "networth" ? "stat tint-blue stat-clickable stat-expanded" : "stat tint-blue stat-clickable"
+          }
           onClick={() => toggleStat("networth")}
         >
           <span className="stat-value">{formatAmount(netWorth)}</span>

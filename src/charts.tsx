@@ -110,6 +110,7 @@ export function Sparkline({
   height = 26,
   color = "var(--accent)",
   title,
+  fluid = false,
 }: {
   points: number[];
   width?: number;
@@ -126,6 +127,14 @@ export function Sparkline({
    * then marked `aria-hidden` instead, since a screen reader saying the
    * same thing twice is worse than not saying it at all. */
   title?: string;
+  /** Render at 100% of the container's width via CSS instead of the fixed
+   * pixel `width` below — for a full-width sparkline strip (Dashboard's
+   * hero stat cards) rather than a small inline one next to a value.
+   * `width` still sets the internal coordinate space the points are
+   * plotted against, so pass a wider logical value (e.g. 160) alongside
+   * `fluid` for a gently-sloped line rather than a narrow one stretched
+   * flat. */
+  fluid?: boolean;
 }) {
   if (points.length < 2) return null;
   const min = Math.min(...points);
@@ -139,10 +148,11 @@ export function Sparkline({
   const linePts = points.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
   return (
     <svg
-      className="stat-spark"
-      width={width}
+      className={fluid ? "stat-spark stat-spark-fluid" : "stat-spark"}
+      width={fluid ? "100%" : width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio={fluid ? "none" : undefined}
       role={title ? "img" : undefined}
       aria-hidden={title ? undefined : true}
     >

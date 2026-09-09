@@ -93,19 +93,22 @@ describe("runQuery — metrics", () => {
 describe("runQuery — sign", () => {
   const c = ctx({
     transactions: [
-      tx({ date: "2026-07-01", amount: "4000.00", category: "Income", description: "Paycheck" }),
-      tx({ date: "2026-07-05", amount: "35.00", category: "Shopping", description: "Amazon Return" }), // a refund: positive, not "Income"
+      tx({ date: "2026-07-01", amount: "4000.00", category: "Salary", description: "Paycheck" }),
+      tx({ date: "2026-07-05", amount: "35.00", category: "Shopping", description: "Amazon Return" }),
       tx({ date: "2026-07-10", amount: "-60.00", category: "Dining Out" }),
     ],
   });
 
-  it("'income' means category === Income specifically, not just a positive amount", () => {
-    // The $35 refund must NOT be swept in, matching this app's existing
-    // (and intentional) convention — only genuinely income-categorized
-    // rows count.
+  it("'income' means isIncomeTransaction — any positive, non-Transfer amount not on a credit/loan account, not literally category === 'Income'", () => {
+    // Previously required category === "Income" specifically, which meant
+    // a paycheck categorized "Salary" (or anything else) silently reported
+    // as $0 income here while Cash Flow — driven by Store::monthly_totals,
+    // which never checks category name — showed the real figure. Fixed to
+    // match Store::monthly_totals exactly: both the $4,000 paycheck and the
+    // $35 refund count (backend applies the identical rule to both).
     const result = runQuery({ metric: "sum", sign: "income" }, c);
-    expect(result.value).toBeCloseTo(4000);
-    expect(result.count).toBe(1);
+    expect(result.value).toBeCloseTo(4035);
+    expect(result.count).toBe(2);
   });
 
   it("'expense' means any negative amount, except Transfer", () => {

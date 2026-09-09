@@ -8,10 +8,13 @@ import {
   accountWidgetId,
   bucketWidgetId,
   investmentWidgetId,
+  loadCustomLayoutPresets,
   loadDashboardLayout,
   matchingLayoutPreset,
   parseWidgetId,
+  saveCustomLayoutPresets,
   saveDashboardLayout,
+  type WidgetId,
 } from "./dashboardLayout";
 
 const STORAGE_KEY = "meadow-dashboard-layout";
@@ -103,5 +106,43 @@ describe("matchingLayoutPreset", () => {
 
   it("reports 'custom' once the arrangement diverges from every preset", () => {
     expect(matchingLayoutPreset(["stat_net_worth", "runway"])).toBe("custom");
+  });
+
+  it("matches a saved custom preset, returned as custom:<name>", () => {
+    const widgets: WidgetId[] = ["stat_net_worth", "runway"];
+    expect(matchingLayoutPreset(widgets, [{ name: "My Report", widgets }])).toBe("custom:My Report");
+  });
+
+  it("still reports 'custom' when the arrangement matches no saved preset by name", () => {
+    const widgets: WidgetId[] = ["stat_net_worth", "runway"];
+    expect(matchingLayoutPreset(widgets, [{ name: "Other", widgets: ["stat_cash"] }])).toBe("custom");
+  });
+});
+
+describe("loadCustomLayoutPresets / saveCustomLayoutPresets", () => {
+  it("returns an empty list when nothing is saved", () => {
+    expect(loadCustomLayoutPresets()).toEqual([]);
+  });
+
+  it("round-trips a saved custom preset", () => {
+    const presets = [{ name: "Weekly check-in", widgets: ["stat_net_worth", "runway"] as WidgetId[] }];
+    saveCustomLayoutPresets(presets);
+    expect(loadCustomLayoutPresets()).toEqual(presets);
+  });
+
+  it("drops unrecognized widget ids from a saved preset, and drops the whole preset if nothing valid remains", () => {
+    localStorage.setItem(
+      "meadow-dashboard-custom-layouts",
+      JSON.stringify([
+        { name: "Half valid", widgets: ["stat_cash", "not_a_real_widget"] },
+        { name: "All invalid", widgets: ["not_a_real_widget"] },
+      ]),
+    );
+    expect(loadCustomLayoutPresets()).toEqual([{ name: "Half valid", widgets: ["stat_cash"] }]);
+  });
+
+  it("ignores malformed entries instead of throwing", () => {
+    localStorage.setItem("meadow-dashboard-custom-layouts", JSON.stringify("not an array"));
+    expect(loadCustomLayoutPresets()).toEqual([]);
   });
 });

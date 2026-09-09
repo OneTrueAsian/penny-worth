@@ -41,6 +41,12 @@ export function HouseholdView({
   if (familyMembers.length === 0) {
     return (
       <div className="reports-view">
+        <div className="page-top">
+          <div>
+            <h1 className="view-title">Household</h1>
+            <p className="view-sub">Net worth, income, and spending by family member.</p>
+          </div>
+        </div>
         <div className="card">
           <p className="modal-message-secondary">
             Add a family member (Ledger tab → "Manage family members…") to see spending and budgets broken down by
@@ -72,6 +78,12 @@ export function HouseholdView({
 
   return (
     <div className="reports-view">
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Household</h1>
+          <p className="view-sub">{monthLabel}, by family member.</p>
+        </div>
+      </div>
       <div className="month-nav">
         <button type="button" className="modal-secondary" onClick={onPrevMonth} aria-label="Previous month">
           ‹

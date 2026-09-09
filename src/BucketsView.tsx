@@ -1,9 +1,8 @@
 import { FormEvent, useState } from "react";
 import type { Account, Bucket, FamilyMember } from "./types";
-import { ProgressRing } from "./charts";
 import { formatAmount, toLocalIsoDate } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
-import { BucketIcon } from "./bucketIcons";
+import { BUCKET_ICON_OPTIONS, BucketIcon, isBucketIconKey, type BucketIconKey } from "./bucketIcons";
 
 const BUCKET_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9", "#B0526A", "#5FA85E"];
 
@@ -30,6 +29,36 @@ function ColorPicker({ value, onChange }: { value: string | null; onChange: (col
   );
 }
 
+/** Lets a user override the name-guessed icon (`bucketIcons.tsx`) with an
+ * explicit choice — `null` means "keep guessing from the name," same
+ * no-explicit-color convention `ColorPicker` above already uses. */
+function IconPicker({
+  name,
+  value,
+  onChange,
+}: {
+  name: string;
+  value: BucketIconKey | null;
+  onChange: (key: BucketIconKey | null) => void;
+}) {
+  return (
+    <div className="icon-picker" role="group" aria-label="Icon">
+      {BUCKET_ICON_OPTIONS.map((opt) => (
+        <button
+          type="button"
+          key={opt.key}
+          className={value === opt.key ? "icon-picker-swatch icon-picker-swatch-active" : "icon-picker-swatch"}
+          title={opt.key}
+          aria-label={`Use the ${opt.key} icon`}
+          onClick={() => onChange(opt.key)}
+        >
+          <BucketIcon name={name} iconKey={opt.key} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function daysLeft(targetDate: string): number {
   const target = new Date(targetDate + "T00:00:00");
   const today = new Date(toLocalIsoDate() + "T00:00:00");
@@ -51,6 +80,7 @@ function NewBucketForm({
     memberId: number | null,
     sinkingAmount: string | null,
     color: string | null,
+    iconKey: string | null,
   ) => void;
 }) {
   const [name, setName] = useState("");
@@ -60,6 +90,7 @@ function NewBucketForm({
   const [memberId, setMemberId] = useState("");
   const [sinkingAmount, setSinkingAmount] = useState("");
   const [color, setColor] = useState<string | null>(null);
+  const [iconKey, setIconKey] = useState<BucketIconKey | null>(null);
   const [open, setOpen] = useState(false);
 
   function handleSubmit(e: FormEvent) {
@@ -73,6 +104,7 @@ function NewBucketForm({
       memberId ? Number(memberId) : null,
       sinkingAmount.trim() ? sinkingAmount.trim() : null,
       color,
+      iconKey,
     );
     setName("");
     setTarget("");
@@ -81,6 +113,7 @@ function NewBucketForm({
     setMemberId("");
     setSinkingAmount("");
     setColor(null);
+    setIconKey(null);
     setOpen(false);
   }
 
@@ -88,7 +121,7 @@ function NewBucketForm({
     return (
       <button type="button" className="add-tile" onClick={() => setOpen(true)}>
         <span className="add-tile-plus" aria-hidden="true">+</span>
-        New bucket…
+        New goal…
       </button>
     );
   }
@@ -122,6 +155,7 @@ function NewBucketForm({
         placeholder="Auto-contribute monthly (optional)"
         title="Automatically add this amount once a month, for an irregular annual cost like insurance or gifts"
       />
+      <IconPicker name={name} value={iconKey} onChange={setIconKey} />
       <ColorPicker value={color} onChange={setColor} />
       <div className="bucket-new-form-actions">
         <button type="submit" disabled={!name.trim()}>
@@ -149,6 +183,7 @@ function EditBucketForm({
     accountId: number | null,
     sinkingAmount: string | null,
     color: string | null,
+    iconKey: string | null,
   ) => void;
   onCancel: () => void;
 }) {
@@ -157,6 +192,9 @@ function EditBucketForm({
   const [accountId, setAccountId] = useState(bucket.account_id !== null ? String(bucket.account_id) : "");
   const [sinkingAmount, setSinkingAmount] = useState(bucket.sinking_amount ?? "");
   const [color, setColor] = useState<string | null>(bucket.color);
+  const [iconKey, setIconKey] = useState<BucketIconKey | null>(
+    bucket.icon_key && isBucketIconKey(bucket.icon_key) ? bucket.icon_key : null,
+  );
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -166,6 +204,7 @@ function EditBucketForm({
       accountId ? Number(accountId) : null,
       sinkingAmount.trim() ? sinkingAmount.trim() : null,
       color,
+      iconKey,
     );
   }
 
@@ -192,6 +231,7 @@ function EditBucketForm({
         placeholder="Auto-contribute monthly (optional)"
         title="Automatically add this amount once a month, for an irregular annual cost like insurance or gifts"
       />
+      <IconPicker name={bucket.name} value={iconKey} onChange={setIconKey} />
       <ColorPicker value={color} onChange={setColor} />
       <div className="bucket-new-form-actions">
         <button type="submit">Save</button>
@@ -257,6 +297,7 @@ export function BucketsView({
     memberId: number | null,
     sinkingAmount: string | null,
     color: string | null,
+    iconKey: string | null,
   ) => void;
   onUpdateBucketDetails: (
     id: number,
@@ -265,6 +306,7 @@ export function BucketsView({
     accountId: number | null,
     sinkingAmount: string | null,
     color: string | null,
+    iconKey: string | null,
   ) => void;
   onAddContribution: (bucketId: number, date: string, amount: string, note: string | null) => void;
   onDeleteBucket: (id: number) => void;
@@ -275,8 +317,14 @@ export function BucketsView({
 
   return (
     <div className="buckets-view">
+      <div className="page-top">
+        <div>
+          <h1 className="view-title">Goals</h1>
+          <p className="view-sub">Savings goals and sinking funds.</p>
+        </div>
+      </div>
       {buckets.length === 0 && (
-        <p className="empty-state">No savings buckets yet — create one to start tracking a goal.</p>
+        <p className="empty-state">No savings goals yet — create one to start tracking a goal.</p>
       )}
       <div className="buckets-grid">
         {buckets.map((b) => {
@@ -285,63 +333,63 @@ export function BucketsView({
           const pct = target && target > 0 ? Math.min(100, Math.max(0, (saved / target) * 100)) : null;
           return (
             <div key={b.id} className="bucket-card" style={b.color ? { borderTop: `3px solid ${b.color}` } : undefined}>
-              <div className="bucket-card-header-row">
-                {pct !== null ? (
-                  <ProgressRing pct={pct} size={64} color={b.color ?? undefined} />
+              <div className="bucket-card-header">
+                <h3 className="cell-with-icon">
+                  <span className="bucket-ico">
+                    <BucketIcon name={b.name} iconKey={b.icon_key} />
+                  </span>
+                  {b.name}
+                </h3>
+                {confirmingDeleteId === b.id ? (
+                  <span className="row-delete-confirm">
+                    <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
+                      Cancel
+                    </button>
+                    <button type="button" className="btn-danger" onClick={() => onDeleteBucket(b.id)}>
+                      Delete
+                    </button>
+                  </span>
                 ) : (
-                  <div className="goal-ring-wrap" style={{ width: 64, height: 64 }} />
+                  <span className="row-delete-confirm">
+                    <button type="button" className="modal-secondary" onClick={() => setEditingId(b.id)}>
+                      Edit
+                    </button>
+                    <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(b.id)}>
+                      Delete
+                    </button>
+                  </span>
                 )}
-                <div className="bucket-card-main">
-                  <div className="bucket-card-header">
-                    <h3 className="cell-with-icon">
-                      <BucketIcon name={b.name} className="category-legend-icon" />
-                      {b.name}
-                    </h3>
-                    {confirmingDeleteId === b.id ? (
-                      <span className="row-delete-confirm">
-                        <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(null)}>
-                          Cancel
-                        </button>
-                        <button type="button" className="btn-danger" onClick={() => onDeleteBucket(b.id)}>
-                          Delete
-                        </button>
-                      </span>
-                    ) : (
-                      <span className="row-delete-confirm">
-                        <button type="button" className="modal-secondary" onClick={() => setEditingId(b.id)}>
-                          Edit
-                        </button>
-                        <button type="button" className="modal-secondary" onClick={() => setConfirmingDeleteId(b.id)}>
-                          Delete
-                        </button>
-                      </span>
-                    )}
-                  </div>
-                  <p className="bucket-saved">
-                    {formatAmount(b.saved_amount)}
-                    {b.target_amount && <span className="bucket-target"> of {formatAmount(b.target_amount)}</span>}
-                  </p>
-                  <p className="bucket-target">
-                    {b.account_name && `${b.account_name}`}
-                    {b.account_name && (b.member_name || b.target_date) && " · "}
-                    {b.member_name && `${b.member_name}`}
-                    {b.member_name && b.target_date && " · "}
-                    {b.target_date && `${daysLeft(b.target_date)} days left`}
-                  </p>
-                  {b.sinking_amount && (
-                    <p className="bucket-target" title="Automatically added to this bucket once a month">
-                      Auto: {formatAmount(b.sinking_amount)}/mo
-                    </p>
-                  )}
-                </div>
               </div>
+              <p className="bucket-saved">
+                {formatAmount(b.saved_amount)}
+                {b.target_amount && <span className="bucket-target"> of {formatAmount(b.target_amount)}</span>}
+              </p>
+              <div className="progress-track">
+                <div className="progress-fill" style={{ width: `${pct ?? 100}%`, background: b.color ?? undefined }}></div>
+              </div>
+              <p className="bucket-meta-row">
+                <span>{pct !== null ? `${Math.round(pct)}% funded` : "No target"}</span>
+                <span>{b.target_date ? `${daysLeft(b.target_date)} days left` : "—"}</span>
+              </p>
+              {(b.account_name || b.member_name) && (
+                <p className="bucket-target">
+                  {b.account_name && `${b.account_name}`}
+                  {b.account_name && b.member_name && " · "}
+                  {b.member_name && `${b.member_name}`}
+                </p>
+              )}
+              {b.sinking_amount && (
+                <p className="bucket-target" title="Automatically added to this bucket once a month">
+                  Auto: {formatAmount(b.sinking_amount)}/mo
+                </p>
+              )}
               {editingId === b.id ? (
                 <EditBucketForm
                   bucket={b}
                   accounts={accounts}
                   onCancel={() => setEditingId(null)}
-                  onSave={(targetAmount, targetDate, accountId, sinkingAmount, color) => {
-                    onUpdateBucketDetails(b.id, targetAmount, targetDate, accountId, sinkingAmount, color);
+                  onSave={(targetAmount, targetDate, accountId, sinkingAmount, color, iconKey) => {
+                    onUpdateBucketDetails(b.id, targetAmount, targetDate, accountId, sinkingAmount, color, iconKey);
                     setEditingId(null);
                   }}
                 />
