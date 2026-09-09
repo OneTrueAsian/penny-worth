@@ -552,13 +552,17 @@ function ReleaseNotesSection({ currentVersion }: { currentVersion: string | null
 /** Attribution for the bundled Noun Project icons (src/assets/icons/,
  * see iconCredits.ts) used for several account, category, and bucket
  * icons — each one is licensed CC BY 3.0, which requires crediting the
- * work and its creator. */
+ * work and its creator. Collapsed by default (a `<details>`, same
+ * disclosure pattern as `ReleaseNotesSection`'s per-version entries) since
+ * the full per-icon list is long and isn't something most people ever
+ * need to look at — the attribution still lives in the app, just tucked
+ * behind one click instead of dominating the Settings page. */
 function IconCreditsSection() {
   return (
-    <div className="card">
-      <div className="card-head">
+    <details className="card icon-credits-card">
+      <summary className="icon-credits-summary">
         <span className="reports-section-title">Icon credits</span>
-      </div>
+      </summary>
       <p className="modal-message-secondary">
         Several account, category, and goal icons are from The Noun Project, used under CC BY 3.0 — credited to
         their creators below.
@@ -580,7 +584,7 @@ function IconCreditsSection() {
           </li>
         ))}
       </ul>
-    </div>
+    </details>
   );
 }
 
