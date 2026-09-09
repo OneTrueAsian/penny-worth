@@ -40,9 +40,18 @@ try {
     throw new Error(`expected ${widgetCountBefore - 1} widgets left, found ${remainingWidgets.length}`);
   }
 
-  // "+ Add widget" — add back a pinned-report widget not in the default layout.
-  const addTile = await app.browser.$(".add-tile");
-  await addTile.click();
+  // "+ Add widget…" (in the toolbar, next to Done) — add back a
+  // pinned-report widget not in the default layout. The toolbar sits
+  // above every widget, so it's always on-screen with the content
+  // scrolled to the top — but the prior remove-button click scrolled the
+  // inner `.main` pane down to reach a widget further below, leaving the
+  // toolbar's button above the visible area. Scroll back to the top
+  // directly rather than `scrollIntoView`, which can land an element this
+  // close to the top underneath the sticky header instead of past it.
+  await app.browser.execute(() => document.querySelector(".main")?.scrollTo(0, 0));
+  const toolbar = await app.browser.$(".dashboard-toolbar");
+  const addWidgetButton = await toolbar.$("button*=Add widget");
+  await addWidgetButton.click();
 
   await app.browser.execute(() => {
     const row = Array.from(document.querySelectorAll(".category-manage-row")).find((r) =>

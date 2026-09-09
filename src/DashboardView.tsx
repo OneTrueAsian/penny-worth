@@ -1200,6 +1200,11 @@ export function DashboardView({
             Delete
           </button>
         )}
+        {customizeMode && (
+          <button type="button" className="modal-secondary btn-sm" onClick={onOpenAddWidget}>
+            + Add widget…
+          </button>
+        )}
         <button type="button" className="modal-secondary" onClick={() => setCustomizeMode((v) => !v)}>
           {customizeMode ? "Done" : "Customize"}
         </button>
@@ -1324,13 +1329,6 @@ export function DashboardView({
             {renderWidget(row.ids[0])}
           </div>
         ),
-      )}
-
-      {customizeMode && (
-        <button type="button" className="add-tile" onClick={onOpenAddWidget}>
-          <span className="add-tile-plus" aria-hidden="true">+</span>
-          Add widget…
-        </button>
       )}
     </div>
   );
