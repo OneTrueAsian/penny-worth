@@ -7,7 +7,7 @@
 // Like restoring a backup or relocating the data file, creating/switching
 // a profile hot-swaps the app's live database connection in place and the
 // frontend remounts itself to re-fetch everything (see App.tsx's
-// `PennyWorthApp` wrapper and commands.rs's `create_profile`/
+// `VaultSpendApp` wrapper and commands.rs's `create_profile`/
 // `switch_profile`) — no window close/reopen, all within one still-running
 // session.
 //
@@ -57,7 +57,7 @@ try {
   );
   console.log("status after creating Alex:", await (await app.browser.$(".status")).getText());
 
-  // The whole tree remounts right after (see PennyWorthApp) — re-query
+  // The whole tree remounts right after (see VaultSpendApp) — re-query
   // fresh — and the new profile must start completely empty, not a
   // filtered view of Default's data.
   const ledgerNavAfterCreate = await app.browser.$("button*=Ledger");

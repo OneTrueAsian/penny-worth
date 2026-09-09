@@ -73,7 +73,7 @@ function LedgerQaBox({
       <div className="card-head">
         <span className="reports-section-title cell-with-icon">
           <MessageCircleQuestion className="category-legend-icon" />
-          Ask Pennyworth
+          Ask the Vault
         </span>
         <button type="button" className="modal-secondary" onClick={() => setShowExamples((v) => !v)}>
           {showExamples ? "Hide tips" : "Tips & examples"}
@@ -224,10 +224,10 @@ export function DashboardView({
    * request. */
   holdings: Holding[];
   familyMembers: FamilyMember[];
-  /** Only needed for "Ask Pennyworth" (see ledgerQa.ts) — bucket-progress
+  /** Only needed for "Ask the Vault" (see ledgerQa.ts) — bucket-progress
    * questions ("how much have I saved toward vacation"). */
   buckets: Bucket[];
-  /** Only needed for "Ask Pennyworth" (see ledgerQa.ts) — matching a
+  /** Only needed for "Ask the Vault" (see ledgerQa.ts) — matching a
    * question's category phrase against the app's real, user-curated
    * category names. */
   categories: string[];

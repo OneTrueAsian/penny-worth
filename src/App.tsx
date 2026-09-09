@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import pennyWorthIcon from "./assets/penny-worth-icon-1024.png";
+import vaultSpendIcon from "./assets/vault-spend-icon-1024.png";
 import { toCsv } from "./csv";
 import { buildSetupTemplate } from "./setupTemplate";
 import { CHANGELOG } from "./changelog";
@@ -557,7 +557,7 @@ function App({
    * split the same way `handleRelocateDataFile` splits picking a folder
    * from the backend call, except a name has to come from the user first. */
   async function handlePickExistingDataFile() {
-    const path = await open({ multiple: false, filters: [{ name: "Penny Worth Database", extensions: ["db"] }] });
+    const path = await open({ multiple: false, filters: [{ name: "Vault Spend Database", extensions: ["db"] }] });
     if (!path || Array.isArray(path)) return;
     setPendingExistingDbPath(path);
   }
@@ -690,7 +690,7 @@ function App({
   // or someone else's computer) has never set this, so it always appears
   // there; dismissing it either way (including clicking outside the
   // dialog) marks it seen so it never comes back on this machine.
-  const WELCOME_SEEN_STORAGE_KEY = "pennyworth-welcome-seen";
+  const WELCOME_SEEN_STORAGE_KEY = "vaultspend-welcome-seen";
   const [showWelcome, setShowWelcome] = useState(() => {
     try {
       return localStorage.getItem(WELCOME_SEEN_STORAGE_KEY) !== "1";
@@ -719,7 +719,7 @@ function App({
   // tauri.conf.json), not the frontend bundle's own notion of its version,
   // so it reflects what's really running. Nothing shows if this version
   // has no CHANGELOG entry yet.
-  const LAST_SEEN_VERSION_KEY = "pennyworth-last-seen-version";
+  const LAST_SEEN_VERSION_KEY = "vaultspend-last-seen-version";
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [whatsNewVersion, setWhatsNewVersion] = useState<string | null>(null);
 
@@ -1305,7 +1305,7 @@ function App({
   // so a bill isn't re-notified every single launch on the same day.
   useEffect(() => {
     if (recurring.length === 0) return;
-    const NOTIFIED_KEY = "pennyworth-notified-bills";
+    const NOTIFIED_KEY = "vaultspend-notified-bills";
     const DUE_SOON_DAYS = 3;
 
     (async () => {
@@ -2250,7 +2250,7 @@ function App({
 
   async function handleDownloadSetupTemplate() {
     const path = await save({
-      defaultPath: "pennyworth-setup-template.csv",
+      defaultPath: "vaultspend-setup-template.csv",
       filters: [{ name: "CSV", extensions: ["csv"] }],
     });
     if (!path) return;
@@ -2638,8 +2638,8 @@ function App({
       )}
       <aside className="sidebar">
         <div className="brand">
-          <img className="brand-mark" src={pennyWorthIcon} alt="" />
-          <span className="brand-word">Penny Worth</span>
+          <img className="brand-mark" src={vaultSpendIcon} alt="" />
+          <span className="brand-word">Vault Spend</span>
         </div>
         <ProfileSwitcher
           profiles={profiles}
@@ -2723,8 +2723,8 @@ function App({
       <div className="main">
         <header className="topbar">
           <div>
-            <h1>Penny Worth</h1>
-            <p className="subtitle">Get your penny's worth.</p>
+            <h1>Vault Spend</h1>
+            <p className="subtitle">Own your Data, Own your Money!</p>
           </div>
           <div className="topbar-actions">
             <div className="theme-toggle" role="group" aria-label="Theme">
@@ -4112,7 +4112,7 @@ function App({
  * tried first and dropped: on Windows it occasionally raced the outgoing
  * WebView2 instance's teardown against the new one's startup, leaving the
  * relaunched window stuck on a native "can't reach this page" error. */
-function PennyWorthApp() {
+function VaultSpendApp() {
   const [reloadKey, setReloadKey] = useState(0);
   const [initialStatus, setInitialStatus] = useState("");
 
@@ -4128,4 +4128,4 @@ function PennyWorthApp() {
   );
 }
 
-export default PennyWorthApp;
+export default VaultSpendApp;

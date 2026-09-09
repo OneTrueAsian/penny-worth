@@ -22,7 +22,7 @@ import os from "node:os";
 const CARGO_BIN = "C:\\Users\\joeyf\\.cargo\\bin";
 const TAURI_DRIVER = path.join(CARGO_BIN, "tauri-driver.exe");
 const MSEDGEDRIVER = path.join(CARGO_BIN, "msedgedriver.exe");
-const APP_EXE = path.resolve("target/debug/pennyworth.exe");
+const APP_EXE = path.resolve("target/debug/vaultspend.exe");
 
 // Asks the OS for a free ephemeral port (bind to :0, read what it picked,
 // release it) rather than a hardcoded one — lets multiple specs run
@@ -64,9 +64,9 @@ function waitForPort(port, timeoutMs = 20000) {
 }
 
 // Every E2E run gets its own throwaway SQLite file — never the user's real
-// AppData database. Read by src-tauri/src/lib.rs via PENNYWORTH_DB_DIR.
+// AppData database. Read by src-tauri/src/lib.rs via VAULTSPEND_DB_DIR.
 function freshTestDbDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pennyworth-e2e-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vaultspend-e2e-"));
   return dir;
 }
 
@@ -78,7 +78,7 @@ export async function launchApp({ dbDir } = {}) {
   const driverProcess = spawn(
     TAURI_DRIVER,
     ["--port", String(PORT), "--native-port", String(NATIVE_PORT), "--native-driver", MSEDGEDRIVER],
-    { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PENNYWORTH_DB_DIR: testDbDir } },
+    { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, VAULTSPEND_DB_DIR: testDbDir } },
   );
   let driverLog = "";
   driverProcess.stdout.on("data", (d) => (driverLog += d.toString()));

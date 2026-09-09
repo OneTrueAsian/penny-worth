@@ -1,7 +1,7 @@
-/* Slate — Penny Worth's default look (internal theme id stays "classic",
+/* Slate — Vault Spend's default look (internal theme id stays "classic",
    see SettingsView.tsx's THEME_STYLE_OPTIONS — only the label changed, so
    an existing user's saved `meadow-theme-style` value keeps working with
-   no migration). Palette/type ported from the "Penny Worth Slate" design
+   no migration). Palette/type ported from the "Vault Spend Slate" design
    mockup. The sidebar now matches the current light/dark mode instead of
    staying permanently dark — --sidebar-* below are close to but distinct
    from the main --surface-* tokens, same relationship the mockup uses.

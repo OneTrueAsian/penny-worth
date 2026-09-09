@@ -23,13 +23,15 @@ pub fn run() {
             // Identifier (tauri.conf.json) and this filename were renamed
             // from "com.joeyf.meadow" / "meadow.db" to "com.joeyf.pennywise"
             // / "pennywise.db" alongside the Meadow -> Penny Wise rebrand,
-            // and again to "com.joeyf.pennyworth" / "pennyworth.db"
-            // alongside the Penny Wise -> Penny Worth rebrand. Each time, the
-            // pre-existing database was copied by hand from the old AppData
-            // folder into the new one at rename time — this does not
-            // auto-migrate on its own.
+            // again to "com.joeyf.pennyworth" / "pennyworth.db" alongside
+            // the Penny Wise -> Penny Worth rebrand, and again to
+            // "com.joeyf.vaultspend" / "vaultspend.db" alongside the Penny
+            // Worth -> Vault Spend rebrand. Each time, the pre-existing
+            // database was copied by hand from the old AppData folder into
+            // the new one at rename time — this does not auto-migrate on
+            // its own.
             //
-            // PENNYWORTH_DB_DIR lets E2E tests (see e2e/) point the app at a
+            // VAULTSPEND_DB_DIR lets E2E tests (see e2e/) point the app at a
             // throwaway directory instead of the real AppData folder, so
             // automated UI testing never touches the user's real data —
             // this substitutes for the *whole* notion of "default
@@ -44,7 +46,7 @@ pub fn run() {
             // Settings section — see config::resolve_db_path.
             //
             // **Debug builds default to a dev-only directory, never the
-            // real AppData folder, even without PENNYWORTH_DB_DIR set** —
+            // real AppData folder, even without VAULTSPEND_DB_DIR set** —
             // a real incident: `npm run tauri dev` (no env var, ordinary
             // local dev workflow) opened a real relocated production
             // database, because config.json is a single machine-wide file
@@ -55,10 +57,10 @@ pub fn run() {
             // only changes untested local development, never what ships
             // to an actual user — release builds still resolve to the
             // real AppData folder exactly as before. Explicitly setting
-            // PENNYWORTH_DB_DIR (E2E tests do) still wins over this.
-            let default_dir = match std::env::var_os("PENNYWORTH_DB_DIR") {
+            // VAULTSPEND_DB_DIR (E2E tests do) still wins over this.
+            let default_dir = match std::env::var_os("VAULTSPEND_DB_DIR") {
                 Some(dir) => std::path::PathBuf::from(dir),
-                None if cfg!(debug_assertions) => std::env::temp_dir().join("pennyworth-dev-data"),
+                None if cfg!(debug_assertions) => std::env::temp_dir().join("vaultspend-dev-data"),
                 None => app.path().app_data_dir()?,
             };
             std::fs::create_dir_all(&default_dir)?;

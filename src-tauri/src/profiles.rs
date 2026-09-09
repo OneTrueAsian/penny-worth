@@ -44,7 +44,7 @@ fn registry_path(config_path: &Path) -> PathBuf {
     config_path.parent().unwrap_or_else(|| Path::new(".")).join(REGISTRY_FILENAME)
 }
 
-/// Where a new profile's own directory (and thus its `pennyworth.db` and
+/// Where a new profile's own directory (and thus its `vaultspend.db` and
 /// its automatically-isolated `backups/` subfolder — see
 /// `backups::backups_dir_for`) lives: a `profiles` folder next to
 /// `config.json`. One directory per profile, not a flat sibling file,
@@ -151,7 +151,7 @@ pub fn create_profile(
     }
 
     let id = unique_profile_id(&entries, name, now);
-    let db_path = profiles_dir(config_path).join(&id).join("pennyworth.db");
+    let db_path = profiles_dir(config_path).join(&id).join("vaultspend.db");
     entries.push(ProfileEntry {
         id: id.clone(),
         name: name.to_string(),
@@ -278,7 +278,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pennyworth-profiles-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vaultspend-profiles-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -292,7 +292,7 @@ mod tests {
     fn list_profiles_synthesizes_a_default_entry_when_no_registry_exists() {
         let dir = temp_dir("list-synthesize");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
 
         let profiles = list_profiles(&config_path, &live_db_path);
 
@@ -308,7 +308,7 @@ mod tests {
     fn list_profiles_returns_the_full_registry_when_it_already_exists() {
         let dir = temp_dir("list-full-registry");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
 
         let profiles = list_profiles(&config_path, &live_db_path);
@@ -322,7 +322,7 @@ mod tests {
     fn list_profiles_marks_whichever_entry_matches_the_live_db_path_as_active() {
         let dir = temp_dir("list-active");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
 
         // Simulate having switched to Alex: `live_db_path` now points at
@@ -339,7 +339,7 @@ mod tests {
     fn create_profile_seeds_a_default_entry_the_first_time_the_registry_is_written() {
         let dir = temp_dir("create-seeds-default");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
 
         create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
 
@@ -354,7 +354,7 @@ mod tests {
     fn create_profile_does_not_reseed_the_default_entry_on_a_later_call() {
         let dir = temp_dir("create-no-reseed");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
 
         create_profile(&config_path, &live_db_path, "Sam", dt("2026-08-30 13:00:00")).unwrap();
@@ -368,11 +368,11 @@ mod tests {
     fn create_profile_stores_the_new_profile_under_its_own_subdirectory() {
         let dir = temp_dir("create-own-subdir");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
 
         let profile = create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
 
-        assert_eq!(profile.db_path.file_name().unwrap(), "pennyworth.db");
+        assert_eq!(profile.db_path.file_name().unwrap(), "vaultspend.db");
         let profile_dir = profile.db_path.parent().unwrap();
         assert_eq!(profile_dir.parent().unwrap(), profiles_dir(&config_path));
         assert_eq!(profile_dir.file_name().unwrap(), profile.id.as_str());
@@ -382,7 +382,7 @@ mod tests {
     fn create_profile_rejects_a_duplicate_name_case_insensitively() {
         let dir = temp_dir("create-rejects-duplicate");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
 
         let result = create_profile(&config_path, &live_db_path, "ALEX", dt("2026-08-30 12:00:01"));
@@ -394,7 +394,7 @@ mod tests {
     fn create_profile_disambiguates_two_profiles_created_with_the_same_name_in_the_same_second() {
         let dir = temp_dir("create-disambiguates");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let same_instant = dt("2026-08-30 19:41:25");
 
         let first = create_profile(&config_path, &live_db_path, "Alex", same_instant).unwrap();
@@ -407,8 +407,8 @@ mod tests {
     fn add_existing_profile_registers_the_given_path_verbatim_without_creating_a_directory() {
         let dir = temp_dir("add-existing-verbatim");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
-        let brought_over = dir.join("from-old-laptop").join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
+        let brought_over = dir.join("from-old-laptop").join("vaultspend.db");
 
         let profile =
             add_existing_profile(&config_path, &live_db_path, "Old Laptop", &brought_over, dt("2026-09-02 09:00:00"))
@@ -422,7 +422,7 @@ mod tests {
     fn add_existing_profile_seeds_a_default_entry_the_first_time_the_registry_is_written() {
         let dir = temp_dir("add-existing-seeds-default");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let brought_over = dir.join("brought-over.db");
 
         add_existing_profile(&config_path, &live_db_path, "Old Laptop", &brought_over, dt("2026-09-02 09:00:00")).unwrap();
@@ -436,7 +436,7 @@ mod tests {
     fn add_existing_profile_rejects_a_duplicate_name_case_insensitively() {
         let dir = temp_dir("add-existing-rejects-duplicate-name");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         create_profile(&config_path, &live_db_path, "Alex", dt("2026-09-02 09:00:00")).unwrap();
 
         let result = add_existing_profile(
@@ -454,7 +454,7 @@ mod tests {
     fn add_existing_profile_rejects_a_path_already_registered_to_another_profile() {
         let dir = temp_dir("add-existing-rejects-duplicate-path");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-09-02 09:00:00")).unwrap();
 
         let result =
@@ -468,7 +468,7 @@ mod tests {
     fn add_existing_profile_rejects_a_duplicate_path_that_only_differs_by_case() {
         let dir = temp_dir("add-existing-rejects-duplicate-path-case-insensitive");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-09-02 09:00:00")).unwrap();
 
         // Same file, different letter-casing — as a file picker can return
@@ -492,7 +492,7 @@ mod tests {
     fn rename_profile_updates_the_name_and_leaves_id_and_db_path_untouched() {
         let dir = temp_dir("rename-updates");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
 
         rename_profile(&config_path, &live_db_path, &alex.id, "Alexandra").unwrap();
@@ -507,7 +507,7 @@ mod tests {
     fn rename_profile_rejects_a_case_insensitive_duplicate_of_another_profiles_name() {
         let dir = temp_dir("rename-rejects-duplicate");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
         create_profile(&config_path, &live_db_path, "Sam", dt("2026-08-30 12:00:01")).unwrap();
 
@@ -520,7 +520,7 @@ mod tests {
     fn rename_profile_allows_a_no_op_rename_to_its_own_current_name() {
         let dir = temp_dir("rename-no-op-self");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
 
         let result = rename_profile(&config_path, &live_db_path, &alex.id, "Alex");
@@ -532,7 +532,7 @@ mod tests {
     fn rename_profile_on_an_unknown_id_is_a_harmless_no_op() {
         let dir = temp_dir("rename-unknown-id");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
 
         let result = rename_profile(&config_path, &live_db_path, "no-such-id", "Whoever");
 
@@ -544,7 +544,7 @@ mod tests {
     fn delete_profile_removes_the_registry_entry_without_touching_its_db_file_on_disk() {
         let dir = temp_dir("delete-removes-entry");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
         std::fs::create_dir_all(alex.db_path.parent().unwrap()).unwrap();
         std::fs::write(&alex.db_path, b"fake db content").unwrap();
@@ -560,7 +560,7 @@ mod tests {
     fn delete_profile_refuses_to_delete_the_currently_active_profile() {
         let dir = temp_dir("delete-refuses-active");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
 
         // "Switch" to Alex by treating her path as the live one.
@@ -575,7 +575,7 @@ mod tests {
     fn delete_profile_on_an_unknown_id_is_a_harmless_no_op() {
         let dir = temp_dir("delete-unknown-id");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
 
         let result = delete_profile(&config_path, &live_db_path, "no-such-id");
 
@@ -587,9 +587,9 @@ mod tests {
     fn update_active_db_path_updates_whichever_registered_profile_matches_the_old_live_path() {
         let dir = temp_dir("update-active-matches");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
-        let relocated_path = dir.join("relocated").join("pennyworth.db");
+        let relocated_path = dir.join("relocated").join("vaultspend.db");
 
         // Alex is the active profile; her file just got relocated.
         update_active_db_path(&config_path, &alex.db_path, &relocated_path).unwrap();
@@ -604,10 +604,10 @@ mod tests {
     fn update_active_db_path_leaves_other_profiles_untouched() {
         let dir = temp_dir("update-active-leaves-others");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
         let alex = create_profile(&config_path, &live_db_path, "Alex", dt("2026-08-30 12:00:00")).unwrap();
         let sam = create_profile(&config_path, &live_db_path, "Sam", dt("2026-08-30 12:00:01")).unwrap();
-        let relocated_path = dir.join("relocated").join("pennyworth.db");
+        let relocated_path = dir.join("relocated").join("vaultspend.db");
 
         update_active_db_path(&config_path, &alex.db_path, &relocated_path).unwrap();
 
@@ -620,8 +620,8 @@ mod tests {
     fn update_active_db_path_is_a_no_op_when_no_registry_file_exists_yet() {
         let dir = temp_dir("update-active-no-registry");
         let config_path = dir.join("config.json");
-        let live_db_path = dir.join("pennyworth.db");
-        let relocated_path = dir.join("relocated").join("pennyworth.db");
+        let live_db_path = dir.join("vaultspend.db");
+        let relocated_path = dir.join("relocated").join("vaultspend.db");
 
         let result = update_active_db_path(&config_path, &live_db_path, &relocated_path);
 

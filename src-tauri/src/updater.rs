@@ -25,7 +25,7 @@ fn sanitize_filename(name: &str) -> String {
 pub async fn download_asset(client: &reqwest::Client, url: &str, filename: &str) -> Result<PathBuf, String> {
     let response = client
         .get(url)
-        .header("User-Agent", "PennyWorth-Updater")
+        .header("User-Agent", "VaultSpend-Updater")
         .send()
         .await
         .map_err(|e| format!("Failed to download the update: {e}"))?;
@@ -45,7 +45,7 @@ mod tests {
     #[test]
     fn sanitize_filename_strips_path_separators() {
         assert_eq!(sanitize_filename("../../evil.exe"), "....evil.exe");
-        assert_eq!(sanitize_filename("Penny.Worth_1.1.4_x64-setup.exe"), "Penny.Worth_1.1.4_x64-setup.exe");
+        assert_eq!(sanitize_filename("Vault.Spend_1.1.4_x64-setup.exe"), "Vault.Spend_1.1.4_x64-setup.exe");
         assert_eq!(sanitize_filename("C:\\Windows\\evil.exe"), "CWindowsevil.exe");
     }
 

@@ -38,7 +38,7 @@ pub fn get_data_file_location(paths: tauri::State<crate::config::AppPaths>) -> S
     current_db_path(&paths).to_string_lossy().to_string()
 }
 
-/// Copies the live database to `new_dir/pennyworth.db` (via `Store::backup_to`,
+/// Copies the live database to `new_dir/vaultspend.db` (via `Store::backup_to`,
 /// safe against a live connection), points `config.json` at it, then swaps
 /// this session's live connection over to the new file in place. The old
 /// file is deliberately left behind, untouched.
@@ -60,10 +60,10 @@ pub fn relocate_data_file(
     let old_live_path = current_db_path(&paths);
     let new_dir = std::path::PathBuf::from(new_dir);
     std::fs::create_dir_all(&new_dir).map_err(|e| e.to_string())?;
-    let new_db_path = new_dir.join("pennyworth.db");
+    let new_db_path = new_dir.join("vaultspend.db");
     if new_db_path.exists() {
         return Err(format!(
-            "{} already has a pennyworth.db — pick an empty folder.",
+            "{} already has a vaultspend.db — pick an empty folder.",
             new_dir.display()
         ));
     }
@@ -155,7 +155,7 @@ pub fn list_profiles(paths: tauri::State<crate::config::AppPaths>) -> Vec<Profil
 }
 
 /// Registers a brand-new, completely independent profile (its own
-/// directory, its own `pennyworth.db`, its own isolated `backups/`
+/// directory, its own `vaultspend.db`, its own isolated `backups/`
 /// subfolder — see `profiles::create_profile`) and hot-swaps to it
 /// immediately, same in-place mechanism as `relocate_data_file`/
 /// `restore_backup` — creating a profile means "start using it now."
@@ -242,7 +242,7 @@ pub fn switch_profile(
 /// always starts one empty. Opens `db_path` *before* touching the registry
 /// or the live connection, so a bad pick (wrong file type, a corrupt file)
 /// fails with a clear error and leaves everything exactly as it was; only a
-/// file that actually opens as a Penny Worth database gets registered and
+/// file that actually opens as a Vault Spend database gets registered and
 /// hot-swapped to, same "creating/adding a profile means start using it
 /// now" convention as `create_profile`. The file itself is never copied or
 /// moved — it stays wherever the user pointed at it.
@@ -258,7 +258,7 @@ pub fn add_existing_profile(
         return Err(format!("{} doesn't exist.", picked_path.display()));
     }
     let new_state = AppState::open(&picked_path)
-        .map_err(|e| format!("Couldn't open {} as a Penny Worth data file: {e}", picked_path.display()))?;
+        .map_err(|e| format!("Couldn't open {} as a Vault Spend data file: {e}", picked_path.display()))?;
 
     let mut state = state.lock().map_err(|_| "app state poisoned".to_string())?;
     let live_db_path = current_db_path(&paths);

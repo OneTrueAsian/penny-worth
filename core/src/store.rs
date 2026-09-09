@@ -5533,7 +5533,7 @@ mod tests {
 
     #[test]
     fn backup_to_copies_every_row_to_a_new_file() {
-        let dir = std::env::temp_dir().join(format!("pennyworth-backup-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vaultspend-backup-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let source_path = dir.join("source.db");
         let dest_path = dir.join("dest.db");
@@ -6220,7 +6220,7 @@ mod tests {
         // correction is added. The stale row must self-heal the moment
         // the store reopens — the fix must not require the user to
         // manually re-correct the balance to unstick it.
-        let dir = std::env::temp_dir().join(format!("pennyworth-stale-override-migration-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vaultspend-stale-override-migration-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("stale_override.db");
         if db_path.exists() {
@@ -7864,7 +7864,7 @@ mod tests {
         // content.
         static CALL_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("pennyworth-setup-import-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vaultspend-setup-import-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("template-{n:x}.csv"));
         std::fs::write(&path, text).unwrap();
@@ -10700,7 +10700,7 @@ mod tests {
         // Simulates a database from before the daily request counter
         // existed: a `live_price_settings` table with just the original two
         // columns, already holding a saved API key.
-        let dir = std::env::temp_dir().join(format!("pennyworth-live-price-migration-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vaultspend-live-price-migration-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("pre_request_tracking.db");
         if db_path.exists() {
@@ -10739,7 +10739,7 @@ mod tests {
         // `live_price_settings` table with the request-tracking columns
         // but no `provider` column yet, already holding a saved API key —
         // necessarily an Alpha Vantage key, since Finnhub didn't exist.
-        let dir = std::env::temp_dir().join(format!("pennyworth-live-price-provider-migration-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vaultspend-live-price-provider-migration-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("pre_provider_column.db");
         if db_path.exists() {

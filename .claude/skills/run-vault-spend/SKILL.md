@@ -1,11 +1,11 @@
 ---
-name: run-penny-worth
-description: Build, run, test, and drive Penny Worth (the Tauri v2 + React budgeting desktop app). Use when asked to start Penny Worth, build it, run its tests, take a screenshot of its UI, or click/inspect the running app.
+name: run-vault-spend
+description: Build, run, test, and drive Vault Spend (the Tauri v2 + React budgeting desktop app). Use when asked to start Vault Spend, build it, run its tests, take a screenshot of its UI, or click/inspect the running app.
 ---
 
-Penny Worth is a Tauri v2 desktop app (Rust backend in `src-tauri/` + `core/`,
+Vault Spend is a Tauri v2 desktop app (Rust backend in `src-tauri/` + `core/`,
 React/Vite frontend in `src/`) for Windows. Drive it via the real compiled
-`.exe` over Tauri's WebDriver support — `.claude/skills/run-penny-worth/explore.mjs`
+`.exe` over Tauri's WebDriver support — `.claude/skills/run-vault-spend/explore.mjs`
 for one-off exploration, or the existing `e2e/*.mjs` specs (same underlying
 harness) for anything scripted. All paths below are relative to the repo
 root.
@@ -40,7 +40,7 @@ Gotchas. This is also the build the driver launches:
 npx tauri build --debug --no-bundle
 ```
 
-Produces `target/debug/pennyworth.exe` with the frontend embedded. Re-run
+Produces `target/debug/vaultspend.exe` with the frontend embedded. Re-run
 after any `src/` or `src-tauri/`/`core/` change before driving the app.
 
 ## Run (agent path)
@@ -53,7 +53,7 @@ and closes it when done; pass `--db <dir>` to reuse one database (e.g. one
 seeded via `e2e/lib/seed.mjs`) across multiple invocations.
 
 ```bash
-node .claude/skills/run-penny-worth/explore.mjs nav Budget screenshot out.png
+node .claude/skills/run-vault-spend/explore.mjs nav Budget screenshot out.png
 ```
 
 Commands are given as sequential argv tokens, each consuming the args it needs:
@@ -70,7 +70,7 @@ Commands are given as sequential argv tokens, each consuming the args it needs:
 | `screenshot` | `<path>` | save a PNG to `path` |
 
 Chain as many as you like in one call, e.g.
-`node .claude/skills/run-penny-worth/explore.mjs nav Ledger eval "document.querySelectorAll('tbody tr').length" screenshot ledger.png`.
+`node .claude/skills/run-vault-spend/explore.mjs nav Ledger eval "document.querySelectorAll('tbody tr').length" screenshot ledger.png`.
 
 To look at a populated app instead of an empty one, seed a DB first (see
 `e2e/lib/seed.mjs` — `seedFixture(pySnippet)` for a custom fixture, or an
@@ -84,7 +84,7 @@ console.log(await seedDebtPaymentFixture());
 ```
 ```bash
 node scratch.mjs   # prints a dbDir
-node .claude/skills/run-penny-worth/explore.mjs --db <dbDir> nav Ledger screenshot out.png
+node .claude/skills/run-vault-spend/explore.mjs --db <dbDir> nav Ledger screenshot out.png
 ```
 
 For anything beyond quick exploration (assertions, multi-step flows), write
@@ -126,10 +126,10 @@ coverage; each is a standalone script, no test runner config needed.
   `explore.mjs`'s `nav` command works around this by listing `nav button`s
   and filtering by exact text instead — do the same for any other
   text-matched click.
-- **If the build step fails to overwrite `target/debug/pennyworth.exe`**
+- **If the build step fails to overwrite `target/debug/vaultspend.exe`**
   (permission/linker error), a previous instance built from that exact path
   is still running — Windows locks running executables. Check
-  `tasklist //FI "IMAGENAME eq pennyworth.exe"` and close it (a stray
+  `tasklist //FI "IMAGENAME eq vaultspend.exe"` and close it (a stray
   `npm run tauri dev` session or a manually launched debug build) before
   rebuilding. A separately-installed copy (Program Files) or a
   `target/release` build won't conflict.

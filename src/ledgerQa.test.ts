@@ -597,7 +597,7 @@ describe("unmatched questions", () => {
   });
 });
 
-// The Dashboard's "Ask Pennyworth" box surfaces `LEDGER_QA_EXAMPLES`
+// The Dashboard's "Ask the Vault" box surfaces `LEDGER_QA_EXAMPLES`
 // verbatim as clickable suggestions (DashboardView.tsx's `LedgerQaBox`) —
 // a shipped example that fails to match (as "what's my savings rate this
 // month" once did: its pattern only accepted a period phrase after "in/

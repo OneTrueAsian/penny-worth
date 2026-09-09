@@ -465,7 +465,7 @@ mod tests {
         // The downloadable template ships with "# ..." explainer lines at
         // the top — anything before the first section title is skipped.
         let result = load_from_str(
-            "# Penny Worth setup template — fill in your own rows.\n\
+            "# Vault Spend setup template — fill in your own rows.\n\
              # Delete the example rows, keep the section titles.\n\
              \n\
              Accounts\n\

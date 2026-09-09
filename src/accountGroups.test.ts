@@ -41,7 +41,7 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
 
 // The single definition of "income," mirrored exactly from
 // Store::monthly_totals on the backend (see core/src/store.rs) — Reports'
-// "Income (all-time)" stat and Savings Rate Trend, Ask Pennyworth's
+// "Income (all-time)" stat and Savings Rate Trend, Ask the Vault's
 // "income" queries, and Household's income-by-member all route through
 // this one function so they can never disagree with Cash Flow, which is
 // driven by the backend rule directly.

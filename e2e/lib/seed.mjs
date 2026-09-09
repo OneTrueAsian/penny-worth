@@ -10,16 +10,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const APP_EXE = path.resolve("target/debug/pennyworth.exe");
+const APP_EXE = path.resolve("target/debug/vaultspend.exe");
 
 export function freshTestDbDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pennyworth-e2e-"));
+  return fs.mkdtempSync(path.join(os.tmpdir(), "vaultspend-e2e-"));
 }
 
 // Launches the app briefly (non-WebDriver) against `dbDir` so init_schema
-// runs and creates pennyworth.db, then kills it.
+// runs and creates vaultspend.db, then kills it.
 async function createSchema(dbDir) {
-  const proc = spawn(APP_EXE, [], { env: { ...process.env, PENNYWORTH_DB_DIR: dbDir }, stdio: "ignore" });
+  const proc = spawn(APP_EXE, [], { env: { ...process.env, VAULTSPEND_DB_DIR: dbDir }, stdio: "ignore" });
   await new Promise((r) => setTimeout(r, 1500));
   proc.kill("SIGKILL");
   await new Promise((r) => setTimeout(r, 500));
@@ -53,7 +53,7 @@ con.close()
 export async function seedFixture(pySnippet) {
   const dbDir = freshTestDbDir();
   await createSchema(dbDir);
-  runSqlite(path.join(dbDir, "pennyworth.db"), pySnippet);
+  runSqlite(path.join(dbDir, "vaultspend.db"), pySnippet);
   return dbDir;
 }
 
@@ -67,7 +67,7 @@ export async function seedFixture(pySnippet) {
 export async function seedDebtPaymentFixture() {
   const dbDir = freshTestDbDir();
   await createSchema(dbDir);
-  const dbPath = path.join(dbDir, "pennyworth.db");
+  const dbPath = path.join(dbDir, "vaultspend.db");
   runSqlite(
     dbPath,
     `

@@ -89,7 +89,7 @@ function BackupsSection({
         </button>
       </div>
       <p className="modal-message-secondary">
-        Penny Worth backs up automatically once a day when you open it, keeping the most recent 15. Restoring backs
+        Vault Spend backs up automatically once a day when you open it, keeping the most recent 15. Restoring backs
         up your current data first, then reloads it — no restart needed.
       </p>
       <table className="ledger">
@@ -267,7 +267,7 @@ const THEME_STYLE_OPTIONS: { id: ThemeStyle; label: string; description: string 
   {
     id: "classic",
     label: "Slate",
-    description: "Penny Worth's default look, following the header's Light/Dark/System toggle.",
+    description: "Vault Spend's default look, following the header's Light/Dark/System toggle.",
   },
   {
     id: "futuristic",
@@ -290,7 +290,7 @@ function AppearanceSection({
         <span className="reports-section-title">Appearance</span>
       </div>
       <p className="modal-message-secondary">
-        Choose Penny Worth's visual theme. This only changes colors, fonts, and shapes — nothing about how the app
+        Choose Vault Spend's visual theme. This only changes colors, fonts, and shapes — nothing about how the app
         works.
       </p>
       <div className="feature-toggle-list" role="radiogroup" aria-label="Theme">
@@ -506,7 +506,7 @@ function ProfilesSection({
         </button>
       </form>
       <p className="modal-message-secondary">
-        Moving to a new computer? "Use existing file…" points Penny Worth at a <code>pennyworth.db</code> you've
+        Moving to a new computer? "Use existing file…" points Vault Spend at a <code>vaultspend.db</code> you've
         already copied over, instead of starting empty.
       </p>
     </div>
@@ -588,6 +588,24 @@ function IconCreditsSection() {
   );
 }
 
+/** Non-affiliation disclaimer — Vault Spend is an independent, unaffiliated
+ * project, and given the crowded "vault"-themed naming space in personal
+ * finance software, saying so plainly heads off any appearance of trading
+ * on someone else's brand. */
+function AboutSection() {
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="reports-section-title">About</span>
+      </div>
+      <p className="modal-message-secondary">
+        Vault Spend is an independent open-source project and is not affiliated with, endorsed by, or partnered with
+        any external financial services or wallet providers.
+      </p>
+    </div>
+  );
+}
+
 export function SettingsView({
   appVersion,
   dataFileLocation,
@@ -665,6 +683,7 @@ export function SettingsView({
       />
       <ReleaseNotesSection currentVersion={appVersion} />
       <IconCreditsSection />
+      <AboutSection />
     </div>
   );
 }

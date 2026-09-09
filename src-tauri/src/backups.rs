@@ -1,14 +1,14 @@
 //! Automatic and manual local backup snapshots of the live database, kept
 //! next to wherever it actually lives (default AppData, or a relocated
 //! folder — see `config.rs`). Every filename embeds its own timestamp
-//! (`pennyworth-YYYYMMDD-HHMMSS.db`), so listing/pruning/sorting never
+//! (`vaultspend-YYYYMMDD-HHMMSS.db`), so listing/pruning/sorting never
 //! needs filesystem metadata — just string comparison, which is also
 //! chronological given the fixed-width format.
 use budget_core::store::Store;
 use chrono::NaiveDateTime;
 use std::path::{Path, PathBuf};
 
-const BACKUP_PREFIX: &str = "pennyworth-";
+const BACKUP_PREFIX: &str = "vaultspend-";
 const BACKUP_SUFFIX: &str = ".db";
 const DEFAULT_KEEP: usize = 15;
 const AUTO_BACKUP_INTERVAL_HOURS: i64 = 24;
@@ -206,7 +206,7 @@ pub fn list_backups(backups_dir: &Path) -> Result<Vec<BackupInfo>, String> {
 /// Restores `filename` by copying it into a **brand-new** file next to
 /// `live_db_path` (never into `live_db_path` itself). Order of operations,
 /// each a real safety gate:
-/// 1. The chosen backup must open as a valid Penny Worth database and
+/// 1. The chosen backup must open as a valid Vault Spend database and
 ///    survive a sanity read (`list_accounts`) — a corrupt/truncated
 ///    backup file is rejected before anything live is touched.
 /// 2. The *current* live data is snapshotted first (via `create_backup`),
@@ -247,7 +247,7 @@ pub fn restore_backup(store: &Store, backups_dir: &Path, filename: &str, live_db
     loop {
         let suffix = if n == 1 { String::new() } else { format!("-{n}") };
         restored_path = restored_dir.join(format!(
-            "pennyworth-restored-{}{suffix}.db",
+            "vaultspend-restored-{}{suffix}.db",
             chrono::Local::now().format("%Y%m%d-%H%M%S")
         ));
         if !restored_path.exists() {
@@ -290,7 +290,7 @@ mod tests {
     use budget_core::models::AccountType;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pennyworth-backups-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vaultspend-backups-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -303,19 +303,19 @@ mod tests {
     #[test]
     fn prune_backups_keeps_only_the_newest_n() {
         let existing = vec![
-            "pennyworth-20260101-000000.db".to_string(),
-            "pennyworth-20260103-000000.db".to_string(),
-            "pennyworth-20260102-000000.db".to_string(),
+            "vaultspend-20260101-000000.db".to_string(),
+            "vaultspend-20260103-000000.db".to_string(),
+            "vaultspend-20260102-000000.db".to_string(),
         ];
 
         let to_delete = prune_backups(existing, 2);
 
-        assert_eq!(to_delete, vec!["pennyworth-20260101-000000.db".to_string()]);
+        assert_eq!(to_delete, vec!["vaultspend-20260101-000000.db".to_string()]);
     }
 
     #[test]
     fn prune_backups_deletes_nothing_when_under_the_limit() {
-        let existing = vec!["pennyworth-20260101-000000.db".to_string()];
+        let existing = vec!["vaultspend-20260101-000000.db".to_string()];
         assert!(prune_backups(existing, 14).is_empty());
     }
 
@@ -326,13 +326,13 @@ mod tests {
 
     #[test]
     fn should_create_backup_is_false_within_the_interval() {
-        let existing = vec!["pennyworth-20260830-060000.db".to_string()];
+        let existing = vec!["vaultspend-20260830-060000.db".to_string()];
         assert!(!should_create_backup(&existing, dt("2026-08-30 12:00:00"), 24));
     }
 
     #[test]
     fn should_create_backup_is_true_once_the_interval_has_passed() {
-        let existing = vec!["pennyworth-20260829-060000.db".to_string()];
+        let existing = vec!["vaultspend-20260829-060000.db".to_string()];
         assert!(should_create_backup(&existing, dt("2026-08-30 12:00:00"), 24));
     }
 
@@ -374,7 +374,7 @@ mod tests {
 
         let filename = create_backup(&store, &backups_dir, dt("2026-08-30 12:00:00")).unwrap();
 
-        assert_eq!(filename, "pennyworth-20260830-120000.db");
+        assert_eq!(filename, "vaultspend-20260830-120000.db");
         assert!(backups_dir.join(&filename).exists());
         let listed = list_backups(&backups_dir).unwrap();
         assert_eq!(listed.len(), 1);
@@ -437,7 +437,7 @@ mod tests {
         // Pre-seed 15 fake backups (the retention limit) with distinct
         // timestamps, all older than the one about to be created.
         for i in 0..15 {
-            let name = format!("pennyworth-202601{:02}-000000.db", i + 1);
+            let name = format!("vaultspend-202601{:02}-000000.db", i + 1);
             std::fs::write(backups_dir.join(name), b"fake").unwrap();
         }
 
@@ -445,9 +445,9 @@ mod tests {
 
         let listed = list_backups(&backups_dir).unwrap();
         assert_eq!(listed.len(), 15, "expected pruning back down to the 15-backup limit");
-        assert_eq!(listed[0].filename, "pennyworth-20260830-120000.db", "newest should survive");
+        assert_eq!(listed[0].filename, "vaultspend-20260830-120000.db", "newest should survive");
         assert!(
-            !listed.iter().any(|b| b.filename == "pennyworth-20260101-000000.db"),
+            !listed.iter().any(|b| b.filename == "vaultspend-20260101-000000.db"),
             "the oldest fake backup should have been pruned"
         );
     }
@@ -518,7 +518,7 @@ mod tests {
         let store = Store::open(&live_path).unwrap();
         let backups_dir = dir.join("backups");
 
-        let result = restore_backup(&store, &backups_dir, "pennyworth-20260101-000000.db", &live_path);
+        let result = restore_backup(&store, &backups_dir, "vaultspend-20260101-000000.db", &live_path);
 
         assert!(result.is_err());
     }

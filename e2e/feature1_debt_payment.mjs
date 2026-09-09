@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 function query(dbDir, sql) {
-  const dbPath = path.join(dbDir, "pennyworth.db");
+  const dbPath = path.join(dbDir, "vaultspend.db");
   const out = execFileSync("python", [
     "-c",
     `

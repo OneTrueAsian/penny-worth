@@ -57,7 +57,7 @@ export function owedAmount(a: Account): number {
  * reduces what's owed; it was never earned). Mirrors `Store::monthly_totals`
  * on the backend exactly (Cash Flow's own income figure), so every other
  * income figure in the app — Reports' "Income (all-time)" stat and Savings
- * Rate Trend, Ask Pennyworth's "income" queries — agrees with what Cash
+ * Rate Trend, Ask the Vault's "income" queries — agrees with what Cash
  * Flow shows instead of quietly re-deriving its own answer. Deliberately
  * does *not* require the category be literally "Income": a paycheck
  * categorized "Salary," "Paycheck," or anything else still counts, since

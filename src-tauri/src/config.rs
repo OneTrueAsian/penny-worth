@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-const DB_FILENAME: &str = "pennyworth.db";
+const DB_FILENAME: &str = "vaultspend.db";
 
 /// Tauri-managed — the paths `get_data_file_location`, `relocate_data_file`,
 /// and the backup commands (commands.rs) need but `AppState` doesn't
@@ -32,10 +32,10 @@ struct DbLocationConfig {
 ///    the file it points at still exists (a configured path whose target
 ///    vanished — e.g. an unplugged external drive — falls through rather
 ///    than silently starting a brand-new empty database there).
-/// 2. `default_dir` joined with `pennyworth.db` — untouched behavior for
+/// 2. `default_dir` joined with `vaultspend.db` — untouched behavior for
 ///    every user who has never relocated their data.
 ///
-/// `PENNYWORTH_DB_DIR` (the E2E-test env var) is *not* handled here — the
+/// `VAULTSPEND_DB_DIR` (the E2E-test env var) is *not* handled here — the
 /// caller substitutes it directly for `default_dir` before calling this,
 /// so a test run's `config.json` lives in the same throwaway directory as
 /// everything else, never the real AppData folder. (An earlier version of
@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pennyworth-config-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vaultspend-config-test-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -84,7 +84,7 @@ mod tests {
     fn configured_path_wins_when_its_target_file_exists() {
         let default_dir = temp_dir("configured-default");
         let relocated_dir = temp_dir("configured-target");
-        let relocated_db = relocated_dir.join("pennyworth.db");
+        let relocated_db = relocated_dir.join("vaultspend.db");
         std::fs::write(&relocated_db, b"fake db content").unwrap();
         let config_path = default_dir.join("config.json");
         write_db_location_config(&config_path, &relocated_db).unwrap();
@@ -101,7 +101,7 @@ mod tests {
 
         let resolved = resolve_db_path(&config_path, &default_dir);
 
-        assert_eq!(resolved, default_dir.join("pennyworth.db"));
+        assert_eq!(resolved, default_dir.join("vaultspend.db"));
     }
 
     #[test]
@@ -112,6 +112,6 @@ mod tests {
 
         let resolved = resolve_db_path(&config_path, &default_dir);
 
-        assert_eq!(resolved, default_dir.join("pennyworth.db"));
+        assert_eq!(resolved, default_dir.join("vaultspend.db"));
     }
 }

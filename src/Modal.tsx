@@ -146,9 +146,9 @@ export function WelcomeDialog({
   onGetStarted: () => void;
 }) {
   return (
-    <ModalShell title="Welcome to Penny Worth" onCancel={onGetStarted}>
+    <ModalShell title="Welcome to Vault Spend" onCancel={onGetStarted}>
       <p className="modal-message">
-        Get your penny's worth. Before you dive in, would you like a quick
+        Own your Data, Own your Money! Before you dive in, would you like a quick
         tour of how everything works?
       </p>
       <p className="modal-message modal-message-secondary">
@@ -980,7 +980,7 @@ export function UseExistingDataFileDialog({
         {path}
       </p>
       <p className="modal-message modal-message-secondary">
-        Penny Worth will start using this file right away, registered as a new profile you can switch away from
+        Vault Spend will start using this file right away, registered as a new profile you can switch away from
         anytime. The file stays exactly where it is — nothing is copied or moved.
       </p>
       <form onSubmit={handleSubmit}>
