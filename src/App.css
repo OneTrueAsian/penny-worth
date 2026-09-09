@@ -3769,34 +3769,6 @@ button:disabled {
   color: var(--accent-soft-text);
 }
 
-.icon-credits-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  list-style: none;
-}
-
-.icon-credits-summary::-webkit-details-marker {
-  display: none;
-}
-
-.icon-credits-summary::before {
-  content: "▸";
-  display: inline-block;
-  color: var(--text-muted);
-  font-size: 11px;
-  transition: transform 0.15s ease;
-}
-
-.icon-credits-card[open] .icon-credits-summary {
-  margin-bottom: 14px;
-}
-
-.icon-credits-card[open] .icon-credits-summary::before {
-  transform: rotate(90deg);
-}
-
 .modal-field {
   display: flex;
   flex-direction: column;

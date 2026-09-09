@@ -129,7 +129,4 @@ export const CHANGELOG: Record<string, string[]> = {
     "Fixed: low-contrast button and active-nav text in the Slate theme's light mode.",
     "This dialog is wider, so a full release's notes read as normal paragraphs instead of a cramped, scrolled column.",
   ],
-  "1.2.5": [
-    "Settings' Icon credits is now a collapsed section you can expand, instead of a long list shown by default.",
-  ],
 };
