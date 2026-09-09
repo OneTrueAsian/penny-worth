@@ -24,6 +24,8 @@ import { formatAmount } from "./format";
 import { groupOf, netWorthContribution, owedAmount } from "./accountGroups";
 import { netWorthByMember } from "./memberBreakdowns";
 import { daysLeft } from "./BucketsView";
+import { AccountTypeIcon } from "./accountIcons";
+import { BucketIcon } from "./bucketIcons";
 import {
   LAYOUT_PRESETS,
   LAYOUT_PRESET_LABELS,
@@ -959,14 +961,17 @@ export function DashboardView({
     const group = groupOf(account.account_type);
     const isDebt = group === "credit" || group === "loan";
     const amount = isDebt ? owedAmount(account) : netWorthContribution(account);
+    const tint = isDebt ? "tint-red" : group === "investment" ? "tint-purple" : "tint-blue";
+    const badgeColor = isDebt ? "red" : group === "investment" ? "purple" : "blue";
     return (
-      <div className="stat">
-        <div className="stat-top-main">
-          <span className="stat-value">{formatAmount(amount)}</span>
-          <span className="stat-label-row">
-            <span className="stat-label">{account.name}</span>
+      <div className={`stat stat-hero ${tint}`}>
+        <div className="stat-top">
+          <span className={`mini-ico ${badgeColor}`}>
+            <AccountTypeIcon accountType={account.account_type} />
           </span>
+          <span className="stat-label">{account.name}</span>
         </div>
+        <span className="stat-value">{formatAmount(amount)}</span>
         <span className="stat-delta">
           {isDebt ? "Owed" : "Balance"}
           {(account.institution || account.mask) &&
@@ -985,14 +990,25 @@ export function DashboardView({
     const saved = parseFloat(bucket.saved_amount);
     const target = bucket.target_amount ? parseFloat(bucket.target_amount) : null;
     const pct = target && target > 0 ? Math.min(100, Math.max(0, (saved / target) * 100)) : null;
+    // A goal's own picked color (BucketsView's color picker) takes over the
+    // badge/card tint when set, same way it already colors that goal's
+    // border and progress bar on the Goals page — falls back to the
+    // standard purple tint used everywhere else on the Dashboard.
+    const badgeStyle = bucket.color
+      ? { background: `linear-gradient(135deg, color-mix(in srgb, ${bucket.color} 65%, black), ${bucket.color})` }
+      : undefined;
+    const cardStyle = bucket.color
+      ? { background: `linear-gradient(180deg, var(--surface) 0%, color-mix(in srgb, ${bucket.color} 8%, var(--surface)) 100%)` }
+      : undefined;
     return (
-      <div className="stat">
-        <div className="stat-top-main">
-          <span className="stat-value">{formatAmount(bucket.saved_amount)}</span>
-          <span className="stat-label-row">
-            <span className="stat-label">{bucket.name}</span>
+      <div className="stat stat-hero tint-purple" style={cardStyle}>
+        <div className="stat-top">
+          <span className="mini-ico purple" style={badgeStyle}>
+            <BucketIcon name={bucket.name} iconKey={bucket.icon_key} />
           </span>
+          <span className="stat-label">{bucket.name}</span>
         </div>
+        <span className="stat-value">{formatAmount(bucket.saved_amount)}</span>
         <span className="stat-delta">
           {bucket.target_amount
             ? `of ${formatAmount(bucket.target_amount)}${pct !== null ? ` (${Math.round(pct)}%)` : ""}`
@@ -1012,13 +1028,14 @@ export function DashboardView({
     const totalValue = accountHoldings.reduce((s, h) => s + parseFloat(h.value), 0);
     const totalGain = accountHoldings.reduce((s, h) => s + parseFloat(h.gain_loss), 0);
     return (
-      <div className="stat">
-        <div className="stat-top-main">
-          <span className="stat-value">{formatAmount(totalValue.toFixed(2))}</span>
-          <span className="stat-label-row">
-            <span className="stat-label">{accountName}</span>
+      <div className="stat stat-hero tint-purple">
+        <div className="stat-top">
+          <span className="mini-ico purple">
+            <LineChartIcon aria-hidden="true" />
           </span>
+          <span className="stat-label">{accountName}</span>
         </div>
+        <span className="stat-value">{formatAmount(totalValue.toFixed(2))}</span>
         <span className={totalGain < 0 ? "stat-delta down" : "stat-delta up"}>
           {totalGain > 0 ? "+" : ""}
           {formatAmount(totalGain.toFixed(2))} gain/loss

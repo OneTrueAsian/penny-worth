@@ -2323,6 +2323,17 @@ button:disabled {
   height: 20px;
 }
 
+/* Pinned account/goal widgets use AccountTypeIcon/BucketIcon, which render
+   a bundled PNG for most types instead of a lucide <svg> — needs its own
+   sizing, and a forced-white filter (regardless of theme) to read against
+   the badge's own saturated gradient, the same way the svg icons already
+   get color:#fff for free via currentColor. */
+.stat-hero .mini-ico img {
+  width: 20px;
+  height: 20px;
+  filter: brightness(0) invert(1);
+}
+
 .stat-hero .mini-ico.accent {
   background: linear-gradient(135deg, var(--accent-strong), var(--accent));
 }
