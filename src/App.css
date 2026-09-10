@@ -626,6 +626,7 @@ body {
   top: 0;
   z-index: 5;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -748,6 +749,7 @@ body {
    you're on. */
 .page-top {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
@@ -773,7 +775,7 @@ body {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  flex: none;
+  flex: 0 1 auto;
 }
 
 .quick-actions {
