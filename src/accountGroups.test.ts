@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isIncomeTransaction } from "./accountGroups";
+import { isBeforeAccountCheckpoint, isIncomeTransaction } from "./accountGroups";
 import type { Account, Transaction } from "./types";
 
 function account(overrides: Partial<Account> = {}): Account {
@@ -15,6 +15,7 @@ function account(overrides: Partial<Account> = {}): Account {
     excluded_from_debt_payoff: false,
     member_id: null,
     member_name: null,
+    checkpoint_date: null,
     ...overrides,
   };
 }
@@ -97,5 +98,31 @@ describe("isIncomeTransaction", () => {
 
   it("still counts income when no accounts are supplied at all", () => {
     expect(isIncomeTransaction(tx({ amount: "4000.00", category: "Salary" }), [])).toBe(true);
+  });
+});
+
+// A transaction dated on or before an account's last checkpoint can't move
+// its current_balance (see Store::account_balance_as_of's `since_date` on
+// the backend) — NewTransactionDialog uses this to warn before that's a
+// silent surprise.
+describe("isBeforeAccountCheckpoint", () => {
+  it("is true for a date exactly on the checkpoint", () => {
+    expect(isBeforeAccountCheckpoint(account({ checkpoint_date: "2026-09-09" }), "2026-09-09")).toBe(true);
+  });
+
+  it("is true for a date before the checkpoint", () => {
+    expect(isBeforeAccountCheckpoint(account({ checkpoint_date: "2026-09-09" }), "2026-09-02")).toBe(true);
+  });
+
+  it("is false for a date after the checkpoint", () => {
+    expect(isBeforeAccountCheckpoint(account({ checkpoint_date: "2026-09-09" }), "2026-09-10")).toBe(false);
+  });
+
+  it("is false when the account has no checkpoint yet", () => {
+    expect(isBeforeAccountCheckpoint(account({ checkpoint_date: null }), "2020-01-01")).toBe(false);
+  });
+
+  it("is false for an empty date (nothing picked yet)", () => {
+    expect(isBeforeAccountCheckpoint(account({ checkpoint_date: "2026-09-09" }), "")).toBe(false);
   });
 });

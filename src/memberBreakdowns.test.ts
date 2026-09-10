@@ -36,6 +36,7 @@ function account(overrides: Partial<Account> = {}): Account {
     excluded_from_debt_payoff: false,
     member_id: null,
     member_name: null,
+    checkpoint_date: null,
     ...overrides,
   };
 }

@@ -107,6 +107,11 @@ export type Account = {
   excluded_from_debt_payoff: boolean;
   member_id: number | null;
   member_name: string | null;
+  /** A transaction dated on or before this can't move `current_balance` —
+   * the account's last monthly rollover or manual balance correction
+   * already accounts for everything through this date. `null` if neither
+   * has ever happened for this account. */
+  checkpoint_date: string | null;
 };
 
 export type DebtPayoffLine = {

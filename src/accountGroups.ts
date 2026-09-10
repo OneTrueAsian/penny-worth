@@ -77,3 +77,16 @@ export function isIncomeTransaction(t: Pick<Transaction, "amount" | "category" |
   const group = groupOf(account.account_type);
   return group !== "credit" && group !== "loan";
 }
+
+/** Whether a transaction dated `date` on `account` is at or before that
+ * account's last balance checkpoint — a monthly rollover or a manual
+ * "correct balance" (see `Store::account_balance_as_of` on the backend,
+ * which reads `checkpoint_date` as `since_date`). A checkpoint's own value
+ * already accounts for everything through its date, so a transaction dated
+ * on or before it can't move `current_balance` — it still correctly
+ * affects past "balance as of" lookups (sparklines, net worth history),
+ * just not today's live number. Used by `NewTransactionDialog` to warn
+ * before that's a silent surprise. */
+export function isBeforeAccountCheckpoint(account: Pick<Account, "checkpoint_date">, date: string): boolean {
+  return account.checkpoint_date !== null && date !== "" && date <= account.checkpoint_date;
+}

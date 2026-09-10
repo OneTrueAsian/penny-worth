@@ -404,6 +404,10 @@ pub struct AccountDto {
     pub excluded_from_debt_payoff: bool,
     pub member_id: Option<i64>,
     pub member_name: Option<String>,
+    /// A transaction dated on or before this can't move `current_balance`
+    /// (see `StoredAccount::checkpoint_date`) — `None` if the account has
+    /// never had a monthly rollover or manual balance correction.
+    pub checkpoint_date: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -999,6 +1003,7 @@ pub fn list_accounts(state: tauri::State<AppStateHandle>) -> Result<Vec<AccountD
             excluded_from_debt_payoff: a.excluded_from_debt_payoff,
             member_id: a.member_id,
             member_name: a.member_name,
+            checkpoint_date: a.checkpoint_date.map(|d| d.to_string()),
         })
         .collect())
 }

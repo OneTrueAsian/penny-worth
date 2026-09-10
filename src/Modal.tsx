@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import { formatAmount, isValidDecimalString, toLocalIsoDate } from "./format";
 import type { Account, Bucket, CategoryTransaction, FamilyMember, Holding, MonthExpenseDetail, ReportBudgetLine } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
+import { isBeforeAccountCheckpoint } from "./accountGroups";
 import { accountWidgetId, bucketWidgetId, investmentWidgetId, WIDGET_CATALOG, type WidgetId } from "./dashboardLayout";
 
 /** Shared shell: a dimmed overlay behind a centered panel. Clicking the
@@ -393,6 +394,8 @@ export function NewTransactionDialog({
   const valid = accountId !== "" && description.trim() !== "" && amountIsNumeric && date !== "";
 
   const budgetImpact = budgetActuals.find((b) => b.category === category);
+  const selectedAccount = accounts.find((a) => String(a.id) === accountId);
+  const backdated = selectedAccount ? isBeforeAccountCheckpoint(selectedAccount, date) : false;
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -418,6 +421,13 @@ export function NewTransactionDialog({
         <label className="modal-field">
           <span>Date</span>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          {backdated && selectedAccount && (
+            <span className="field-hint field-warning">
+              {selectedAccount.name}'s balance was last locked in as of {selectedAccount.checkpoint_date} — this
+              transaction won't change today's balance shown on the Accounts page (it still counts in past balance
+              history).
+            </span>
+          )}
         </label>
         <label className="modal-field">
           <span>Description</span>

@@ -133,6 +133,14 @@ pub struct StoredAccount {
     pub excluded_from_debt_payoff: bool,
     pub member_id: Option<i64>,
     pub member_name: Option<String>,
+    /// The most recent `balance_resets` checkpoint at or before "today"
+    /// (see `latest_checkpoint`), if any — a transaction dated on or
+    /// before this can't move `current_balance`, since a checkpoint's own
+    /// value already accounts for everything through its date. `None`
+    /// means every transaction ever recorded still counts toward
+    /// `current_balance` (no rollover or manual correction has happened
+    /// yet).
+    pub checkpoint_date: Option<NaiveDate>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1617,6 +1625,42 @@ impl Store {
         )
     }
 
+    /// The most recent `balance_resets` checkpoint for an account at or
+    /// before `as_of`, if any — shared by `account_balance_as_of` (which
+    /// needs both the checkpoint's `balance` as its new baseline and its
+    /// `reset_date` as the cutoff for which transactions still count on
+    /// top of it) and `list_accounts` (which exposes just the date, so the
+    /// UI can warn before a backdated transaction silently has no effect
+    /// on today's balance).
+    ///
+    /// `reset_date DESC` alone isn't enough: a manual override and the
+    /// automatic monthly rollover both anchor to "the day before whenever
+    /// they ran" (see `set_account_balance_override` and
+    /// `roll_forward_monthly_balances`), so whenever both run on the same
+    /// calendar day — which is the common case, since a rollover fires on
+    /// every app launch that hasn't already had one this month — they land
+    /// on the exact same `reset_date` with no way to order between them.
+    /// `id DESC` breaks the tie deterministically in favor of whichever
+    /// was recorded more recently, which is also the semantically correct
+    /// answer either way: a later row was always computed (or typed) with
+    /// a fuller view of history than an earlier one dated the same day.
+    fn latest_checkpoint(&self, account_id: i64, as_of: NaiveDate) -> rusqlite::Result<Option<(NaiveDate, Decimal)>> {
+        match self.conn.query_row(
+            "SELECT reset_date, balance FROM balance_resets
+             WHERE account_id = ?1 AND reset_date <= ?2
+             ORDER BY reset_date DESC, id DESC LIMIT 1",
+            params![account_id, as_of.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        ) {
+            Ok((date, balance)) => Ok(Some((
+                NaiveDate::parse_from_str(&date, "%Y-%m-%d").expect("reset_date stored by this crate must be valid"),
+                Decimal::from_str(&balance).expect("balance stored by this crate must be valid"),
+            ))),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// The balance of one account as of `as_of`, honoring any monthly
     /// balance reset recorded for it (see `roll_forward_monthly_balances`):
     /// starts from the most recent reset at or before `as_of` (or the
@@ -1632,32 +1676,7 @@ impl Store {
         starting_balance: Decimal,
         as_of: NaiveDate,
     ) -> rusqlite::Result<Decimal> {
-        // `reset_date DESC` alone isn't enough: a manual override and the
-        // automatic monthly rollover both anchor to "the day before
-        // whenever they ran" (see `set_account_balance_override` and
-        // `roll_forward_monthly_balances`), so whenever both run on the
-        // same calendar day — which is the common case, since a rollover
-        // fires on every app launch that hasn't already had one this
-        // month — they land on the exact same `reset_date` with no way to
-        // order between them. `id DESC` breaks the tie deterministically
-        // in favor of whichever was recorded more recently, which is also
-        // the semantically correct answer either way: a later row was
-        // always computed (or typed) with a fuller view of history than
-        // an earlier one dated the same day.
-        let checkpoint = match self.conn.query_row(
-            "SELECT reset_date, balance FROM balance_resets
-             WHERE account_id = ?1 AND reset_date <= ?2
-             ORDER BY reset_date DESC, id DESC LIMIT 1",
-            params![account_id, as_of.to_string()],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        ) {
-            Ok((date, balance)) => Some((
-                NaiveDate::parse_from_str(&date, "%Y-%m-%d").expect("reset_date stored by this crate must be valid"),
-                Decimal::from_str(&balance).expect("balance stored by this crate must be valid"),
-            )),
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(e) => return Err(e),
-        };
+        let checkpoint = self.latest_checkpoint(account_id, as_of)?;
 
         let (base_value, since_date) = match checkpoint {
             Some((date, balance)) => (balance, Some(date)),
@@ -1758,6 +1777,7 @@ impl Store {
             let (id, name, account_type, starting_balance_str, institution, mask, interest_rate_str, excluded_from_debt_payoff, member_id, member_name) = row?;
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
+            let checkpoint_date = self.latest_checkpoint(id, today)?.map(|(date, _)| date);
             let mut current_balance = self.account_balance_as_of(id, &account_type, starting_balance, today)?;
             // An investment account's real worth is what it holds, not
             // whatever cash transactions happen to have touched the
@@ -1792,6 +1812,7 @@ impl Store {
                 excluded_from_debt_payoff,
                 member_id,
                 member_name,
+                checkpoint_date,
             });
         }
         Ok(accounts)
@@ -12412,5 +12433,30 @@ mod tests {
         // NOT 1000 + 500 + 100 = 1600 double-counted differently, and
         // definitely not re-summing August's 500 on top of the reset.
         assert_eq!(accounts[0].current_balance, "1600.00".parse().unwrap());
+    }
+
+    #[test]
+    fn list_accounts_exposes_the_account_s_latest_checkpoint_date() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.set_account_starting_balance(checking, "1000.00".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-08-15".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].checkpoint_date, None,
+            "no rollover or manual correction has happened yet — every transaction ever recorded should still count"
+        );
+
+        // Rolling forward on 2026-09-01 anchors the new checkpoint to the
+        // day before (see roll_forward_monthly_balances's own comment).
+        store.roll_forward_monthly_balances("2026-09-01".parse().unwrap()).unwrap();
+        let accounts = store.list_accounts("2026-09-30".parse().unwrap()).unwrap();
+        assert_eq!(accounts[0].checkpoint_date, Some("2026-08-31".parse().unwrap()));
+
+        // A later manual correction moves the checkpoint further still —
+        // same anchor-to-the-day-before convention.
+        store.set_account_balance_override(checking, "2000.00".parse().unwrap(), "2026-09-15".parse().unwrap()).unwrap();
+        let accounts = store.list_accounts("2026-09-30".parse().unwrap()).unwrap();
+        assert_eq!(accounts[0].checkpoint_date, Some("2026-09-14".parse().unwrap()));
     }
 }

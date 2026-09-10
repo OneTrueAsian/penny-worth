@@ -3841,6 +3841,10 @@ button:disabled {
   color: var(--negative);
 }
 
+.field-hint.field-warning {
+  color: var(--warning);
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
