@@ -114,11 +114,18 @@ coverage; each is a standalone script, no test runner config needed.
 
 ## Gotchas
 
-- **A bare `cargo build`/`cargo run` produces a broken binary.** It can't
-  find its own embedded frontend — launching it renders `asset not found:
-  index.html` instead of the app, and any WebDriver session against it times
-  out waiting for `.brand-word` to exist. Always build via
-  `npx tauri build --debug --no-bundle`.
+- **A bare `cargo build`/`cargo run`/`cargo test` produces a broken binary.**
+  Any of these rebuilds `target/debug/vaultspend.exe` through cargo's own
+  build graph, which can't find its own embedded frontend — launching it
+  renders `asset not found: index.html` instead of the app, and any
+  WebDriver session against it times out waiting for `.brand-word` to
+  exist. `cargo test --workspace` is an easy trap here: it looks read-only
+  but still builds the `vaultspend` bin target as part of the workspace, so
+  running it *after* a working `tauri build` silently clobbers the binary
+  for driving purposes — the tests themselves still pass, and you won't
+  notice until the next e2e run or manual drive fails to launch. Always
+  rebuild via `npx tauri build --debug --no-bundle` as the last step before
+  driving the app, even if you only ran `cargo test` since the last build.
 - **WebdriverIO's `tag*=text` / `tag=text` shorthand only matches a *bare*
   `"tag*=text"` pattern.** Combine it with a descendant combinator like
   `"nav button*=Budget"` and it silently falls through to being sent to
