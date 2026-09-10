@@ -198,12 +198,15 @@ function compareTransactionsBy(a: Transaction, b: Transaction, column: LedgerSor
 /** What deleting a transaction will do to its account's number, worded to
  * match what that account actually displays — "balance" for cash/other
  * accounts, "amount owed" for credit/loan (see AccountsView's identical
- * framing). A credit account's tracked value is *available* credit, not
- * owed (owed = limit − available), so removing a negative (spending)
- * transaction there raises available and therefore *lowers* what's owed —
- * the opposite direction from every other account type, where the tracked
- * value and "owed" move together. Returns `null` for a zero amount (no
- * impact to explain) or an unknown account. */
+ * framing). Credit and loan both track "amount owed" in a way that moves
+ * opposite a plain balance: a credit account's tracked value is
+ * *available* credit (owed = limit − available), and a loan's
+ * `current_balance` is owed directly but a positive (payment) transaction
+ * *reduces* it (see `account_balance_as_of` on the Rust side) — so for
+ * both, removing a negative transaction raises the tracked number and
+ * therefore *lowers* what's owed, the opposite direction from every other
+ * account type, where the tracked value and "owed" move together. Returns
+ * `null` for a zero amount (no impact to explain) or an unknown account. */
 function describeDeleteImpact(amount: string, account: Account | undefined): string | null {
   if (!account) return null;
   const parsed = parseFloat(amount);
@@ -213,7 +216,7 @@ function describeDeleteImpact(amount: string, account: Account | undefined): str
   const isLoan = account.account_type === "loan";
   const label = isCredit || isLoan ? "amount owed" : "balance";
   const trackedValueGoesUp = parsed < 0; // removing a negative (expense) frees up that much
-  const displayedNumberGoesUp = isCredit ? !trackedValueGoesUp : trackedValueGoesUp;
+  const displayedNumberGoesUp = isCredit || isLoan ? !trackedValueGoesUp : trackedValueGoesUp;
   const direction = displayedNumberGoesUp ? "increase" : "decrease";
   return `Deleting this will ${direction} ${account.name}'s ${label} by ${formatAmount(Math.abs(parsed).toFixed(2))}.`;
 }

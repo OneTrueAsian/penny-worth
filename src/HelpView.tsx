@@ -321,9 +321,14 @@ const IMPORTING_ENTRY: HelpEntry = {
         </li>
         <li>
           Confirm which way the amounts go. Vault Spend's convention is
-          <em> negative = money out</em>; if your file shows charges as
-          positive numbers (common for credit card exports), choose "Flip
-          the signs" — otherwise "Keep as-is."
+          <em> negative = money out</em> for a checking/savings/investment
+          account; if your file shows charges as positive numbers (common
+          for credit card exports), choose "Flip the signs" — otherwise
+          "Keep as-is." For a credit card or loan account specifically,
+          the convention is the other way around — a payment is
+          <em> positive</em> (it reduces what's owed) and a charge or new
+          debt is negative — so check a payment row's sign in the preview
+          before confirming.
         </li>
         <li>
           You'll see a preview of every row before anything is saved. Rows
@@ -561,7 +566,10 @@ const FAQ_ENTRIES: FaqEntry[] = [
         Yes — each account type tracks its balance the way that type
         actually works: a credit card's balance is available credit, a
         loan's is what's still owed, and a checking/savings/investment/other
-        account's is a literal balance.
+        account's is a literal balance. For both credit and loan accounts,
+        a payment is entered as a <em>positive</em> amount and reduces what's
+        owed; a charge or new borrowing is negative and increases it — the
+        same convention for both account types.
       </p>
     ),
   },

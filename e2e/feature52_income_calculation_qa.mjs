@@ -16,7 +16,7 @@ import { seedFixture } from "./lib/seed.mjs";
 //   Checking (checking) start 5000.00: +4000 -150 -60 -1000 -500 -300 = 1990 -> current 6990.00
 //   HYSA     (savings)  start 0.00:    +1000                          -> current 1000.00
 //   Capital One (credit) start 2000.00 (limit): -600 +500 = -100      -> current 1900.00 (owed 100.00)
-//   Car Loan (loan) start 10000.00 (owed): -300 (generated payment)   -> current 9700.00 (owed 9700.00)
+//   Car Loan (loan) start 10000.00 (owed): +300 (generated payment)   -> current 9700.00 (owed 9700.00)
 //
 //   monthly income  = 4000.00 (Paycheck only; the $1,000 transfer-in and
 //                      the $500 credit card payment are both excluded)
@@ -75,7 +75,7 @@ txn(credit_id, today, "Amazon Purchase", "-600.00", "Shopping", joint_id, "fp6")
 txn(checking_id, today, "WITHDRAWAL CAPITAL ONE", "-500.00", "Credit Card Payment", joint_id, "fp7")
 txn(credit_id, today, "CAPITAL ONE ONLINE PYMT", "500.00", "Credit Card Payment", joint_id, "fp8")
 txn(checking_id, today, "Auto Loan Payment", "-300.00", "Auto Loan", alex_id, "fp9")
-txn(loan_id, today, "Payment applied from: Auto Loan Payment", "-300.00", "Auto Loan", alex_id, "fp10")
+txn(loan_id, today, "Payment applied from: Auto Loan Payment", "300.00", "Auto Loan", alex_id, "fp10")
 
 # Link fp9 (source) -> fp10 (generated) as a proper debt payment, the same
 # shape apply_debt_payment itself produces.

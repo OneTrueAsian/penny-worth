@@ -91,9 +91,10 @@ pub struct TransactionSplit {
 }
 
 /// An account as it exists in the store, with the row id `save_transactions`
-/// and `all_transactions` reference it by, plus its balance — computed
-/// with the same starting-balance-plus-transactions formula for every
-/// account type, though what it *means* differs by type:
+/// and `all_transactions` reference it by, plus its balance — computed by
+/// `account_balance_as_of` from starting balance and transactions for
+/// every account type, though what it *means* (and which direction a
+/// transaction moves it) differs by type:
 /// - Checking/savings/investment/other: `current_balance` is the literal
 ///   balance (a deposit is a positive transaction, a withdrawal negative).
 /// - Credit: `starting_balance` is the credit limit, so owed starts at $0;
@@ -102,8 +103,11 @@ pub struct TransactionSplit {
 /// - Loan: `starting_balance` is the amount *currently owed* (not the
 ///   original principal), so the whole thing is debt from day one, same
 ///   as a fresh cash account's balance counts in full. `current_balance`
-///   is what's still owed (a payment is a negative transaction — same
-///   sign as any other outflow — and reduces it).
+///   is what's still owed — a payment is a **positive** transaction and
+///   reduces it, same sign convention as a credit payment; a negative
+///   transaction represents new borrowing and increases what's owed. This
+///   is the one account type where a transaction's sign is *subtracted*
+///   rather than added — see `account_balance_as_of`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredAccount {
     pub id: i64,
@@ -591,7 +595,8 @@ impl Store {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 apply_to_debt_enabled INTEGER NOT NULL DEFAULT 1,
                 split_purchases_enabled INTEGER NOT NULL DEFAULT 1,
-                envelope_caps_enabled INTEGER NOT NULL DEFAULT 1
+                envelope_caps_enabled INTEGER NOT NULL DEFAULT 1,
+                loan_sign_convention_migrated INTEGER NOT NULL DEFAULT 0
             );",
         )?;
         self.migrate_add_account_id_if_missing()?;
@@ -619,6 +624,8 @@ impl Store {
         self.migrate_add_deleted_at_if_missing()?;
         self.migrate_add_holdings_prev_close_if_missing()?;
         self.migrate_fix_stale_manual_balance_override_reset_dates()?;
+        self.migrate_add_loan_sign_convention_migrated_if_missing()?;
+        self.migrate_flip_loan_transaction_signs_if_needed()?;
         // These reference columns only guaranteed to exist once every
         // migration above has run — a database from before those columns
         // existed has a table the initial `CREATE TABLE IF NOT EXISTS` up
@@ -1098,6 +1105,85 @@ impl Store {
         Ok(())
     }
 
+    /// Same pattern as `migrate_add_starting_balance_if_missing`: a
+    /// database from before the loan sign convention flip has no
+    /// `loan_sign_convention_migrated` column on `app_settings`. `0`
+    /// (not yet migrated) is the correct backfill for every existing
+    /// database — `migrate_flip_loan_transaction_signs_if_needed`, right
+    /// below, is what actually acts on it.
+    fn migrate_add_loan_sign_convention_migrated_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(app_settings)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_column = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "loan_sign_convention_migrated" {
+                has_column = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_column {
+            return Ok(());
+        }
+
+        self.conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN loan_sign_convention_migrated INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// One-time flip of the loan sign convention: every loan-account
+    /// transaction already in the database was entered under the old rule
+    /// (negative = payment, positive = new debt) before
+    /// `account_balance_as_of` switched loans to the credit-matching rule
+    /// (positive = payment, reducing what's owed — see `StoredAccount`'s
+    /// doc comment). Negating every existing loan transaction's stored
+    /// amount here keeps `current_balance` numerically identical to what
+    /// it was before the flip; only newly entered transactions are
+    /// expected to follow the new rule directly.
+    ///
+    /// Unlike every other migration in this file, this can't be made
+    /// idempotent by detecting an "old shape" — a stored amount like
+    /// `-45.00` is a valid transaction under both conventions, so there's
+    /// no data shape to key off. It uses an explicit one-time flag instead
+    /// (`app_settings.loan_sign_convention_migrated`), same idea as this
+    /// file's `_enabled` feature toggles but recording "already done"
+    /// rather than a user preference.
+    fn migrate_flip_loan_transaction_signs_if_needed(&self) -> rusqlite::Result<()> {
+        let already_migrated: bool = self
+            .conn
+            .query_row("SELECT loan_sign_convention_migrated FROM app_settings WHERE id = 1", [], |row| row.get(0))
+            .unwrap_or(false);
+        if already_migrated {
+            return Ok(());
+        }
+
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.amount FROM transactions t
+             JOIN accounts a ON a.id = t.account_id
+             WHERE a.account_type = 'loan'",
+        )?;
+        let loan_transactions: Vec<(i64, String)> =
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+
+        for (id, amount_str) in loan_transactions {
+            let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
+            self.conn.execute("UPDATE transactions SET amount = ?1 WHERE id = ?2", params![(-amount).to_string(), id])?;
+        }
+
+        self.conn.execute(
+            "INSERT INTO app_settings (id, loan_sign_convention_migrated) VALUES (1, 1)
+             ON CONFLICT(id) DO UPDATE SET loan_sign_convention_migrated = 1",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// Same pattern as `migrate_add_account_id_if_missing`: a database from
     /// before the confidence indicator existed has no `confidence` column
     /// at all. `NULL` is already the correct value for every existing row
@@ -1414,6 +1500,7 @@ impl Store {
     fn account_balance_as_of(
         &self,
         account_id: i64,
+        account_type: &str,
         starting_balance: Decimal,
         as_of: NaiveDate,
     ) -> rusqlite::Result<Decimal> {
@@ -1471,7 +1558,18 @@ impl Store {
             .iter()
             .map(|a| Decimal::from_str(a).expect("amount stored by this crate must be valid"))
             .sum();
-        Ok(base_value + total)
+        // A loan's current_balance is amount owed directly (see
+        // StoredAccount's doc comment) — a payment should reduce that, so
+        // for a loan specifically, a positive transaction subtracts and a
+        // negative one adds, the mirror image of every other account type
+        // (including credit, whose current_balance is available credit,
+        // not owed — a payment there is already positive-adds-to-available
+        // under the ordinary `+` below).
+        if account_type == "loan" {
+            Ok(base_value - total)
+        } else {
+            Ok(base_value + total)
+        }
     }
 
     /// Every investment account's total holdings value (`SUM(shares *
@@ -1527,7 +1625,7 @@ impl Store {
             let (id, name, account_type, starting_balance_str, institution, mask, interest_rate_str, excluded_from_debt_payoff, member_id, member_name) = row?;
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
-            let mut current_balance = self.account_balance_as_of(id, starting_balance, today)?;
+            let mut current_balance = self.account_balance_as_of(id, &account_type, starting_balance, today)?;
             // An investment account's real worth is what it holds, not
             // whatever cash transactions happen to have touched the
             // account — once it has any holdings tracked, their total
@@ -1705,10 +1803,10 @@ impl Store {
     pub fn roll_forward_monthly_balances(&self, today: NaiveDate) -> rusqlite::Result<Vec<(i64, String, Decimal)>> {
         let period = format!("{:04}-{:02}", today.year(), today.month());
 
-        let mut stmt = self.conn.prepare("SELECT id, name, starting_balance FROM accounts")?;
-        let accounts: Vec<(i64, String, String)> = stmt
+        let mut stmt = self.conn.prepare("SELECT id, name, starting_balance, account_type FROM accounts")?;
+        let accounts: Vec<(i64, String, String, String)> = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -1727,7 +1825,7 @@ impl Store {
         let reset_date = today.pred_opt().expect("NaiveDate::pred_opt only fails at the calendar's minimum date");
 
         let mut rolled = Vec::new();
-        for (id, name, starting_balance_str) in accounts {
+        for (id, name, starting_balance_str, account_type) in accounts {
             let already_done: bool = self.conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM balance_resets WHERE account_id = ?1 AND period = ?2)",
                 params![id, period],
@@ -1739,7 +1837,7 @@ impl Store {
 
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
-            let balance = self.account_balance_as_of(id, starting_balance, reset_date)?;
+            let balance = self.account_balance_as_of(id, &account_type, starting_balance, reset_date)?;
 
             self.conn.execute(
                 "INSERT INTO balance_resets (account_id, period, reset_date, balance) VALUES (?1, ?2, ?3, ?4)",
@@ -1812,11 +1910,15 @@ impl Store {
     /// the earlier correction instead of stacking a second one. An unknown
     /// id is a harmless no-op, same convention as `set_account_starting_balance`.
     pub fn set_account_balance_override(&self, id: i64, balance: Decimal, as_of: NaiveDate) -> rusqlite::Result<()> {
-        let exists: bool =
-            self.conn.query_row("SELECT EXISTS(SELECT 1 FROM accounts WHERE id = ?1)", params![id], |row| row.get(0))?;
-        if !exists {
-            return Ok(());
-        }
+        let account_type: String = match self.conn.query_row(
+            "SELECT account_type FROM accounts WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        ) {
+            Ok(account_type) => account_type,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(e) => return Err(e),
+        };
 
         let mut stmt = self
             .conn
@@ -1828,7 +1930,12 @@ impl Store {
             .iter()
             .map(|a| Decimal::from_str(a).expect("amount stored by this crate must be valid"))
             .sum();
-        let checkpoint_balance = balance - already_posted_today;
+        // Mirrors account_balance_as_of's group-aware direction: a loan's
+        // current_balance is netted by subtracting transactions, so
+        // undoing today's already-posted ones ahead of that subtraction
+        // means adding them back here instead of subtracting.
+        let checkpoint_balance =
+            if account_type == "loan" { balance + already_posted_today } else { balance - already_posted_today };
 
         let period = format!("manual:{as_of}");
         let reset_date = as_of.pred_opt().expect("NaiveDate::pred_opt only fails at the calendar's minimum date");
@@ -2663,15 +2770,16 @@ impl Store {
     /// how much counts.
     ///
     /// Records a new transaction on the debt account itself, signed to
-    /// match what a real imported payment would look like: negative for a
-    /// loan (`current_balance` there *is* the amount owed), positive for
-    /// credit (`current_balance` is *available* credit — a payment
-    /// restores it). It copies the source transaction's own category and
-    /// notes where it came from in its description. A cash-funded payment
-    /// already reduces net worth by `amount` on the source side; this
-    /// generated row increases it by the same amount on the debt side, so
-    /// total net worth is correctly unaffected — only its composition
-    /// shifts from cash to less debt.
+    /// match what a real imported payment would look like: positive,
+    /// whether the debt is a loan (`current_balance` there *is* the amount
+    /// owed, and a positive transaction reduces it — see
+    /// `account_balance_as_of`) or credit (`current_balance` is *available*
+    /// credit — a payment restores it, same sign either way). It copies
+    /// the source transaction's own category and notes where it came from
+    /// in its description. A cash-funded payment already reduces net worth
+    /// by `amount` on the source side; this generated row increases it by
+    /// the same amount on the debt side, so total net worth is correctly
+    /// unaffected — only its composition shifts from cash to less debt.
     ///
     /// One source transaction can be applied to one debt account at a
     /// time (`UNIQUE(source_transaction_id)`) — call
@@ -2688,17 +2796,7 @@ impl Store {
             params![source_transaction_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let account_type_str: String = self.conn.query_row(
-            "SELECT account_type FROM accounts WHERE id = ?1",
-            params![debt_account_id],
-            |row| row.get(0),
-        )?;
-        let account_type = AccountType::parse(&account_type_str)
-            .expect("account_type stored by this crate must be valid");
-        let signed_amount = match account_type.group() {
-            "loan" => -amount.abs(),
-            _ => amount.abs(), // credit — paying it down increases available credit
-        };
+        let signed_amount = amount.abs();
 
         let description = format!("Payment applied from: {source_description}");
         let generated = Transaction {
@@ -4770,7 +4868,8 @@ impl Store {
                 let days_elapsed = (today - window_start).num_days().max(1);
                 let mut balance_at_window_start = Decimal::ZERO;
                 for a in &cash_accounts {
-                    balance_at_window_start += self.account_balance_as_of(a.id, a.starting_balance, window_start)?;
+                    balance_at_window_start +=
+                        self.account_balance_as_of(a.id, a.account.account_type.as_str(), a.starting_balance, window_start)?;
                 }
                 (starting_balance - balance_at_window_start) / Decimal::from(days_elapsed)
             }
@@ -5012,14 +5111,16 @@ impl Store {
 
     /// Total net worth *as of* a given date — each account's balance
     /// computed by `account_balance_as_of` (so a monthly reset, if any,
-    /// is honored exactly as it would be for "now"). Cash/investment/
-    /// other accounts add their balance as-is; a credit account's
-    /// `starting_balance` is a limit (owed starts at $0, so only the
-    /// change since it — `balance - starting_balance` — counts); a
-    /// loan's balance directly represents what's owed (so it's
-    /// subtracted in full) — no snapshot storage beyond `balance_resets`
-    /// needed, since this is fully computable from data already on hand
-    /// for any date, past or present.
+    /// is honored exactly as it would be for "now", and a loan's
+    /// transactions are already netted in the "positive = payment"
+    /// direction by that function). Cash/investment/other accounts add
+    /// their balance as-is; a credit account's `starting_balance` is a
+    /// limit (owed starts at $0, so only the change since it —
+    /// `balance - starting_balance` — counts); a loan's balance directly
+    /// represents what's owed (so it's subtracted in full) — no snapshot
+    /// storage beyond `balance_resets` needed, since this is fully
+    /// computable from data already on hand for any date, past or
+    /// present.
     pub fn net_worth_as_of(&self, as_of: NaiveDate) -> rusqlite::Result<Decimal> {
         Ok(self.net_worth_breakdown_as_of(as_of)?.net_worth)
     }
@@ -5063,7 +5164,7 @@ impl Store {
         for (id, name, account_type, starting_balance_str) in accounts {
             let starting_balance = Decimal::from_str(&starting_balance_str)
                 .expect("starting_balance stored by this crate must be valid");
-            let mut balance = self.account_balance_as_of(id, starting_balance, as_of)?;
+            let mut balance = self.account_balance_as_of(id, &account_type, starting_balance, as_of)?;
             let account_type =
                 AccountType::parse(&account_type).expect("account_type stored by this crate must be valid");
             let group = account_type.group();
@@ -6168,6 +6269,89 @@ mod tests {
 
         let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
         assert_eq!(accounts[0].current_balance, "19900.00".parse().unwrap());
+    }
+
+    #[test]
+    fn set_account_balance_override_nets_out_a_same_day_transaction_on_a_loan_account() {
+        // Same scenario as the cash-account version above, but for a loan
+        // — where a same-day transaction must be netted the *other*
+        // direction (added back, not subtracted) since a loan's
+        // current_balance is netted by subtracting transactions, not
+        // adding them (see account_balance_as_of).
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Mortgage", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "10000.00".parse().unwrap()).unwrap();
+        store.save_transactions(loan, &[tx("2026-09-04", "Payment", "500.00")]).unwrap();
+
+        store.set_account_balance_override(loan, "8000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "8000.00".parse().unwrap(),
+            "a payment already posted the same day must be netted out, so the typed amount owed is exactly what shows"
+        );
+    }
+
+    #[test]
+    fn set_account_balance_override_still_lets_a_new_same_day_transaction_move_a_loans_balance_after_netting() {
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Mortgage", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "10000.00".parse().unwrap()).unwrap();
+        store.save_transactions(loan, &[tx("2026-09-04", "Payment", "500.00")]).unwrap();
+
+        store.set_account_balance_override(loan, "8000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+        // A genuinely new payment, added *after* the correction, dated the
+        // same day — must still reduce what's owed from here.
+        store.save_transactions(loan, &[tx("2026-09-04", "Extra Payment", "200.00")]).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(accounts[0].current_balance, "7800.00".parse().unwrap());
+    }
+
+    #[test]
+    fn migrate_flip_loan_transaction_signs_flips_existing_loan_transactions_but_not_others() {
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Mortgage", AccountType::Loan).unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.save_transactions(checking, &[tx("2026-08-05", "Groceries", "-50.00")]).unwrap();
+
+        // Simulate a pre-flip database: reset the migrated flag and insert
+        // a transaction stored under the *old* convention (a loan payment
+        // was negative), bypassing save_transactions/apply_debt_payment
+        // since both already write under today's flipped convention.
+        store.conn.execute("UPDATE app_settings SET loan_sign_convention_migrated = 0 WHERE id = 1", []).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint)
+                 VALUES (?1, '2026-08-05', 'Old-style Payment', '-500.00', NULL, 'old-style-fp')",
+                params![loan],
+            )
+            .unwrap();
+
+        store.migrate_flip_loan_transaction_signs_if_needed().unwrap();
+
+        let loan_amount: String = store
+            .conn
+            .query_row("SELECT amount FROM transactions WHERE account_id = ?1", params![loan], |row| row.get(0))
+            .unwrap();
+        assert_eq!(loan_amount, "500.00", "the old-convention loan transaction must be negated");
+
+        let checking_amount: String = store
+            .conn
+            .query_row("SELECT amount FROM transactions WHERE account_id = ?1", params![checking], |row| row.get(0))
+            .unwrap();
+        assert_eq!(checking_amount, "-50.00", "a non-loan account's transactions must be untouched");
+
+        // Idempotent: running it again (as every app launch does) must not
+        // flip an already-migrated database a second time.
+        store.migrate_flip_loan_transaction_signs_if_needed().unwrap();
+        let loan_amount_again: String = store
+            .conn
+            .query_row("SELECT amount FROM transactions WHERE account_id = ?1", params![loan], |row| row.get(0))
+            .unwrap();
+        assert_eq!(loan_amount_again, "500.00", "must not flip a second time once already migrated");
     }
 
     #[test]
@@ -11556,7 +11740,7 @@ mod tests {
         let loan = store.get_or_create_account("Auto Loan", AccountType::Loan).unwrap();
         store.set_account_starting_balance(loan, "15000.00".parse().unwrap()).unwrap();
         store.save_transactions(card, &[tx("2026-08-05", "Grocery Store", "-300.00")]).unwrap();
-        store.save_transactions(loan, &[tx("2026-08-10", "Loan Payment", "-500.00")]).unwrap();
+        store.save_transactions(loan, &[tx("2026-08-10", "Loan Payment", "500.00")]).unwrap();
 
         let from: NaiveDate = "2026-07-31".parse().unwrap();
         let to: NaiveDate = "2026-08-31".parse().unwrap();
@@ -11592,7 +11776,7 @@ mod tests {
         let loan = store.get_or_create_account("Auto Loan", AccountType::Loan).unwrap();
         store.set_account_starting_balance(loan, "15000.00".parse().unwrap()).unwrap();
         store
-            .save_transactions(loan, &[tx("2026-08-05", "Loan Payment", "-500.00")])
+            .save_transactions(loan, &[tx("2026-08-05", "Loan Payment", "500.00")])
             .unwrap();
 
         let net_worth = store.net_worth_as_of("2026-08-31".parse().unwrap()).unwrap();
@@ -11609,7 +11793,7 @@ mod tests {
         let loan = store.get_or_create_account("Mortgage", AccountType::Loan).unwrap();
         store.set_account_starting_balance(loan, "300000.00".parse().unwrap()).unwrap();
         store
-            .save_transactions(loan, &[tx("2026-08-05", "Payment", "-1000.00")])
+            .save_transactions(loan, &[tx("2026-08-05", "Payment", "1000.00")])
             .unwrap(); // owed drops to 299000 during August
 
         let rolled = store.roll_forward_monthly_balances("2026-09-01".parse().unwrap()).unwrap();

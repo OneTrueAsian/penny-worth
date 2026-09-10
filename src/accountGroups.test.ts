@@ -82,7 +82,7 @@ describe("isIncomeTransaction", () => {
     );
   });
 
-  it("excludes a positive amount on a loan account — an escrow refund isn't income", () => {
+  it("excludes a positive amount on a loan account — a payment isn't income", () => {
     expect(isIncomeTransaction(tx({ amount: "75.00", account_id: 3, account_name: "Car Loan" }), accounts)).toBe(false);
   });
 

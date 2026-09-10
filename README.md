@@ -124,9 +124,13 @@ From the **Ledger** tab, click **"Import transactions…"**:
 2. Choose the file exported from your bank or credit card — CSV, OFX/QFX,
    or QIF are all supported.
 3. Confirm which way the amounts go. Vault Spend's convention is
-   *negative = money out*; if your file shows charges as positive numbers
-   (common for credit card exports), choose "Flip the signs" — otherwise
-   "Keep as-is."
+   *negative = money out* for a checking/savings/investment account; if
+   your file shows charges as positive numbers (common for credit card
+   exports), choose "Flip the signs" — otherwise "Keep as-is." For a
+   credit card or loan account specifically, it's the other way around —
+   a payment is *positive* (it reduces what's owed) and a charge or new
+   debt is negative — so check a payment row's sign in the preview before
+   confirming.
 4. You'll see a preview of every row before anything is saved. Rows that
    look like duplicates of something already in your ledger are
    unchecked by default (see the FAQ on duplicates) — check or uncheck
@@ -264,7 +268,10 @@ note.
 Yes — each account type tracks its balance the way that type actually
 works: a credit card's balance is available credit, a loan's is what's
 still owed, and a checking/savings/investment/other account's is a
-literal balance.
+literal balance. For both credit and loan accounts, a payment is entered
+as a *positive* amount and reduces what's owed; a charge or new borrowing
+is negative and increases it — the same convention for both account
+types.
 
 **How is the cash-flow forecast calculated?**
 It's based on your actual history, not your listed recurring bills: it

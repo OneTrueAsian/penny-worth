@@ -133,5 +133,6 @@ export const CHANGELOG: Record<string, string[]> = {
     "Penny Worth is now Vault Spend — a new name, new tagline (\"Own your Data, Own your Money!\"), and the Dashboard's \"Ask Pennyworth\" box is now \"Ask the Vault.\" Nothing about your data or how the app works has changed.",
     "Settings now has an About section noting Vault Spend is an independent project, not affiliated with any external financial services or wallet providers.",
     "Settings' Icon credits is now a collapsed section you can expand, instead of a long list shown by default.",
+    "Fixed: a loan account's balance worked backwards from how a credit card's does — a positive transaction increased what you owed, and a negative one paid it down. Loans now match credit cards: a payment is entered as a positive amount and reduces what's owed; a negative amount represents new borrowing. Existing loan transactions were automatically converted to the new convention, with no change to any account's tracked balance.",
   ],
 };
