@@ -31,6 +31,7 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
     category_source: "user",
     confidence: null,
     applied_to_debt: null,
+    principal_amount: null,
     split_count: 0,
     tags: [],
     member_id: null,

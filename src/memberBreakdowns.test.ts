@@ -14,6 +14,7 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
     account_id: 1,
     account_name: "Everyday Checking",
     applied_to_debt: null,
+    principal_amount: null,
     split_count: 0,
     tags: [],
     member_id: 3,

@@ -134,5 +134,6 @@ export const CHANGELOG: Record<string, string[]> = {
     "Settings now has an About section noting Vault Spend is an independent project, not affiliated with any external financial services or wallet providers.",
     "Settings' Icon credits is now a collapsed section you can expand, instead of a long list shown by default.",
     "Fixed: a loan account's balance worked backwards from how a credit card's does — a positive transaction increased what you owed, and a negative one paid it down. Loans now match credit cards: a payment is entered as a positive amount and reduces what's owed; a negative amount represents new borrowing. Existing loan transactions were automatically converted to the new convention, with no change to any account's tracked balance.",
+    "A transaction recorded directly on a loan account (a mortgage payment, say) can now \"Split principal →\" to specify that only part of it — not the whole payment — counts toward what's owed, the same way \"Apply to a debt\" already let you do for a payment made from a different account.",
   ],
 };

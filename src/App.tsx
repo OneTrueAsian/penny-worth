@@ -796,6 +796,8 @@ function App({
     accountId: "",
     amount: "",
   });
+  const [editingPrincipalId, setEditingPrincipalId] = useState<number | null>(null);
+  const [principalDraft, setPrincipalDraft] = useState("");
   const [expandedSplitId, setExpandedSplitId] = useState<number | null>(null);
   const [splitLines, setSplitLines] = useState<{ category: string; amount: string; note: string }[]>([]);
   const [reviewIds, setReviewIds] = useState<Set<number> | null>(null);
@@ -2440,6 +2442,31 @@ function App({
     }
   }
 
+  function startEditingPrincipal(t: Transaction) {
+    setEditingPrincipalId(t.id);
+    setPrincipalDraft(t.principal_amount ?? t.amount);
+  }
+
+  async function handleSetPrincipalAmount(id: number) {
+    if (!principalDraft.trim()) return;
+    try {
+      await invoke("update_transaction_principal_amount", { id, principalAmount: principalDraft.trim() });
+      setEditingPrincipalId(null);
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
+  async function handleResetPrincipalAmount(id: number) {
+    try {
+      await invoke("update_transaction_principal_amount", { id, principalAmount: null });
+      await refresh();
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+
   async function toggleSplitEditor(t: Transaction) {
     if (expandedSplitId === t.id) {
       setExpandedSplitId(null);
@@ -3434,7 +3461,35 @@ function App({
               </td>
               {appSettings.apply_to_debt_enabled && (
                 <td className="debt-col">
-                  {t.applied_to_debt ? (
+                  {accounts.find((a) => a.id === t.account_id)?.account_type === "loan" ? (
+                    editingPrincipalId === t.id ? (
+                      <span className="debt-apply-form">
+                        <input
+                          className="debt-apply-amount"
+                          value={principalDraft}
+                          onChange={(e) => setPrincipalDraft(e.target.value)}
+                          title="How much of this transaction counts toward what's owed (e.g. just the principal on a mortgage payment)"
+                        />
+                        <button type="button" className="debt-apply-confirm" onClick={() => handleSetPrincipalAmount(t.id)}>
+                          Save
+                        </button>
+                        <button type="button" className="modal-secondary" onClick={() => setEditingPrincipalId(null)}>
+                          Cancel
+                        </button>
+                      </span>
+                    ) : t.principal_amount !== null ? (
+                      <span className="debt-applied-badge">
+                        Principal: {formatAmount(t.principal_amount)}
+                        <button type="button" className="modal-secondary" onClick={() => handleResetPrincipalAmount(t.id)}>
+                          Reset
+                        </button>
+                      </span>
+                    ) : (
+                      <button type="button" className="modal-secondary debt-apply-trigger" onClick={() => startEditingPrincipal(t)}>
+                        Split principal →
+                      </button>
+                    )
+                  ) : t.applied_to_debt ? (
                     <span className="debt-applied-badge">
                       → {t.applied_to_debt.debt_account_name} ({formatAmount(t.applied_to_debt.amount)})
                       <button type="button" className="modal-secondary" onClick={() => handleUnapplyDebtPayment(t.id)}>
@@ -3467,8 +3522,10 @@ function App({
                       </button>
                     </span>
                   ) : (
+                    // The loan case is already handled above — only credit
+                    // (excluded, a payment there needs no principal split)
+                    // and every non-debt account reach here.
                     debtAccounts.length > 0 &&
-                    accounts.find((a) => a.id === t.account_id)?.account_type !== "loan" &&
                     accounts.find((a) => a.id === t.account_id)?.account_type !== "credit" && (
                       <button type="button" className="modal-secondary debt-apply-trigger" onClick={() => startApplyingDebtPayment(t)}>
                         Apply to a debt →

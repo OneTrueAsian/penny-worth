@@ -369,6 +369,7 @@ pub struct TransactionDto {
     pub account_id: i64,
     pub account_name: String,
     pub applied_to_debt: Option<AppliedDebtPaymentDto>,
+    pub principal_amount: Option<String>,
     pub split_count: i64,
     pub tags: Vec<String>,
     pub member_id: Option<i64>,
@@ -1153,6 +1154,7 @@ pub fn list_transactions(state: tauri::State<AppStateHandle>) -> Result<Vec<Tran
                 debt_account_name: d.debt_account_name,
                 amount: d.amount.to_string(),
             }),
+            principal_amount: s.principal_amount.map(|a| a.to_string()),
             split_count: s.split_count,
             tags: s.tags,
             member_id: s.member_id,
@@ -1415,6 +1417,20 @@ pub fn update_transaction_amount(
     state
         .store
         .update_transaction_amount(id, amount)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_transaction_principal_amount(
+    id: i64,
+    principal_amount: Option<String>,
+    state: tauri::State<AppStateHandle>,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|_| "app state poisoned".to_string())?;
+    let principal_amount = principal_amount.map(|a| parse_amount(&a)).transpose()?;
+    state
+        .store
+        .update_transaction_principal_amount(id, principal_amount)
         .map_err(|e| e.to_string())
 }
 

@@ -81,6 +81,7 @@ export type Transaction = {
   account_id: number;
   account_name: string;
   applied_to_debt: AppliedDebtPayment | null;
+  principal_amount: string | null;
   split_count: number;
   tags: string[];
   member_id: number | null;

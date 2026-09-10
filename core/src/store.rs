@@ -61,6 +61,13 @@ pub struct StoredTransaction {
     pub account_id: i64,
     pub account_name: String,
     pub applied_to_debt: Option<AppliedDebtPayment>,
+    /// Overrides how much of this transaction counts toward its own
+    /// account's balance — only ever meaningful (and only ever set) on a
+    /// loan-account transaction recorded directly there, e.g. a mortgage
+    /// payment that bundles principal, interest, and escrow. `None` means
+    /// no override: the full `transaction.amount` counts, same as every
+    /// other account type. See `Store::account_balance_as_of`.
+    pub principal_amount: Option<Decimal>,
     pub split_count: i64,
     pub tags: Vec<String>,
     pub member_id: Option<i64>,
@@ -626,6 +633,7 @@ impl Store {
         self.migrate_fix_stale_manual_balance_override_reset_dates()?;
         self.migrate_add_loan_sign_convention_migrated_if_missing()?;
         self.migrate_flip_loan_transaction_signs_if_needed()?;
+        self.migrate_add_principal_amount_if_missing()?;
         // These reference columns only guaranteed to exist once every
         // migration above has run — a database from before those columns
         // existed has a table the initial `CREATE TABLE IF NOT EXISTS` up
@@ -1294,6 +1302,37 @@ impl Store {
         Ok(())
     }
 
+    /// Same pattern once more: `principal_amount` lets a transaction
+    /// recorded directly on a loan account (as opposed to via
+    /// `apply_debt_payment`) specify that only part of it should count
+    /// toward what's owed — a mortgage payment bundles principal, interest,
+    /// and escrow, and only the principal portion should move the balance
+    /// (see `account_balance_as_of`, which reads
+    /// `COALESCE(principal_amount, amount)`). `NULL` for every pre-existing
+    /// row means "no override," i.e. today's already-correct full-amount
+    /// behavior, so nothing changes for anyone not using this.
+    fn migrate_add_principal_amount_if_missing(&self) -> rusqlite::Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(transactions)")?;
+        let mut rows = stmt.query([])?;
+        let mut has_principal_amount = false;
+        while let Some(row) = rows.next()? {
+            let column_name: String = row.get(1)?;
+            if column_name == "principal_amount" {
+                has_principal_amount = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+
+        if has_principal_amount {
+            return Ok(());
+        }
+
+        self.conn.execute("ALTER TABLE transactions ADD COLUMN principal_amount TEXT", [])?;
+        Ok(())
+    }
+
     /// Same pattern once more: `excluded_from_debt_payoff` lets a debt
     /// account (e.g. a credit card paid in full every month) opt out of
     /// `debt_payoff_projection` without deleting the account itself.
@@ -1536,10 +1575,15 @@ impl Store {
             None => (starting_balance, None),
         };
 
+        // COALESCE(principal_amount, amount): a transaction recorded
+        // directly on a loan account can override how much of it counts
+        // toward the balance (see migrate_add_principal_amount_if_missing)
+        // — NULL for every transaction that never sets one, so this is a
+        // no-op everywhere except a row that explicitly opted in.
         let transaction_amounts: Vec<String> = match since_date {
             Some(since) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT amount FROM transactions WHERE account_id = ?1 AND date > ?2 AND date <= ?3 AND deleted_at IS NULL",
+                    "SELECT COALESCE(principal_amount, amount) FROM transactions WHERE account_id = ?1 AND date > ?2 AND date <= ?3 AND deleted_at IS NULL",
                 )?;
                 let rows =
                     stmt.query_map(params![account_id, since.to_string(), as_of.to_string()], |row| row.get(0))?;
@@ -1548,7 +1592,7 @@ impl Store {
             None => {
                 let mut stmt = self
                     .conn
-                    .prepare("SELECT amount FROM transactions WHERE account_id = ?1 AND date <= ?2 AND deleted_at IS NULL")?;
+                    .prepare("SELECT COALESCE(principal_amount, amount) FROM transactions WHERE account_id = ?1 AND date <= ?2 AND deleted_at IS NULL")?;
                 let rows = stmt.query_map(params![account_id, as_of.to_string()], |row| row.get(0))?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             }
@@ -1920,9 +1964,9 @@ impl Store {
             Err(e) => return Err(e),
         };
 
-        let mut stmt = self
-            .conn
-            .prepare("SELECT amount FROM transactions WHERE account_id = ?1 AND date = ?2 AND deleted_at IS NULL")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT COALESCE(principal_amount, amount) FROM transactions WHERE account_id = ?1 AND date = ?2 AND deleted_at IS NULL",
+        )?;
         let already_posted_today: Vec<String> =
             stmt.query_map(params![id, as_of.to_string()], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
@@ -2329,7 +2373,7 @@ impl Store {
                     dp.debt_account_id, da.name, dp.amount,
                     (SELECT COUNT(*) FROM transaction_splits ts WHERE ts.transaction_id = t.id),
                     GROUP_CONCAT(tt.tag, char(31)),
-                    t.member_id, fm.name
+                    t.member_id, fm.name, t.principal_amount
              FROM transactions t
              JOIN accounts a ON a.id = t.account_id
              LEFT JOIN debt_payments dp ON dp.source_transaction_id = t.id
@@ -2358,6 +2402,7 @@ impl Store {
                 row.get::<_, Option<String>>(13)?,
                 row.get::<_, Option<i64>>(14)?,
                 row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
             ))
         })?;
 
@@ -2380,6 +2425,7 @@ impl Store {
                 tags_str,
                 member_id,
                 member_name,
+                principal_amount_str,
             ) = row?;
             let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
                 .expect("date stored by this crate must be valid");
@@ -2399,6 +2445,8 @@ impl Store {
             let tags = tags_str
                 .map(|s| s.split('\u{1f}').map(str::to_string).collect())
                 .unwrap_or_default();
+            let principal_amount = principal_amount_str
+                .map(|s| Decimal::from_str(&s).expect("amount stored by this crate must be valid"));
             result.push(StoredTransaction {
                 id,
                 transaction: Transaction {
@@ -2412,6 +2460,7 @@ impl Store {
                 account_id,
                 account_name,
                 applied_to_debt,
+                principal_amount,
                 split_count,
                 tags,
                 member_id,
@@ -2449,6 +2498,22 @@ impl Store {
         self.conn.execute(
             "UPDATE transactions SET amount = ?1, fingerprint = ?2 WHERE id = ?3",
             params![amount.to_string(), fp, id],
+        )?;
+        Ok(())
+    }
+
+    /// Sets (or, with `None`, clears) how much of this transaction counts
+    /// toward its own account's balance — for a transaction recorded
+    /// directly on a loan account whose full amount bundles principal with
+    /// interest/escrow (see `account_balance_as_of`, which reads
+    /// `COALESCE(principal_amount, amount)`). Doesn't touch the
+    /// fingerprint — unlike `amount`, this isn't part of what identifies a
+    /// transaction, so correcting it can't affect dedup. An unknown id is
+    /// a harmless no-op, matching `update_transaction_amount`.
+    pub fn update_transaction_principal_amount(&self, id: i64, principal_amount: Option<Decimal>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE transactions SET principal_amount = ?1 WHERE id = ?2",
+            params![principal_amount.map(|a| a.to_string()), id],
         )?;
         Ok(())
     }
@@ -7352,6 +7417,65 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_pre_principal_amount_database_migrates_it_without_losing_data() {
+        // Simulates a real database created before the loan
+        // principal-override column existed: a `transactions` table with
+        // no `principal_amount` column, already holding a real row.
+        let dir = std::env::temp_dir().join(format!("vaultspend-principal-migration-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("pre_principal_amount.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).unwrap();
+        }
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    account_type TEXT NOT NULL
+                );
+                CREATE TABLE transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    amount TEXT NOT NULL,
+                    category TEXT,
+                    category_source TEXT,
+                    confidence REAL,
+                    fingerprint TEXT
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO accounts (name, account_type) VALUES ('Everyday Checking', 'checking')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transactions (account_id, date, description, amount) VALUES (1, '2026-08-05', 'Groceries', '-60.00')",
+                [],
+            )
+            .unwrap();
+        } // old-style connection dropped here
+
+        let store = Store::open(&db_path).unwrap();
+        let transactions = store.all_transactions().unwrap();
+
+        assert_eq!(transactions.len(), 1, "the pre-existing transaction must survive the migration");
+        assert_eq!(transactions[0].transaction.amount, "-60.00".parse().unwrap());
+        assert_eq!(
+            transactions[0].principal_amount, None,
+            "a pre-existing row must default to no override, not a corrupted/garbage value"
+        );
+
+        drop(store);
+        std::fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
     fn check_duplicates_does_not_flag_the_same_content_in_a_different_account() {
         let store = Store::open_in_memory().unwrap();
         let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
@@ -7437,6 +7561,87 @@ mod tests {
     fn update_transaction_amount_on_an_unknown_id_is_a_harmless_no_op() {
         let store = Store::open_in_memory().unwrap();
         store.update_transaction_amount(999, "1.00".parse().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_loan_transactions_principal_override_is_what_actually_moves_the_balance() {
+        // A mortgage payment bundles principal, interest, and escrow — only
+        // $500 of a $2500 payment recorded directly on the loan account
+        // should reduce what's owed.
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Mortgage", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "300000.00".parse().unwrap()).unwrap();
+        store.save_transactions(loan, &[tx("2026-08-05", "Mortgage Payment", "2500.00")]).unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+
+        store.update_transaction_principal_amount(id, Some("500.00".parse().unwrap())).unwrap();
+
+        let accounts = store.list_accounts(far_future()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "299500.00".parse().unwrap(),
+            "only the $500 principal override should reduce what's owed, not the full $2500"
+        );
+    }
+
+    #[test]
+    fn a_loan_transaction_with_no_principal_override_still_uses_its_full_amount() {
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Mortgage", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "300000.00".parse().unwrap()).unwrap();
+        store.save_transactions(loan, &[tx("2026-08-05", "Extra Principal Payment", "500.00")]).unwrap();
+
+        let accounts = store.list_accounts(far_future()).unwrap();
+        assert_eq!(accounts[0].current_balance, "299500.00".parse().unwrap());
+    }
+
+    #[test]
+    fn update_transaction_principal_amount_can_be_cleared_back_to_none() {
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Mortgage", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "300000.00".parse().unwrap()).unwrap();
+        store.save_transactions(loan, &[tx("2026-08-05", "Mortgage Payment", "2500.00")]).unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.update_transaction_principal_amount(id, Some("500.00".parse().unwrap())).unwrap();
+
+        store.update_transaction_principal_amount(id, None).unwrap();
+
+        assert_eq!(store.all_transactions().unwrap()[0].principal_amount, None);
+        let accounts = store.list_accounts(far_future()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "297500.00".parse().unwrap(),
+            "clearing the override reverts to the full $2500 payment reducing what's owed"
+        );
+    }
+
+    #[test]
+    fn update_transaction_principal_amount_on_an_unknown_id_is_a_harmless_no_op() {
+        let store = Store::open_in_memory().unwrap();
+        store.update_transaction_principal_amount(999, Some("1.00".parse().unwrap())).unwrap();
+    }
+
+    #[test]
+    fn set_account_balance_override_nets_out_a_same_day_loan_transactions_principal_override() {
+        // Same idea as set_account_balance_override_nets_out_a_same_day_transaction_on_a_loan_account,
+        // but the same-day transaction has a principal override smaller
+        // than its own amount — the override, not the full amount, is what
+        // must be netted out.
+        let store = Store::open_in_memory().unwrap();
+        let loan = store.get_or_create_account("Mortgage", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "10000.00".parse().unwrap()).unwrap();
+        store.save_transactions(loan, &[tx("2026-09-04", "Mortgage Payment", "2500.00")]).unwrap();
+        let id = store.all_transactions().unwrap()[0].id;
+        store.update_transaction_principal_amount(id, Some("500.00".parse().unwrap())).unwrap();
+
+        store.set_account_balance_override(loan, "8000.00".parse().unwrap(), "2026-09-04".parse().unwrap()).unwrap();
+
+        let accounts = store.list_accounts("2026-09-04".parse().unwrap()).unwrap();
+        assert_eq!(
+            accounts[0].current_balance,
+            "8000.00".parse().unwrap(),
+            "the $500 principal override, not the $2500 full amount, must be netted out"
+        );
     }
 
     #[test]

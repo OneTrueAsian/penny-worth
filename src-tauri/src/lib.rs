@@ -127,6 +127,7 @@ pub fn run() {
             commands::rename_category,
             commands::delete_category,
             commands::update_transaction_amount,
+            commands::update_transaction_principal_amount,
             commands::update_transaction_account,
             commands::update_transaction_date,
             commands::update_transaction_description,
