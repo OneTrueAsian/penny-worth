@@ -477,34 +477,54 @@ impl Store {
             .unwrap_or_else(|_| format!("account #{account_id}"))
     }
 
-    /// An account's `account_type` for deciding how a log line should
-    /// describe a balance movement (see `describe_balance_movement`) — same
-    /// never-fail-a-real-operation fallback as `account_name_for_log`,
-    /// defaulting to a type that isn't direction-flipped so a lookup miss
-    /// degrades to "probably right" rather than an inverted sign.
-    fn account_type_for_log(&self, account_id: i64) -> String {
-        self.conn
-            .query_row("SELECT account_type FROM accounts WHERE id = ?1", params![account_id], |row| row.get(0))
-            .unwrap_or_else(|_| "other".to_string())
+    /// "Today" for a log-only snapshot of an account's current balance (see
+    /// `displayed_balance_for_log`) — the log already crosses a real
+    /// wall-clock boundary deliberately for its own timestamp (see
+    /// `log_activity`, and `chrono`'s `clock` feature being enabled just
+    /// for this file); every date `core`'s actual business logic computes
+    /// with still takes "today" as an explicit caller-supplied parameter.
+    fn today_for_log(&self) -> NaiveDate {
+        chrono::Local::now().date_naive()
     }
 
-    /// Describes, in the same terms the UI shows the user, how one
-    /// account's displayed number moves in response to `delta` — the raw
-    /// signed amount being added to (or removed from) that account's
-    /// transaction total (see `account_balance_as_of`). A loan's
-    /// current_balance already nets by subtracting transactions, and a
-    /// credit account's displayed "Owed" is `limit - current_balance` (see
-    /// `AccountCard` in `AccountsView.tsx`) — both mean a positive `delta`
-    /// moves the *displayed* number the opposite way from every other
-    /// account type, so both are flipped here the same way.
-    fn describe_balance_movement(account_type: &str, delta: Decimal) -> String {
-        let is_liability = account_type == "loan" || account_type == "credit";
-        let label = if is_liability { "owed" } else { "balance" };
-        let displayed_delta = if is_liability { -delta } else { delta };
-        match displayed_delta.cmp(&Decimal::ZERO) {
-            std::cmp::Ordering::Greater => format!("{label} increased by {displayed_delta}"),
-            std::cmp::Ordering::Less => format!("{label} decreased by {}", -displayed_delta),
-            std::cmp::Ordering::Equal => format!("{label} unchanged"),
+    /// One account's balance exactly as the user currently sees it on the
+    /// Accounts page — "Owed" for a loan or credit account (a credit
+    /// account's own `current_balance` tracks *available* credit, not what
+    /// it owes; see `AccountCard` in `AccountsView.tsx`), otherwise the
+    /// plain balance — as of today. Meant to be called once right before
+    /// and once right after a mutation, so a log line can show the real
+    /// before/after effect (see `describe_balance_snapshot`) instead of
+    /// requiring the reader to already know an account type's sign
+    /// convention. Never fails a real operation: `None` only if the
+    /// account itself is gone (shouldn't happen — always called right
+    /// before/after touching a row that references it).
+    fn displayed_balance_for_log(&self, account_id: i64) -> Option<(&'static str, Decimal)> {
+        let (account_type, starting_balance_str): (String, String) = self
+            .conn
+            .query_row(
+                "SELECT account_type, starting_balance FROM accounts WHERE id = ?1",
+                params![account_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok()?;
+        let starting_balance =
+            Decimal::from_str(&starting_balance_str).expect("balance stored by this crate must be valid");
+        let current = self.account_balance_as_of(account_id, &account_type, starting_balance, self.today_for_log()).ok()?;
+        Some(match account_type.as_str() {
+            "loan" => ("owed", current),
+            "credit" => ("owed", starting_balance - current),
+            _ => ("balance", current),
+        })
+    }
+
+    /// Formats a `displayed_balance_for_log` pair taken right before and
+    /// right after a mutation as `"<label> <before> -> <after>"` — falling
+    /// back to a plain note if either snapshot came back `None` (the
+    /// account no longer exists), which should never happen in practice.
+    fn describe_balance_snapshot(before: Option<(&'static str, Decimal)>, after: Option<(&'static str, Decimal)>) -> String {
+        match (before, after) {
+            (Some((label, b)), Some((_, a))) => format!("{label} {b} -> {a}"),
+            _ => "balance unavailable".to_string(),
         }
     }
 
@@ -1952,11 +1972,13 @@ impl Store {
                 .expect("starting_balance stored by this crate must be valid");
             let balance = self.account_balance_as_of(id, &account_type, starting_balance, reset_date)?;
 
+            let before = self.displayed_balance_for_log(id);
             self.conn.execute(
                 "INSERT INTO balance_resets (account_id, period, reset_date, balance) VALUES (?1, ?2, ?3, ?4)",
                 params![id, period, reset_date.to_string(), balance.to_string()],
             )?;
-            self.log_activity(&format!("{name}: monthly rollover — new baseline {balance} as of {reset_date}"));
+            let snapshot = Self::describe_balance_snapshot(before, self.displayed_balance_for_log(id));
+            self.log_activity(&format!("{name}: monthly rollover — new baseline {balance} as of {reset_date} — {snapshot}"));
             rolled.push((id, name, balance));
         }
         Ok(rolled)
@@ -1980,12 +2002,19 @@ impl Store {
             params![id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         );
+        let before = self.displayed_balance_for_log(id);
         self.conn.execute(
             "UPDATE accounts SET starting_balance = ?1 WHERE id = ?2",
             params![balance.to_string(), id],
         )?;
         if let Ok((name, old_balance)) = existing {
-            self.log_activity(&format!("{name}: starting balance corrected: {old_balance} -> {balance}"));
+            // A starting balance stops affecting `current_balance` at all
+            // once a later `balance_resets` checkpoint exists (see this
+            // method's own doc comment) — the balance snapshot makes that
+            // visible instead of implying every correction here actually
+            // moves the account.
+            let snapshot = Self::describe_balance_snapshot(before, self.displayed_balance_for_log(id));
+            self.log_activity(&format!("{name}: starting balance corrected: {old_balance} -> {balance} — {snapshot}"));
         }
         Ok(())
     }
@@ -2061,13 +2090,20 @@ impl Store {
 
         let period = format!("manual:{as_of}");
         let reset_date = as_of.pred_opt().expect("NaiveDate::pred_opt only fails at the calendar's minimum date");
+        let before = self.displayed_balance_for_log(id);
         self.conn.execute(
             "INSERT INTO balance_resets (account_id, period, reset_date, balance) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(account_id, period) DO UPDATE SET reset_date = excluded.reset_date, balance = excluded.balance",
             params![id, period, reset_date.to_string(), checkpoint_balance.to_string()],
         )?;
+        // The snapshot reflects *today's* resulting number, which can
+        // differ from `balance` itself when `as_of` is backdated (any
+        // transaction already posted between `as_of` and today keeps
+        // counting on top of this correction — see this method's own doc
+        // comment).
+        let snapshot = Self::describe_balance_snapshot(before, self.displayed_balance_for_log(id));
         self.log_activity(&format!(
-            "{}: balance manually corrected to {balance} as of {as_of}",
+            "{}: balance manually corrected to {balance} as of {as_of} — {snapshot}",
             self.account_name_for_log(id)
         ));
         Ok(())
@@ -2413,7 +2449,11 @@ impl Store {
     pub fn save_transactions_with_ids(&self, account_id: i64, txns: &[Transaction]) -> rusqlite::Result<Vec<i64>> {
         let mut ids = Vec::with_capacity(txns.len());
         let account_name = self.account_name_for_log(account_id);
-        let account_type = self.account_type_for_log(account_id);
+        // A chain of before/after snapshots, one per row — each row's
+        // "after" is the next row's "before", so a multi-row import logs
+        // its running balance instead of every line repeating the same
+        // pre-import number.
+        let mut previous_snapshot = self.displayed_balance_for_log(account_id);
         for tx in txns {
             self.conn.execute(
                 "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint, member_id)
@@ -2428,9 +2468,11 @@ impl Store {
                 ],
             )?;
             ids.push(self.conn.last_insert_rowid());
-            let movement = Self::describe_balance_movement(&account_type, tx.amount);
+            let after_snapshot = self.displayed_balance_for_log(account_id);
+            let snapshot = Self::describe_balance_snapshot(previous_snapshot, after_snapshot);
+            previous_snapshot = after_snapshot;
             self.log_activity(&format!(
-                "{account_name}: transaction added — \"{}\" {} amount={} — {movement}",
+                "{account_name}: transaction added — \"{}\" {} amount={} — {snapshot}",
                 tx.description, tx.date, tx.amount
             ));
         }
@@ -2565,7 +2607,7 @@ impl Store {
     /// value. An unknown id is a harmless no-op, matching `set_category`.
     pub fn update_transaction_amount(&self, id: i64, amount: Decimal) -> rusqlite::Result<()> {
         let existing = self.conn.query_row(
-            "SELECT account_id, date, description, amount, principal_amount FROM transactions WHERE id = ?1",
+            "SELECT account_id, date, description, amount FROM transactions WHERE id = ?1",
             params![id],
             |row| {
                 Ok((
@@ -2573,11 +2615,10 @@ impl Store {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         );
-        let (account_id, date_str, description, old_amount_str, principal_amount_str) = match existing {
+        let (account_id, date_str, description, old_amount_str) = match existing {
             Ok(v) => v,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
             Err(e) => return Err(e),
@@ -2586,25 +2627,21 @@ impl Store {
             .expect("date stored by this crate must be valid");
         let fp = fingerprint(account_id, &Transaction { date, description: description.clone(), amount, category: None });
 
+        let before = self.displayed_balance_for_log(account_id);
         self.conn.execute(
             "UPDATE transactions SET amount = ?1, fingerprint = ?2 WHERE id = ?3",
             params![amount.to_string(), fp, id],
         )?;
-        // A transaction with a principal override (see
-        // `update_transaction_principal_amount`) counts that value instead
-        // of `amount` toward its account's balance — correcting `amount`
-        // itself doesn't move the balance at all until the override is
-        // cleared, which is exactly the kind of surprise this log exists to
-        // surface.
-        let movement = match &principal_amount_str {
-            Some(_) => Self::describe_balance_movement(&self.account_type_for_log(account_id), Decimal::ZERO),
-            None => {
-                let old_amount = Decimal::from_str(&old_amount_str).expect("amount stored by this crate must be valid");
-                Self::describe_balance_movement(&self.account_type_for_log(account_id), amount - old_amount)
-            }
-        };
+        // A real before/after snapshot (rather than computing a delta from
+        // `amount`) naturally reports no movement for a transaction whose
+        // principal override (see `update_transaction_principal_amount`)
+        // is still set — correcting `amount` alone doesn't move the
+        // balance until that override is cleared, which is exactly the
+        // kind of surprise this log exists to surface.
+        let after = self.displayed_balance_for_log(account_id);
+        let snapshot = Self::describe_balance_snapshot(before, after);
         self.log_activity(&format!(
-            "{}: transaction #{id} \"{description}\" amount corrected: {old_amount_str} -> {amount} — {movement}",
+            "{}: transaction #{id} \"{description}\" amount corrected: {old_amount_str} -> {amount} — {snapshot}",
             self.account_name_for_log(account_id)
         ));
         Ok(())
@@ -2620,31 +2657,26 @@ impl Store {
     /// a harmless no-op, matching `update_transaction_amount`.
     pub fn update_transaction_principal_amount(&self, id: i64, principal_amount: Option<Decimal>) -> rusqlite::Result<()> {
         let existing = self.conn.query_row(
-            "SELECT account_id, amount, principal_amount FROM transactions WHERE id = ?1",
+            "SELECT account_id, principal_amount FROM transactions WHERE id = ?1",
             params![id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
         );
-        let (account_id, raw_amount_str, old_principal_str) = match existing {
+        let (account_id, old_principal_str) = match existing {
             Ok(v) => v,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
             Err(e) => return Err(e),
         };
 
+        let before = self.displayed_balance_for_log(account_id);
         self.conn.execute(
             "UPDATE transactions SET principal_amount = ?1 WHERE id = ?2",
             params![principal_amount.map(|a| a.to_string()), id],
         )?;
-        let raw_amount = Decimal::from_str(&raw_amount_str).expect("amount stored by this crate must be valid");
-        let old_principal = old_principal_str
-            .as_ref()
-            .map(|s| Decimal::from_str(s).expect("amount stored by this crate must be valid"));
-        let old_effective = old_principal.unwrap_or(raw_amount);
-        let new_effective = principal_amount.unwrap_or(raw_amount);
-        let movement =
-            Self::describe_balance_movement(&self.account_type_for_log(account_id), new_effective - old_effective);
+        let after = self.displayed_balance_for_log(account_id);
+        let snapshot = Self::describe_balance_snapshot(before, after);
         let describe = |s: &Option<String>| s.clone().unwrap_or_else(|| "full amount".to_string());
         self.log_activity(&format!(
-            "{}: transaction #{id} principal override: {} -> {} — {movement}",
+            "{}: transaction #{id} principal override: {} -> {} — {snapshot}",
             self.account_name_for_log(account_id),
             describe(&old_principal_str),
             describe(&principal_amount.map(|a| a.to_string())),
@@ -2657,7 +2689,7 @@ impl Store {
     /// includes `account_id`. An unknown id is a harmless no-op.
     pub fn update_transaction_account(&self, id: i64, account_id: i64) -> rusqlite::Result<()> {
         let existing = self.conn.query_row(
-            "SELECT account_id, date, description, amount, principal_amount FROM transactions WHERE id = ?1",
+            "SELECT account_id, date, description, amount FROM transactions WHERE id = ?1",
             params![id],
             |row| {
                 Ok((
@@ -2665,11 +2697,10 @@ impl Store {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         );
-        let (old_account_id, date_str, description, amount_str, principal_amount_str) = match existing {
+        let (old_account_id, date_str, description, amount_str) = match existing {
             Ok(v) => v,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
             Err(e) => return Err(e),
@@ -2679,18 +2710,16 @@ impl Store {
         let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
         let fp = fingerprint(account_id, &Transaction { date, description: description.clone(), amount, category: None });
 
+        let before_old = self.displayed_balance_for_log(old_account_id);
+        let before_new = self.displayed_balance_for_log(account_id);
         self.conn.execute(
             "UPDATE transactions SET account_id = ?1, fingerprint = ?2 WHERE id = ?3",
             params![account_id, fp, id],
         )?;
-        let effective = principal_amount_str
-            .as_ref()
-            .map(|s| Decimal::from_str(s).expect("amount stored by this crate must be valid"))
-            .unwrap_or(amount);
-        let old_movement = Self::describe_balance_movement(&self.account_type_for_log(old_account_id), -effective);
-        let new_movement = Self::describe_balance_movement(&self.account_type_for_log(account_id), effective);
+        let old_snapshot = Self::describe_balance_snapshot(before_old, self.displayed_balance_for_log(old_account_id));
+        let new_snapshot = Self::describe_balance_snapshot(before_new, self.displayed_balance_for_log(account_id));
         self.log_activity(&format!(
-            "transaction #{id} \"{description}\" moved: {} ({old_movement}) -> {} ({new_movement})",
+            "transaction #{id} \"{description}\" moved: {} ({old_snapshot}) -> {} ({new_snapshot})",
             self.account_name_for_log(old_account_id),
             self.account_name_for_log(account_id)
         ));
@@ -2814,50 +2843,41 @@ impl Store {
     pub fn delete_transaction(&self, id: i64, now: NaiveDateTime) -> rusqlite::Result<()> {
         let now = now.to_string();
         let other_side = self.debt_payment_partner(id)?;
-        if let Some((account, account_type, description, amount, effective)) = self.transaction_summary_for_log(id) {
-            let movement = Self::describe_balance_movement(&account_type, -effective);
-            self.log_activity(&format!("{account}: transaction #{id} \"{description}\" ({amount}) deleted — {movement}"));
-        }
+        let summary = self.transaction_summary_for_log(id);
+        let before = summary.as_ref().and_then(|s| self.displayed_balance_for_log(s.0));
         self.conn.execute("UPDATE transactions SET deleted_at = ?1 WHERE id = ?2", params![now, id])?;
+        if let Some((account_id, account, description, amount)) = summary {
+            let snapshot = Self::describe_balance_snapshot(before, self.displayed_balance_for_log(account_id));
+            self.log_activity(&format!("{account}: transaction #{id} \"{description}\" ({amount}) deleted — {snapshot}"));
+        }
         if let Some(other_id) = other_side {
-            if let Some((account, account_type, description, amount, effective)) = self.transaction_summary_for_log(other_id) {
-                let movement = Self::describe_balance_movement(&account_type, -effective);
+            let other_summary = self.transaction_summary_for_log(other_id);
+            let other_before = other_summary.as_ref().and_then(|s| self.displayed_balance_for_log(s.0));
+            self.conn.execute("UPDATE transactions SET deleted_at = ?1 WHERE id = ?2", params![now, other_id])?;
+            if let Some((account_id, account, description, amount)) = other_summary {
+                let snapshot = Self::describe_balance_snapshot(other_before, self.displayed_balance_for_log(account_id));
                 self.log_activity(&format!(
-                    "{account}: transaction #{other_id} \"{description}\" ({amount}) deleted (linked debt-payment side) — {movement}"
+                    "{account}: transaction #{other_id} \"{description}\" ({amount}) deleted (linked debt-payment side) — {snapshot}"
                 ));
             }
-            self.conn.execute("UPDATE transactions SET deleted_at = ?1 WHERE id = ?2", params![now, other_id])?;
         }
         Ok(())
     }
 
-    /// Account name, account type, description, raw amount (as text, for
-    /// display), and the signed amount that actually counts toward the
-    /// account's balance (`COALESCE(principal_amount, amount)`, see
-    /// `account_balance_as_of`) for a transaction — built only for a log
-    /// line before/after delete or restore, since those operations
-    /// otherwise never need any of this. `None` if the id doesn't exist
-    /// (never expected in practice — called right after confirming the row
-    /// is there).
-    fn transaction_summary_for_log(&self, id: i64) -> Option<(String, String, String, String, Decimal)> {
+    /// Account id, account name, description, and raw amount (as text, for
+    /// display) for a transaction — built only for a log line before/after
+    /// delete or restore, since those operations otherwise never need any
+    /// of this. `None` if the id doesn't exist (never expected in practice
+    /// — called right after confirming the row is there).
+    fn transaction_summary_for_log(&self, id: i64) -> Option<(i64, String, String, String)> {
         self.conn
             .query_row(
-                "SELECT account_id, description, amount, COALESCE(principal_amount, amount) FROM transactions WHERE id = ?1",
+                "SELECT account_id, description, amount FROM transactions WHERE id = ?1",
                 params![id],
-                |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
-                },
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
             )
             .ok()
-            .map(|(account_id, description, amount, effective)| {
-                (
-                    self.account_name_for_log(account_id),
-                    self.account_type_for_log(account_id),
-                    description,
-                    amount,
-                    Decimal::from_str(&effective).expect("amount stored by this crate must be valid"),
-                )
-            })
+            .map(|(account_id, description, amount)| (account_id, self.account_name_for_log(account_id), description, amount))
     }
 
     /// The other transaction id linked to `id` through `debt_payments`
@@ -2896,17 +2916,21 @@ impl Store {
     /// so this alone is a complete restore.
     pub fn restore_transactions(&self, ids: &[i64]) -> rusqlite::Result<()> {
         for &id in ids {
+            let summary = self.transaction_summary_for_log(id);
+            let before = summary.as_ref().and_then(|s| self.displayed_balance_for_log(s.0));
             self.conn.execute("UPDATE transactions SET deleted_at = NULL WHERE id = ?1", params![id])?;
-            if let Some((account, account_type, description, amount, effective)) = self.transaction_summary_for_log(id) {
-                let movement = Self::describe_balance_movement(&account_type, effective);
-                self.log_activity(&format!("{account}: transaction #{id} \"{description}\" ({amount}) restored — {movement}"));
+            if let Some((account_id, account, description, amount)) = summary {
+                let snapshot = Self::describe_balance_snapshot(before, self.displayed_balance_for_log(account_id));
+                self.log_activity(&format!("{account}: transaction #{id} \"{description}\" ({amount}) restored — {snapshot}"));
             }
             if let Some(other_id) = self.debt_payment_partner(id)? {
+                let other_summary = self.transaction_summary_for_log(other_id);
+                let other_before = other_summary.as_ref().and_then(|s| self.displayed_balance_for_log(s.0));
                 self.conn.execute("UPDATE transactions SET deleted_at = NULL WHERE id = ?1", params![other_id])?;
-                if let Some((account, account_type, description, amount, effective)) = self.transaction_summary_for_log(other_id) {
-                    let movement = Self::describe_balance_movement(&account_type, effective);
+                if let Some((account_id, account, description, amount)) = other_summary {
+                    let snapshot = Self::describe_balance_snapshot(other_before, self.displayed_balance_for_log(account_id));
                     self.log_activity(&format!(
-                        "{account}: transaction #{other_id} \"{description}\" ({amount}) restored (linked debt-payment side) — {movement}"
+                        "{account}: transaction #{other_id} \"{description}\" ({amount}) restored (linked debt-payment side) — {snapshot}"
                     ));
                 }
             }
@@ -3059,6 +3083,7 @@ impl Store {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
         let signed_amount = amount.abs();
+        let before = self.displayed_balance_for_log(debt_account_id);
 
         let description = format!("Payment applied from: {source_description}");
         let generated = Transaction {
@@ -3093,9 +3118,9 @@ impl Store {
                 date.to_string(),
             ],
         )?;
-        let movement = Self::describe_balance_movement(&self.account_type_for_log(debt_account_id), signed_amount);
+        let snapshot = Self::describe_balance_snapshot(before, self.displayed_balance_for_log(debt_account_id));
         self.log_activity(&format!(
-            "{} -> {}: debt payment applied, amount={amount} (source transaction #{source_transaction_id}) — {movement}",
+            "{} -> {}: debt payment applied, amount={amount} (source transaction #{source_transaction_id}) — {snapshot}",
             self.account_name_for_log(source_account_id),
             self.account_name_for_log(debt_account_id)
         ));
@@ -3116,15 +3141,16 @@ impl Store {
             Err(e) => return Err(e),
         };
         let summary = self.transaction_summary_for_log(generated_transaction_id);
+        let before = summary.as_ref().and_then(|s| self.displayed_balance_for_log(s.0));
         self.conn.execute(
             "DELETE FROM debt_payments WHERE source_transaction_id = ?1",
             params![source_transaction_id],
         )?;
         self.conn.execute("DELETE FROM transactions WHERE id = ?1", params![generated_transaction_id])?;
-        if let Some((account, account_type, _, amount, effective)) = summary {
-            let movement = Self::describe_balance_movement(&account_type, -effective);
+        if let Some((account_id, account, _, amount)) = summary {
+            let snapshot = Self::describe_balance_snapshot(before, self.displayed_balance_for_log(account_id));
             self.log_activity(&format!(
-                "{account}: debt payment unapplied, amount={amount} reversed (source transaction #{source_transaction_id}) — {movement}"
+                "{account}: debt payment unapplied, amount={amount} reversed (source transaction #{source_transaction_id}) — {snapshot}"
             ));
         }
         Ok(())
@@ -7718,22 +7744,22 @@ mod tests {
 
         let contents = std::fs::read_to_string(&log_path).expect("account-changes.log must exist next to the database");
         assert!(contents.contains("Everyday Checking: transaction added"), "log was:\n{contents}");
-        assert!(contents.contains("balance decreased by 60.00"), "log was:\n{contents}");
+        assert!(contents.contains("balance 0 -> -60.00"), "log was:\n{contents}");
         assert!(contents.contains("amount corrected: -60.00 -> -65.00"), "log was:\n{contents}");
-        assert!(contents.contains("balance decreased by 5.00"), "log was:\n{contents}");
+        assert!(contents.contains("balance -60.00 -> -65.00"), "log was:\n{contents}");
         assert!(contents.contains("Mortgage: transaction added"), "log was:\n{contents}");
-        assert!(contents.contains("owed decreased by 2500.00"), "log was:\n{contents}");
+        assert!(contents.contains("owed 300000.00 -> 297500.00"), "log was:\n{contents}");
         assert!(contents.contains("principal override: full amount -> 500.00"), "log was:\n{contents}");
         assert!(
-            contents.contains("owed increased by 2000.00"),
+            contents.contains("owed 297500.00 -> 299500.00"),
             "reducing how much of the mortgage payment counts as principal should raise what's still owed relative to before the override:\n{contents}"
         );
         assert!(
-            contents.contains("amount corrected: 2500.00 -> 2600.00 — owed unchanged"),
-            "amount corrected: 2500.00 -> 2600.00 — owed unchanged\nlog was:\n{contents}"
+            contents.contains("amount corrected: 2500.00 -> 2600.00 — owed 299500.00 -> 299500.00"),
+            "correcting the raw amount of a transaction whose principal override is still set must leave owed unchanged:\nlog was:\n{contents}"
         );
-        assert!(contents.contains("deleted — balance increased by 65.00"), "log was:\n{contents}");
-        assert!(contents.contains("restored — balance decreased by 65.00"), "log was:\n{contents}");
+        assert!(contents.contains("deleted — balance -65.00 -> 0"), "log was:\n{contents}");
+        assert!(contents.contains("restored — balance 0 -> -65.00"), "log was:\n{contents}");
 
         std::fs::remove_file(&db_path).unwrap();
         std::fs::remove_file(&log_path).unwrap();
