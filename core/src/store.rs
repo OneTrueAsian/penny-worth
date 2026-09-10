@@ -436,12 +436,23 @@ pub struct FamilyMember {
 
 pub struct Store {
     conn: Connection,
+    /// Where to append a human-readable line for every account-affecting
+    /// change (see `log_activity`) — `Some` only in a debug ("test") build
+    /// with a real on-disk database, so a real release build shipped to a
+    /// user never writes one. `None` for `open_in_memory` regardless of
+    /// build type, since there's no sibling directory to put it in and no
+    /// real user data to explain.
+    activity_log_path: Option<std::path::PathBuf>,
 }
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
+        let path = path.as_ref();
+        let activity_log_path =
+            if cfg!(debug_assertions) { path.parent().map(|dir| dir.join("account-changes.log")) } else { None };
         let store = Store {
             conn: Connection::open(path)?,
+            activity_log_path,
         };
         store.init_schema()?;
         Ok(store)
@@ -450,9 +461,36 @@ impl Store {
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         let store = Store {
             conn: Connection::open_in_memory()?,
+            activity_log_path: None,
         };
         store.init_schema()?;
         Ok(store)
+    }
+
+    /// An account's name for a log line — never the reason a real
+    /// operation fails, so a lookup miss (shouldn't happen; only called
+    /// right after touching a row that references this very account)
+    /// falls back to a placeholder instead of propagating an error.
+    fn account_name_for_log(&self, account_id: i64) -> String {
+        self.conn
+            .query_row("SELECT name FROM accounts WHERE id = ?1", params![account_id], |row| row.get(0))
+            .unwrap_or_else(|_| format!("account #{account_id}"))
+    }
+
+    /// Appends one timestamped line to the debug-only account-changes log
+    /// (see `Store::open`) — a no-op with no path (release builds,
+    /// `open_in_memory`). Never returns an error and never panics: a
+    /// logging failure (disk full, permissions, the folder having been
+    /// deleted out from under it) must never break the real mutation it's
+    /// describing.
+    fn log_activity(&self, message: &str) {
+        let Some(path) = &self.activity_log_path else { return };
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let line = format!("[{timestamp}] {message}\n");
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(line.as_bytes());
+        }
     }
 
     fn init_schema(&self) -> rusqlite::Result<()> {
@@ -1887,6 +1925,7 @@ impl Store {
                 "INSERT INTO balance_resets (account_id, period, reset_date, balance) VALUES (?1, ?2, ?3, ?4)",
                 params![id, period, reset_date.to_string(), balance.to_string()],
             )?;
+            self.log_activity(&format!("{name}: monthly rollover — new baseline {balance} as of {reset_date}"));
             rolled.push((id, name, balance));
         }
         Ok(rolled)
@@ -1905,10 +1944,18 @@ impl Store {
     /// transactions exist. An unknown id is a harmless no-op, same
     /// convention as `set_category`.
     pub fn set_account_starting_balance(&self, id: i64, balance: Decimal) -> rusqlite::Result<()> {
+        let existing = self.conn.query_row(
+            "SELECT name, starting_balance FROM accounts WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        );
         self.conn.execute(
             "UPDATE accounts SET starting_balance = ?1 WHERE id = ?2",
             params![balance.to_string(), id],
         )?;
+        if let Ok((name, old_balance)) = existing {
+            self.log_activity(&format!("{name}: starting balance corrected: {old_balance} -> {balance}"));
+        }
         Ok(())
     }
 
@@ -1988,6 +2035,10 @@ impl Store {
              ON CONFLICT(account_id, period) DO UPDATE SET reset_date = excluded.reset_date, balance = excluded.balance",
             params![id, period, reset_date.to_string(), checkpoint_balance.to_string()],
         )?;
+        self.log_activity(&format!(
+            "{}: balance manually corrected to {balance} as of {as_of}",
+            self.account_name_for_log(id)
+        ));
         Ok(())
     }
 
@@ -2330,6 +2381,7 @@ impl Store {
     /// untouched.
     pub fn save_transactions_with_ids(&self, account_id: i64, txns: &[Transaction]) -> rusqlite::Result<Vec<i64>> {
         let mut ids = Vec::with_capacity(txns.len());
+        let account_name = self.account_name_for_log(account_id);
         for tx in txns {
             self.conn.execute(
                 "INSERT INTO transactions (account_id, date, description, amount, category, fingerprint, member_id)
@@ -2344,6 +2396,10 @@ impl Store {
                 ],
             )?;
             ids.push(self.conn.last_insert_rowid());
+            self.log_activity(&format!(
+                "{account_name}: transaction added — \"{}\" {} amount={}",
+                tx.description, tx.date, tx.amount
+            ));
         }
         Ok(ids)
     }
@@ -2476,29 +2532,34 @@ impl Store {
     /// value. An unknown id is a harmless no-op, matching `set_category`.
     pub fn update_transaction_amount(&self, id: i64, amount: Decimal) -> rusqlite::Result<()> {
         let existing = self.conn.query_row(
-            "SELECT account_id, date, description FROM transactions WHERE id = ?1",
+            "SELECT account_id, date, description, amount FROM transactions WHERE id = ?1",
             params![id],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             },
         );
-        let (account_id, date_str, description) = match existing {
+        let (account_id, date_str, description, old_amount_str) = match existing {
             Ok(v) => v,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
             Err(e) => return Err(e),
         };
         let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
             .expect("date stored by this crate must be valid");
-        let fp = fingerprint(account_id, &Transaction { date, description, amount, category: None });
+        let fp = fingerprint(account_id, &Transaction { date, description: description.clone(), amount, category: None });
 
         self.conn.execute(
             "UPDATE transactions SET amount = ?1, fingerprint = ?2 WHERE id = ?3",
             params![amount.to_string(), fp, id],
         )?;
+        self.log_activity(&format!(
+            "{}: transaction #{id} \"{description}\" amount corrected: {old_amount_str} -> {amount}",
+            self.account_name_for_log(account_id)
+        ));
         Ok(())
     }
 
@@ -2511,10 +2572,28 @@ impl Store {
     /// transaction, so correcting it can't affect dedup. An unknown id is
     /// a harmless no-op, matching `update_transaction_amount`.
     pub fn update_transaction_principal_amount(&self, id: i64, principal_amount: Option<Decimal>) -> rusqlite::Result<()> {
+        let existing = self.conn.query_row(
+            "SELECT account_id, principal_amount FROM transactions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        );
+        let (account_id, old_principal_str) = match existing {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+
         self.conn.execute(
             "UPDATE transactions SET principal_amount = ?1 WHERE id = ?2",
             params![principal_amount.map(|a| a.to_string()), id],
         )?;
+        let describe = |s: &Option<String>| s.clone().unwrap_or_else(|| "full amount".to_string());
+        self.log_activity(&format!(
+            "{}: transaction #{id} principal override: {} -> {}",
+            self.account_name_for_log(account_id),
+            describe(&old_principal_str),
+            describe(&principal_amount.map(|a| a.to_string())),
+        ));
         Ok(())
     }
 
@@ -2523,17 +2602,18 @@ impl Store {
     /// includes `account_id`. An unknown id is a harmless no-op.
     pub fn update_transaction_account(&self, id: i64, account_id: i64) -> rusqlite::Result<()> {
         let existing = self.conn.query_row(
-            "SELECT date, description, amount FROM transactions WHERE id = ?1",
+            "SELECT account_id, date, description, amount FROM transactions WHERE id = ?1",
             params![id],
             |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             },
         );
-        let (date_str, description, amount_str) = match existing {
+        let (old_account_id, date_str, description, amount_str) = match existing {
             Ok(v) => v,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
             Err(e) => return Err(e),
@@ -2541,12 +2621,17 @@ impl Store {
         let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
             .expect("date stored by this crate must be valid");
         let amount = Decimal::from_str(&amount_str).expect("amount stored by this crate must be valid");
-        let fp = fingerprint(account_id, &Transaction { date, description, amount, category: None });
+        let fp = fingerprint(account_id, &Transaction { date, description: description.clone(), amount, category: None });
 
         self.conn.execute(
             "UPDATE transactions SET account_id = ?1, fingerprint = ?2 WHERE id = ?3",
             params![account_id, fp, id],
         )?;
+        self.log_activity(&format!(
+            "transaction #{id} \"{description}\" moved: {} -> {}",
+            self.account_name_for_log(old_account_id),
+            self.account_name_for_log(account_id)
+        ));
         Ok(())
     }
 
@@ -2667,11 +2752,35 @@ impl Store {
     pub fn delete_transaction(&self, id: i64, now: NaiveDateTime) -> rusqlite::Result<()> {
         let now = now.to_string();
         let other_side = self.debt_payment_partner(id)?;
+        if let Some((account, description, amount)) = self.transaction_summary_for_log(id) {
+            self.log_activity(&format!("{account}: transaction #{id} \"{description}\" ({amount}) deleted"));
+        }
         self.conn.execute("UPDATE transactions SET deleted_at = ?1 WHERE id = ?2", params![now, id])?;
         if let Some(other_id) = other_side {
+            if let Some((account, description, amount)) = self.transaction_summary_for_log(other_id) {
+                self.log_activity(&format!(
+                    "{account}: transaction #{other_id} \"{description}\" ({amount}) deleted (linked debt-payment side)"
+                ));
+            }
             self.conn.execute("UPDATE transactions SET deleted_at = ?1 WHERE id = ?2", params![now, other_id])?;
         }
         Ok(())
+    }
+
+    /// Account name, description, and amount for a transaction — built
+    /// only for a log line before/after delete or restore, since those
+    /// operations otherwise never need any of this. `None` if the id
+    /// doesn't exist (never expected in practice — called right after
+    /// confirming the row is there).
+    fn transaction_summary_for_log(&self, id: i64) -> Option<(String, String, String)> {
+        self.conn
+            .query_row(
+                "SELECT account_id, description, amount FROM transactions WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+            )
+            .ok()
+            .map(|(account_id, description, amount)| (self.account_name_for_log(account_id), description, amount))
     }
 
     /// The other transaction id linked to `id` through `debt_payments`
@@ -2711,8 +2820,16 @@ impl Store {
     pub fn restore_transactions(&self, ids: &[i64]) -> rusqlite::Result<()> {
         for &id in ids {
             self.conn.execute("UPDATE transactions SET deleted_at = NULL WHERE id = ?1", params![id])?;
+            if let Some((account, description, amount)) = self.transaction_summary_for_log(id) {
+                self.log_activity(&format!("{account}: transaction #{id} \"{description}\" ({amount}) restored"));
+            }
             if let Some(other_id) = self.debt_payment_partner(id)? {
                 self.conn.execute("UPDATE transactions SET deleted_at = NULL WHERE id = ?1", params![other_id])?;
+                if let Some((account, description, amount)) = self.transaction_summary_for_log(other_id) {
+                    self.log_activity(&format!(
+                        "{account}: transaction #{other_id} \"{description}\" ({amount}) restored (linked debt-payment side)"
+                    ));
+                }
             }
         }
         Ok(())
@@ -2856,11 +2973,12 @@ impl Store {
         amount: Decimal,
         date: NaiveDate,
     ) -> rusqlite::Result<()> {
-        let (source_category, source_description): (Option<String>, String) = self.conn.query_row(
-            "SELECT category, description FROM transactions WHERE id = ?1",
-            params![source_transaction_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        let (source_account_id, source_category, source_description): (i64, Option<String>, String) =
+            self.conn.query_row(
+                "SELECT account_id, category, description FROM transactions WHERE id = ?1",
+                params![source_transaction_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
         let signed_amount = amount.abs();
 
         let description = format!("Payment applied from: {source_description}");
@@ -2896,6 +3014,11 @@ impl Store {
                 date.to_string(),
             ],
         )?;
+        self.log_activity(&format!(
+            "{} -> {}: debt payment applied, amount={amount} (source transaction #{source_transaction_id})",
+            self.account_name_for_log(source_account_id),
+            self.account_name_for_log(debt_account_id)
+        ));
         Ok(())
     }
 
@@ -2912,11 +3035,17 @@ impl Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
             Err(e) => return Err(e),
         };
+        let summary = self.transaction_summary_for_log(generated_transaction_id);
         self.conn.execute(
             "DELETE FROM debt_payments WHERE source_transaction_id = ?1",
             params![source_transaction_id],
         )?;
         self.conn.execute("DELETE FROM transactions WHERE id = ?1", params![generated_transaction_id])?;
+        if let Some((account, _, amount)) = summary {
+            self.log_activity(&format!(
+                "{account}: debt payment unapplied, amount={amount} reversed (source transaction #{source_transaction_id})"
+            ));
+        }
         Ok(())
     }
 
@@ -7473,6 +7602,50 @@ mod tests {
 
         drop(store);
         std::fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
+    fn account_changes_get_logged_to_a_file_next_to_a_real_on_disk_database() {
+        let dir = std::env::temp_dir().join(format!("vaultspend-activity-log-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("activity_log_test.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).unwrap();
+        }
+        let log_path = dir.join("account-changes.log");
+        if log_path.exists() {
+            std::fs::remove_file(&log_path).unwrap();
+        }
+
+        let store = Store::open(&db_path).unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        let loan = store.get_or_create_account("Mortgage", AccountType::Loan).unwrap();
+        store.set_account_starting_balance(loan, "300000.00".parse().unwrap()).unwrap();
+        store.save_transactions(checking, &[tx("2026-08-05", "Groceries", "-60.00")]).unwrap();
+        let id = store.all_transactions().unwrap().iter().find(|t| t.account_id == checking).unwrap().id;
+        store.update_transaction_amount(id, "-65.00".parse().unwrap()).unwrap();
+        store.save_transactions(loan, &[tx("2026-08-05", "Mortgage Payment", "2500.00")]).unwrap();
+        let mortgage_tx_id = store.all_transactions().unwrap().iter().find(|t| t.account_id == loan).unwrap().id;
+        store.update_transaction_principal_amount(mortgage_tx_id, Some("500.00".parse().unwrap())).unwrap();
+        drop(store);
+
+        let contents = std::fs::read_to_string(&log_path).expect("account-changes.log must exist next to the database");
+        assert!(contents.contains("Everyday Checking: transaction added"), "log was:\n{contents}");
+        assert!(contents.contains("amount corrected: -60.00 -> -65.00"), "log was:\n{contents}");
+        assert!(contents.contains("Mortgage: transaction added"), "log was:\n{contents}");
+        assert!(contents.contains("principal override: full amount -> 500.00"), "log was:\n{contents}");
+
+        std::fs::remove_file(&db_path).unwrap();
+        std::fs::remove_file(&log_path).unwrap();
+    }
+
+    #[test]
+    fn an_in_memory_store_never_creates_an_activity_log() {
+        let store = Store::open_in_memory().unwrap();
+        let checking = store.get_or_create_account("Everyday Checking", AccountType::Checking).unwrap();
+        store.save_transactions(checking, &[tx("2026-08-05", "Groceries", "-60.00")]).unwrap();
+
+        assert_eq!(store.activity_log_path, None);
     }
 
     #[test]
