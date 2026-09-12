@@ -3,7 +3,7 @@ import type { Account, FamilyMember, Recurring, RecurringCandidate, RecurringTot
 import { formatAmount, toLocalIsoDate } from "./format";
 import { fmtMoneyShort } from "./charts";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
-import { CategoryIcon } from "./categoryIcons";
+import { CategoryIcon } from "./icons";
 
 export const CADENCE_OPTIONS = ["weekly", "biweekly", "monthly", "annual"];
 

@@ -3,7 +3,7 @@ import type { BudgetAlert, ReportBudgetLine } from "./types";
 import { formatAmount } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { Sparkline } from "./charts";
-import { BudgetGroupIcon } from "./budgetGroupIcons";
+import { BudgetGroupIcon } from "./icons";
 
 /** A one-line description of a sparkline's trend, for the `<title>` WCAG
  * 1.1.1 requires on non-decorative non-text content — this is what a

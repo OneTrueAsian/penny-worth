@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import type { Account, Bucket, FamilyMember } from "./types";
 import { formatAmount, toLocalIsoDate } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
-import { BUCKET_ICON_OPTIONS, BucketIcon, isBucketIconKey, type BucketIconKey } from "./bucketIcons";
+import { BUCKET_ICON_OPTIONS, BucketIcon, isBucketIconKey, type BucketIconKey } from "./icons";
 
 const BUCKET_COLORS = ["#1E9E76", "#3E7CB8", "#C08A2E", "#8A5FB0", "#BD5B3C", "#4E8FC9", "#B0526A", "#5FA85E"];
 
@@ -29,7 +29,7 @@ function ColorPicker({ value, onChange }: { value: string | null; onChange: (col
   );
 }
 
-/** Lets a user override the name-guessed icon (`bucketIcons.tsx`) with an
+/** Lets a user override the name-guessed icon (`icons/bucketIcons.tsx`) with an
  * explicit choice — `null` means "keep guessing from the name," same
  * no-explicit-color convention `ColorPicker` above already uses. */
 function IconPicker({

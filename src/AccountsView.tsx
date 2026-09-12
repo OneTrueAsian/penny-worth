@@ -4,7 +4,7 @@ import { StatDetailPanel } from "./StatDetailPanel";
 import { formatAmount } from "./format";
 import { GROUP_LABELS, GROUP_ORDER, groupOf, netWorthContribution } from "./accountGroups";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
-import { AccountTypeIcon } from "./accountIcons";
+import { AccountTypeIcon } from "./icons";
 
 const ACCOUNT_TYPE_OPTIONS = ["checking", "savings", "credit", "loan", "investment", "other"];
 

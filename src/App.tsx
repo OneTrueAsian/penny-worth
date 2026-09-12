@@ -47,8 +47,7 @@ import { AccountFilterDropdown, type AccountFilterValue } from "./AccountFilterD
 import { MemberFilterDropdown, type MemberFilterValue } from "./MemberFilterDropdown";
 import { MoreFiltersPopover } from "./MoreFiltersPopover";
 import { UpdateBanner } from "./UpdateBanner";
-import { NavIcon } from "./icons";
-import { CategoryIcon } from "./categoryIcons";
+import { NavIcon, CategoryIcon } from "./icons";
 import { formatAmount, toLocalIsoDate } from "./format";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { useDelayedVisibility } from "./useDelayedVisibility";

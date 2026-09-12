@@ -3,7 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AppSettings, Backup, LivePriceProviderId, LivePriceSettings, Profile, ThemeStyle } from "./types";
 import { useAutoCancelDelete } from "./useAutoCancelDelete";
 import { CHANGELOG } from "./changelog";
-import { ICON_CREDITS } from "./iconCredits";
+import { ICON_CREDITS } from "./icons";
 
 const LIVE_PRICE_PROVIDERS: Record<
   LivePriceProviderId,
@@ -550,7 +550,7 @@ function ReleaseNotesSection({ currentVersion }: { currentVersion: string | null
 }
 
 /** Attribution for the bundled Noun Project icons (src/assets/icons/,
- * see iconCredits.ts) used for several account, category, and bucket
+ * see icons/nounIcons.ts) used for several account, category, and bucket
  * icons — each one is licensed CC BY 3.0, which requires crediting the
  * work and its creator. Collapsed by default (a `<details>`, same
  * disclosure pattern as `ReleaseNotesSection`'s per-version entries) since

@@ -1,7 +1,6 @@
 import { FormEvent, useMemo, useState } from "react";
 import { AlertTriangle, Check, CreditCard, Info, Landmark, Leaf, LineChart as LineChartIcon, MessageCircleQuestion, Wallet } from "lucide-react";
-import { CategoryIcon } from "./categoryIcons";
-import { BudgetGroupIcon } from "./budgetGroupIcons";
+import { CategoryIcon, BudgetGroupIcon, AccountTypeIcon, BucketIcon } from "./icons";
 import type {
   Account,
   AccountContributionDelta,
@@ -24,8 +23,6 @@ import { formatAmount } from "./format";
 import { groupOf, netWorthContribution, owedAmount } from "./accountGroups";
 import { netWorthByMember } from "./memberBreakdowns";
 import { daysLeft } from "./BucketsView";
-import { AccountTypeIcon } from "./accountIcons";
-import { BucketIcon } from "./bucketIcons";
 import {
   LAYOUT_PRESETS,
   LAYOUT_PRESET_LABELS,
