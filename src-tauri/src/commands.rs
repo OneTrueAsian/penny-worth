@@ -433,7 +433,7 @@ pub struct ImportRow {
     pub amount: String,
     pub is_duplicate: bool,
     /// The row's own Account column, when the source file has one (this
-    /// app's own Ledger CSV export does; a real bank export never does) —
+    /// app's own Transactions CSV export does; a real bank export never does) —
     /// `commit_import` routes the row there by default (creating that
     /// account if it doesn't exist yet) unless the user picks a different
     /// one for it on the review screen.
@@ -549,7 +549,7 @@ fn build_classifier(state: &AppState) -> Result<Classifier, String> {
 /// else that adds uncategorized rows.
 /// Returns the ids of every row it actually assigned a category to, so
 /// callers that need to show the user exactly what changed (see
-/// `recategorize_uncategorized`) don't have to separately diff the ledger.
+/// `recategorize_uncategorized`) don't have to separately diff the transactions.
 fn categorize_uncategorized(state: &mut AppState) -> Result<Vec<i64>, String> {
     let classifier = build_classifier(state)?;
     let all = state.store.all_transactions().map_err(|e| e.to_string())?;
@@ -572,7 +572,7 @@ fn categorize_uncategorized(state: &mut AppState) -> Result<Vec<i64>, String> {
 }
 
 /// Re-runs categorization over whatever's still Uncategorized right now —
-/// the manual "try again" for the ledger's "Categorize uncategorized"
+/// the manual "try again" for the Transactions tab's "Categorize uncategorized"
 /// button, using whatever rules/classifier training exist at this moment
 /// (which may have improved since these rows were first imported, e.g.
 /// after the user has corrected enough similar transactions by hand).
@@ -628,7 +628,7 @@ pub fn preview_import(
 /// the review screen, if anything; else the row's own Account column from
 /// the file, resolved by name — case-insensitively, auto-creating a new
 /// account if nothing matches, same as picking a never-before-seen name
-/// when creating one by hand — so a full multi-account Ledger export
+/// when creating one by hand — so a full multi-account Transactions export
 /// re-imports into the right accounts with zero manual setup; else
 /// `default_account_id` (the one picked before the file was chosen), for
 /// a real bank export with no Account column at all. Tags parsed from the
@@ -685,8 +685,8 @@ pub fn commit_import(
     Ok(ImportSummary { inserted, row_errors })
 }
 
-/// Adds one transaction directly, without a file import — the Ledger's
-/// "Add transaction…" form. Uses `Store::create_transaction` (which reuses
+/// Adds one transaction directly, without a file import — the Transactions
+/// tab's "Add transaction…" form. Uses `Store::create_transaction` (which reuses
 /// `save_transactions`' own insert path), so fingerprinting and the
 /// account's default-member assignment stay identical to an imported row.
 /// Leaving `category` empty runs it through the same
@@ -1271,7 +1271,7 @@ pub fn correct_category(
 }
 
 /// Same as `correct_category`, applied to every id in one call — used by
-/// the ledger's multi-select bulk-edit action so N selected rows cost one
+/// the Transactions tab's multi-select bulk-edit action so N selected rows cost one
 /// round trip instead of N. Each transaction still teaches the rule
 /// learner from its own description, same as if you'd corrected it one
 /// at a time; an id that no longer exists is skipped rather than erroring,
@@ -1310,7 +1310,7 @@ pub fn bulk_correct_category(
 }
 
 /// Same as `delete_transaction`, applied to every id in one call — used by
-/// the ledger's multi-select bulk-delete action. Echoes `ids` back on
+/// the Transactions tab's multi-select bulk-delete action. Echoes `ids` back on
 /// success so the frontend's undo toast can call `restore_transactions`
 /// with exactly what was deleted, without tracking that set itself.
 #[tauri::command]
@@ -1325,7 +1325,7 @@ pub fn bulk_delete_transactions(ids: Vec<i64>, state: tauri::State<AppStateHandl
 
 /// Seeds a recurring item from each selected transaction — merchant,
 /// category, amount, and account carried over as-is from the transaction
-/// itself, `cadence` applied to every one (the Ledger's bulk-actions bar
+/// itself, `cadence` applied to every one (the Transactions tab's bulk-actions bar
 /// offers a single cadence picker for the whole selection, same as its
 /// "Set category to…" applies one category to every selected row). The
 /// transaction's own date becomes the recurring item's anchor date —
@@ -1486,8 +1486,8 @@ pub fn delete_transaction(id: i64, state: tauri::State<AppStateHandle>) -> Resul
     state.store.delete_transaction(id, now).map_err(|e| e.to_string())
 }
 
-/// Undoes `delete_transaction`/`bulk_delete_transactions` — the Ledger's
-/// bulk-delete "Undo" toast calls this with exactly the ids it was told
+/// Undoes `delete_transaction`/`bulk_delete_transactions` — the Transactions
+/// tab's bulk-delete "Undo" toast calls this with exactly the ids it was told
 /// were deleted.
 #[tauri::command]
 pub fn restore_transactions(ids: Vec<i64>, state: tauri::State<AppStateHandle>) -> Result<(), String> {
@@ -2014,7 +2014,7 @@ pub fn get_stats(state: tauri::State<AppStateHandle>) -> Result<Stats, String> {
         // a real `category` but no `category_source`, since it was never
         // run through this app's own rule/classifier/user-confirm path;
         // counting it as "uncategorized" anyway (as this used to) made the
-        // Ledger's "Needs a category" stat overcount, disagreeing with its
+        // Transactions tab's "Needs a category" stat overcount, disagreeing with its
         // own "Uncategorized" filter, which correctly checks `category`.
         if t.transaction.category.is_none() {
             stats.uncategorized += 1;

@@ -328,13 +328,13 @@ function FeatureTogglesSection({
     {
       key: "apply_to_debt_enabled",
       label: "Apply to Debt",
-      description: 'Shows "Apply to a debt →" on Ledger transactions, so a payment can also reduce a loan or credit card balance.',
+      description: 'Shows "Apply to a debt →" on each transaction, so a payment can also reduce a loan or credit card balance.',
       onChange: onSetApplyToDebtEnabled,
     },
     {
       key: "split_purchases_enabled",
       label: "Split purchases",
-      description: "Shows the Split control on Ledger transactions, for dividing one purchase across multiple categories.",
+      description: "Shows the Split control on each transaction, for dividing one purchase across multiple categories.",
       onChange: onSetSplitPurchasesEnabled,
     },
     {

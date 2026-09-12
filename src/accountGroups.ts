@@ -2,7 +2,7 @@ import type { Account, Transaction } from "./types";
 
 /** Shared account-type grouping — used anywhere accounts are organized by
  * kind (Accounts/Reports tabs' account sections, the debt payoff planner,
- * the Ledger's account filter), so "what counts as Cash vs. Credit vs.
+ * the Transactions tab's account filter), so "what counts as Cash vs. Credit vs.
  * Loan" lives in exactly one place. */
 export const GROUP_ORDER = ["cash", "credit", "loan", "investment", "other"] as const;
 export type AccountGroup = (typeof GROUP_ORDER)[number];

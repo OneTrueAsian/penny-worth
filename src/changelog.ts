@@ -136,5 +136,6 @@ export const CHANGELOG: Record<string, string[]> = {
     "Fixed: a loan account's balance worked backwards from how a credit card's does — a positive transaction increased what you owed, and a negative one paid it down. Loans now match credit cards: a payment is entered as a positive amount and reduces what's owed; a negative amount represents new borrowing. Existing loan transactions were automatically converted to the new convention, with no change to any account's tracked balance.",
     "A transaction recorded directly on a loan account (a mortgage payment, say) can now \"Split principal →\" to specify that only part of it — not the whole payment — counts toward what's owed, the same way \"Apply to a debt\" already let you do for a payment made from a different account.",
     "Adding a transaction dated on or before an account's last balance correction or monthly rollover now shows a warning that it won't change today's balance, so it isn't a silent surprise — the transaction still correctly affects past balance history.",
+    "\"Ledger\" is now called \"Transactions\" throughout the app.",
   ],
 };

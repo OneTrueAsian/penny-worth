@@ -27,7 +27,7 @@ cur.execute(
 
 const app = await launchApp({ dbDir });
 try {
-  const ledgerNav = await app.browser.$("button*=Ledger");
+  const ledgerNav = await app.browser.$("button*=Transactions");
   await ledgerNav.click();
   const seededLedgerText = await (await app.browser.$(".page")).getText();
   if (!seededLedgerText.includes("Default Profile Groceries")) {
@@ -60,7 +60,7 @@ try {
   // The whole tree remounts right after (see VaultSpendApp) — re-query
   // fresh — and the new profile must start completely empty, not a
   // filtered view of Default's data.
-  const ledgerNavAfterCreate = await app.browser.$("button*=Ledger");
+  const ledgerNavAfterCreate = await app.browser.$("button*=Transactions");
   await ledgerNavAfterCreate.waitForExist({ timeout: 10000 });
   await ledgerNavAfterCreate.click();
   await app.browser.waitUntil(
@@ -92,7 +92,7 @@ try {
   );
   console.log("status after switching back to Default:", await (await app.browser.$(".status")).getText());
 
-  const ledgerNavAfterSwitch = await app.browser.$("button*=Ledger");
+  const ledgerNavAfterSwitch = await app.browser.$("button*=Transactions");
   await ledgerNavAfterSwitch.waitForExist({ timeout: 10000 });
   await ledgerNavAfterSwitch.click();
   await app.browser.waitUntil(

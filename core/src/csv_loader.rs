@@ -28,7 +28,7 @@ impl fmt::Display for RowError {
 /// `account_names` and `tags` are parallel to `transactions` (same index,
 /// same length) — populated only when the source has its own "Account" /
 /// "Tags" column, which a real bank export never does but this app's own
-/// Ledger CSV export does (see `toCsv`'s headers in `src/App.tsx`), so a
+/// Transactions CSV export does (see `toCsv`'s headers in `src/App.tsx`), so a
 /// round-tripped export can restore both instead of losing them. `None` /
 /// empty for every row otherwise.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -130,7 +130,7 @@ fn optional_cell(record: &csv::StringRecord, col: Option<usize>) -> Option<Strin
 }
 
 /// Splits the Tags column the same way `toCsv` joins it (`"; "` — see
-/// `src/App.tsx`'s ledger export), tolerating a lone `;` or extra spaces
+/// `src/App.tsx`'s transactions export), tolerating a lone `;` or extra spaces
 /// from a hand-edited file.
 fn parse_tags(record: &csv::StringRecord, col: Option<usize>) -> Vec<String> {
     let Some(raw) = col.and_then(|c| record.get(c)) else {
@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(result.errors[0].row_number, 2);
     }
 
-    // A sixth shape: this app's own Ledger CSV export (Date, Description,
+    // A sixth shape: this app's own Transactions CSV export (Date, Description,
     // Amount, Account, Category, Tags — see `toCsv`'s headers in
     // `src/App.tsx`), re-imported. The round trip only works if these
     // extra columns are actually read back, not just tolerated as noise

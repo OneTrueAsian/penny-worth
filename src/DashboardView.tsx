@@ -239,7 +239,7 @@ export function DashboardView({
   layoutWidgets: WidgetId[];
   onSetLayoutWidgets: (widgets: WidgetId[]) => void;
   onOpenAddWidget: () => void;
-  /** "Recent transactions"/"Upcoming bills" rows drill into the Ledger/
+  /** "Recent transactions"/"Upcoming bills" rows drill into the Transactions/
    * Recurring tab — no filter passed along, matching every other tab
    * switch in this app (simplest useful version, not trying to pre-filter
    * the destination tab down to just that one row). */
@@ -251,7 +251,7 @@ export function DashboardView({
   onOpenReports: () => void;
   onOpenAccounts: () => void;
   onOpenBuckets: () => void;
-  /** Quick actions panel — same triggers the Ledger toolbar's "Add
+  /** Quick actions panel — same triggers the Transactions toolbar's "Add
    * transaction…" button and Accounts' "Add account…" button already use. */
   onAddTransaction: () => void;
   onAddAccount: () => void;
@@ -270,7 +270,7 @@ export function DashboardView({
     if (!name) return;
     const snapshot: SavedLayoutPreset = { name, widgets: layoutWidgets };
     // Saving under a name that's already in use replaces it, rather than
-    // accumulating duplicates — same rule as the Ledger's saved filters.
+    // accumulating duplicates — same rule as the Transactions tab's saved filters.
     const next = [...customPresets.filter((p) => p.name !== name), snapshot];
     setCustomPresets(next);
     saveCustomLayoutPresets(next);
@@ -433,7 +433,7 @@ export function DashboardView({
   );
 
   // Sorts the *entire* transaction list just to take the top 8 — the most
-  // expensive of this file's derived values for a multi-year ledger, and
+  // expensive of this file's derived values for a multi-year history, and
   // one with no dependency on which widgets are even on the layout, so
   // memoizing it is a pure win with no tradeoff.
   const recent = useMemo(
@@ -788,7 +788,7 @@ export function DashboardView({
           </thead>
           <tbody>
             {recent.map((t) => (
-              <tr key={t.id} className="clickable-row" onClick={onOpenLedger} title="Go to the Ledger tab">
+              <tr key={t.id} className="clickable-row" onClick={onOpenLedger} title="Go to the Transactions tab">
                 <td>{t.date}</td>
                 <td>
                   <span className="cell-with-icon">

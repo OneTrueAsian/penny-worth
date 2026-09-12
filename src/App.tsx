@@ -23,7 +23,7 @@ import {
 } from "./Modal";
 import { loadDashboardLayout, parseWidgetId, saveDashboardLayout, type WidgetId } from "./dashboardLayout";
 import { ProfileSwitcher } from "./ProfileSwitcher";
-// `CADENCE_OPTIONS` is used synchronously in the Ledger's own (always-
+// `CADENCE_OPTIONS` is used synchronously in the Transactions tab's own (always-
 // rendered, not tab-gated) bulk "Add to Recurring" control, so
 // `RecurringView`'s module can't be deferred behind `lazy()` the way the
 // other tab views below are — a static import here would force the whole
@@ -103,7 +103,7 @@ type ImportRow = {
   amount: string;
   is_duplicate: boolean;
   /** The row's own Account column, when the file has one — this app's own
-   * Ledger CSV export does. `commit_import` routes the row there by
+   * Transactions CSV export does. `commit_import` routes the row there by
    * default (creating that account if none matches by name) unless the
    * row's dropdown is changed. */
   account_name: string | null;
@@ -231,7 +231,7 @@ function describeDeleteImpact(amount: string, account: Account | undefined): str
 const NAV_ITEMS: { id: Tab; label: string; icon: string; group: NavGroup }[] = [
   { id: "dashboard", label: "Dashboard", icon: "home", group: "overview" },
   { id: "accounts", label: "Accounts", icon: "bank", group: "money" },
-  { id: "ledger", label: "Ledger", icon: "swap", group: "money" },
+  { id: "ledger", label: "Transactions", icon: "swap", group: "money" },
   { id: "recurring", label: "Recurring", icon: "repeat", group: "money" },
   { id: "budget", label: "Budget", icon: "pie", group: "planning" },
   { id: "buckets", label: "Goals", icon: "flag", group: "planning" },
@@ -257,7 +257,7 @@ const SAVED_FILTERS_STORAGE_KEY = "meadow-saved-ledger-filters";
  * `<select>`s already use `"__new__"` for "+ New category…". */
 const UNCATEGORIZED_FILTER = "__uncategorized__";
 
-/** A named snapshot of the Ledger's filter bar — a per-viewer shortcut,
+/** A named snapshot of the Transactions tab's filter bar — a per-viewer shortcut,
  * same localStorage tier as theme/nav order. `filterAccountIds`/
  * `filterMemberIds` are stored as plain arrays (`Set` doesn't survive
  * `JSON.stringify`) and rehydrated back to `Set`s on apply — see
@@ -335,7 +335,7 @@ function StatusBanner({
   kind: StatusKind;
   /** An optional extra button (e.g. "Undo") next to the dismiss ×, as a
    * sibling — not nested inside it, so it's independently clickable/
-   * focusable. Used by the Ledger's bulk-delete undo toast, which is its
+   * focusable. Used by the Transactions tab's bulk-delete undo toast, which is its
    * own independent piece of state from `status` (see `undoToast` below)
    * precisely so a routine confirmation elsewhere can't clobber an active
    * undo window — both just render through this one shared component. */
@@ -773,7 +773,7 @@ function App({
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const { shouldRender: moreMenuShouldRender, closing: moreMenuClosing } = useDelayedVisibility(moreMenuOpen);
 
-  // Closes the Ledger toolbar's "More" menu on an outside click — same
+  // Closes the Transactions toolbar's "More" menu on an outside click — same
   // pattern as MoreFiltersPopover/AccountFilterDropdown.
   useEffect(() => {
     if (!moreMenuOpen) return;
@@ -817,7 +817,7 @@ function App({
 
   // `usedCategories` now comes straight from the backend's category
   // registry (`list_categories`, refetched alongside the rest of the
-  // ledger) — it already includes the standard suggestions, every budgeted
+  // transaction data) — it already includes the standard suggestions, every budgeted
   // category, and anything created or assigned by hand, so it's the
   // complete, single source of truth for every category picker in the app.
   const categoryOptions = usedCategories;
@@ -831,7 +831,7 @@ function App({
   // rerun on *every* render regardless of cause: a single keystroke into
   // an unrelated inline edit (a tag, a date) would re-filter and re-sort
   // the full transaction array for no reason. Real cost for a multi-year
-  // ledger with thousands of rows.
+  // history with thousands of rows.
   const anomalyFlagsByTransaction = useMemo(() => {
     const map = new Map<number, AnomalyFlag[]>();
     for (const flag of anomalyFlags) {
@@ -842,7 +842,7 @@ function App({
     return map;
   }, [anomalyFlags]);
 
-  // Filtering is client-side over the already-loaded ledger — personal-scale
+  // Filtering is client-side over the already-loaded transactions — personal-scale
   // data, no need for a backend query just to search/filter it.
   const filteredTransactions = useMemo(
     () =>
@@ -888,12 +888,12 @@ function App({
   const totalPages = Math.max(1, Math.ceil(sortedTransactions.length / pageSize));
   const pagedTransactions = sortedTransactions.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   // The Debt column is the only one of the three feature toggles that's a
-  // whole dedicated ledger column — Split lives inside the Category cell,
+  // whole dedicated table column — Split lives inside the Category cell,
   // so hiding it doesn't change the column count.
   const ledgerColumnCount = appSettings.apply_to_debt_enabled ? 10 : 9;
 
   // a filter/page-size change can leave `currentPage` pointing past the end
-  // (or the ledger can shrink out from under it) — snap back rather than
+  // (or the transaction list can shrink out from under it) — snap back rather than
   // showing an empty page the user didn't ask for
   useEffect(() => {
     if (currentPage > totalPages) setCurrentPage(totalPages);
@@ -1428,7 +1428,7 @@ function App({
   ]);
 
   useEffect(() => {
-    // the report aggregates ledger/bucket/budget data, so refetch it fresh
+    // the report aggregates transaction/bucket/budget data, so refetch it fresh
     // whenever the user actually looks at that tab, rather than tracking
     // every mutation that could affect one of its numbers
     if (activeTab === "reports") {
@@ -1528,7 +1528,7 @@ function App({
   }
 
   // Reconciling a miscategorized transaction from the drill-down dialog —
-  // same command the Ledger's own category dropdown uses. Refreshes the
+  // same command the Transactions tab's own category dropdown uses. Refreshes the
   // dialog's own list too (the corrected transaction no longer belongs to
   // the category being viewed, so it should drop out immediately) as well
   // as everywhere else a category total is shown, same as renaming/
@@ -1979,7 +1979,7 @@ function App({
       // else defaults to included; the user can flip any row either way
       setIncludedIndices(new Set(preview.rows.filter((r) => !r.is_duplicate).map((r) => r.index)));
       // A row whose file said which account it belongs to (this app's own
-      // Ledger CSV export does) pre-selects that account in its dropdown
+      // Transactions CSV export does) pre-selects that account in its dropdown
       // when it matches one that already exists, rather than defaulting
       // every row to the account picked before the file was chosen — the
       // user still sees exactly what will happen and can change it.
@@ -2375,7 +2375,7 @@ function App({
 
   async function handleExportLedgerCsv() {
     const path = await save({
-      defaultPath: `ledger-export-${toLocalIsoDate()}.csv`,
+      defaultPath: `transactions-export-${toLocalIsoDate()}.csv`,
       filters: [{ name: "CSV", extensions: ["csv"] }],
     });
     if (!path) return;
@@ -2910,7 +2910,7 @@ function App({
       {activeTab === "ledger" && (
         <div className="page-top">
           <div>
-            <h1 className="view-title">Ledger</h1>
+            <h1 className="view-title">Transactions</h1>
             <p className="view-sub">
               {transactions.length} transaction{transactions.length === 1 ? "" : "s"} across {accounts.length} account
               {accounts.length === 1 ? "" : "s"}.
@@ -2982,7 +2982,7 @@ function App({
                           </div>
                         )}
                     </td>
-                    <td className="source-col">{row.is_duplicate ? "Already in ledger" : "New"}</td>
+                    <td className="source-col">{row.is_duplicate ? "Already added" : "New"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -3076,7 +3076,7 @@ function App({
                 : "stat tint-red stat-clickable"
             }
             onClick={() => setFilterCategory((c) => (c === UNCATEGORIZED_FILTER ? "all" : UNCATEGORIZED_FILTER))}
-            title="Filter the ledger to only transactions that need a category"
+            title="Show only transactions that need a category"
           >
             <span className="stat-value">{stats.uncategorized}</span>
             <span className="stat-label">Needs a category</span>

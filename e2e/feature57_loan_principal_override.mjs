@@ -41,7 +41,7 @@ cur.execute(
 
 const app = await launchApp({ dbDir });
 try {
-  const ledgerNav = await app.browser.$("button*=Ledger");
+  const ledgerNav = await app.browser.$("button*=Transactions");
   await ledgerNav.click();
 
   const splitTrigger = await app.browser.$(".debt-apply-trigger");

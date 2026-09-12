@@ -107,7 +107,7 @@ async function statValue(app, label) {
 
 const app = await launchApp({ dbDir });
 try {
-  const ledgerNav = await app.browser.$("button*=Ledger");
+  const ledgerNav = await app.browser.$("button*=Transactions");
   await ledgerNav.click();
   await (await app.browser.$(".stats")).waitForExist({ timeout: 10000 });
 

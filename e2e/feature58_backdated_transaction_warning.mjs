@@ -70,7 +70,7 @@ async function setDateField(browser, iso) {
 
 const app = await launchApp({ dbDir });
 try {
-  const ledgerNav = await app.browser.$("button*=Ledger");
+  const ledgerNav = await app.browser.$("button*=Transactions");
   await ledgerNav.click();
 
   const addButton = await app.browser.$("button*=Add transaction");

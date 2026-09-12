@@ -34,8 +34,8 @@ const GETTING_STARTED: HelpEntry = {
       </li>
       <li>
         <strong>Get your transactions in</strong>, either by importing a
-        CSV from your bank (see below) or entering them by hand in the
-        Ledger.
+        CSV from your bank (see below) or entering them by hand in
+        Transactions.
       </li>
       <li>
         <strong>Set up your budget</strong> in the Budget tab — add a
@@ -129,7 +129,7 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
     tags: ["ledger", "transactions", "filter", "split", "tag", "bulk tag", "debt payment", "family member", "manage family members"],
     node: (
       <li>
-        <strong>Ledger</strong> — every transaction, filterable by
+        <strong>Transactions</strong> — every transaction, filterable by
         account/category/tag/family member, with inline category
         correction and tagging — either one at a time or, after selecting
         several rows, in bulk — splitting a transaction across multiple
@@ -200,7 +200,7 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
         <strong>Recurring</strong> — a maintained list of recurring
         bills/income, each showing its next expected date and editable in
         place. A <strong>Suggested</strong> section above it auto-detects
-        merchant/amount pairs in your ledger that look recurring but aren't
+        merchant/amount pairs in your transactions that look recurring but aren't
         tracked yet, so you can add them with one click instead of typing
         them in by hand.
       </li>
@@ -253,7 +253,7 @@ const TAB_TOUR_ENTRIES: HelpEntry[] = [
         person (always as of today — it isn't a monthly figure the way the
         cards above it are), and a budget grid split by category and
         person. Anything not assigned to a specific person lands under
-        "Unassigned" — see the Ledger's <strong>"Manage family
+        "Unassigned" — see the Transactions tab's <strong>"Manage family
         members…"</strong> to start attributing accounts and transactions.
       </li>
     ),
@@ -307,7 +307,7 @@ const IMPORTING_ENTRY: HelpEntry = {
   node: (
     <>
       <p>
-        From the <strong>Ledger</strong> tab, click <strong>"Import
+        From the <strong>Transactions</strong> tab, click <strong>"Import
         transactions…"</strong>:
       </p>
       <ol>
@@ -332,7 +332,7 @@ const IMPORTING_ENTRY: HelpEntry = {
         </li>
         <li>
           You'll see a preview of every row before anything is saved. Rows
-          that look like duplicates of something already in your ledger are
+          that look like duplicates of something already in your transactions are
           unchecked by default (see the FAQ below) — check or uncheck any
           row, or override which account a specific row should land in.
         </li>
@@ -506,8 +506,8 @@ const FAQ_ENTRIES: FaqEntry[] = [
     tags: ["category", "correct", "fix", "recategorize", "bulk edit"],
     answer: (
       <p>
-        Yes, several ways: the category dropdown on any Ledger row;
-        selecting several rows and using the Ledger's bulk-edit bar to
+        Yes, several ways: the category dropdown on any Transactions row;
+        selecting several rows and using the Transactions tab's bulk-edit bar to
         recategorize them all at once; or, from the Budget page, clicking a
         category name to see every transaction behind that month's number
         and fixing any of them right there (individually or in bulk).
@@ -552,7 +552,7 @@ const FAQ_ENTRIES: FaqEntry[] = [
     tags: ["split", "transaction", "categories"],
     answer: (
       <p>
-        Yes — the Ledger's "Split →" control on any transaction lets you
+        Yes — the Transactions tab's "Split →" control on any transaction lets you
         divide it into as many category/amount lines as you need, each with
         an optional note.
       </p>
@@ -678,7 +678,7 @@ const FAQ_ENTRIES: FaqEntry[] = [
             goal, asset, or recurring item with who it belongs to, then
             filter down to just one person wherever a member filter appears.
             Everyone still shares the same file and sees the same data;
-            it's attribution, not separation. Manage them from the Ledger
+            it's attribution, not separation. Manage them from the Transactions
             tab's "Manage family members…" button.
           </li>
           <li>

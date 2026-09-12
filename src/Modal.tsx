@@ -337,12 +337,12 @@ export function NewCategoryDialog({
   );
 }
 
-/** The Ledger's "Add transaction…" — the one way to get a single
+/** The Transactions tab's "Add transaction…" — the one way to get a single
  * transaction in without a file import (see `App.tsx`'s
  * `handleCreateManualTransaction`). Leaving Category on "Auto-categorize"
  * runs it through the same categorization pass an import row gets; picking
  * one explicitly skips that. There's no inline "+ New category…" here
- * (unlike the Ledger's own row-level category dropdown) — every other
+ * (unlike the Transactions tab's own row-level category dropdown) — every other
  * `askX()` dialog in this app is top-level, never nested inside another
  * modal, and leaving Category blank plus correcting it afterward via that
  * existing per-row dropdown already covers "I want a brand-new category"
@@ -816,12 +816,12 @@ export function CategoryTransactionsDialog({
   categoryOptions: string[];
   /** Reconciles a miscategorized whole transaction — not offered for a
    * split line (`is_split`), since a split's category lives on its own
-   * split row, edited via the Ledger's "Edit splits" flow instead. */
+   * split row, edited via the Transactions tab's "Edit splits" flow instead. */
   onCorrectCategory: (transactionId: number, category: string) => void;
   /** Resolves once the change has actually been applied (or `false` if
    * the user backed out of an in-flight "+ New category…" prompt, or the
    * call failed) — the selection only clears on a real success, same as
-   * the Ledger's own bulk bar. */
+   * the Transactions tab's own bulk bar. */
   onBulkCorrectCategory: (transactionIds: number[], category: string) => Promise<boolean>;
   onClose: () => void;
 }) {
@@ -929,7 +929,7 @@ export function CategoryTransactionsDialog({
                     <td className="amount-col">{formatAmount(t.amount)}</td>
                     <td>
                       {t.is_split ? (
-                        <span className="modal-message-secondary" title="Edit a split's category from the Ledger's Edit splits screen">
+                        <span className="modal-message-secondary" title="Edit a split's category from the Transactions tab's Edit splits screen">
                           {category}
                         </span>
                       ) : (
@@ -1030,7 +1030,7 @@ export function ConfirmInvertDialog({
         statement (with payments shown as negative)?
       </p>
       <p className="modal-message modal-message-secondary">
-        Choose "Flip the signs" to match the rest of your ledger (negative =
+        Choose "Flip the signs" to match the rest of your transactions (negative =
         money out). Choose "Keep as-is" if it already uses that convention —
         most bank/checking exports do.
       </p>

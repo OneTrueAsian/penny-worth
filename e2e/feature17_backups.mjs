@@ -92,7 +92,7 @@ cur.execute(
 // restored (pre-mutation) data is what's there now.
 app = await launchApp({ dbDir });
 try {
-  const ledgerNav = await app.browser.$("button*=Ledger");
+  const ledgerNav = await app.browser.$("button*=Transactions");
   await ledgerNav.click();
   const ledgerText = await (await app.browser.$(".page")).getText();
   if (!ledgerText.includes("Added After Backup")) {
@@ -118,7 +118,7 @@ try {
   // The whole component tree remounts right after (see VaultSpendApp) —
   // the old nav button handle is gone, so re-query it fresh — and confirm
   // the restored data is what's there, live.
-  const ledgerNavAfter = await app.browser.$("button*=Ledger");
+  const ledgerNavAfter = await app.browser.$("button*=Transactions");
   await ledgerNavAfter.waitForExist({ timeout: 10000 });
   await ledgerNavAfter.click();
 

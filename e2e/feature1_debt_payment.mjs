@@ -29,7 +29,7 @@ print(json.dumps(cur.fetchall()))
 const dbDir = await seedDebtPaymentFixture();
 const app = await launchApp({ dbDir });
 try {
-  const ledgerNav = await app.browser.$("button*=Ledger");
+  const ledgerNav = await app.browser.$("button*=Transactions");
   await ledgerNav.click();
 
   const applyButton = await app.browser.$(".debt-apply-trigger");

@@ -101,7 +101,7 @@ function SuggestedRecurringSection({
         <span className="reports-section-title">Suggested</span>
       </div>
       <p className="modal-message-secondary">
-        Detected from your ledger — a merchant and amount that's repeated on a consistent schedule but isn't tracked
+        Detected from your transactions — a merchant and amount that's repeated on a consistent schedule but isn't tracked
         here yet.
       </p>
       {candidates.map((c) => (

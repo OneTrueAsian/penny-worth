@@ -307,7 +307,7 @@ pub struct StoredRecurring {
     pub status: String,
 }
 
-/// A pattern detected in the ledger that looks recurring but isn't yet
+/// A pattern detected in transaction history that looks recurring but isn't yet
 /// tracked in `recurring` — see `Store::detect_recurring_candidates`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecurringCandidate {
@@ -1119,7 +1119,7 @@ impl Store {
     /// before soft-delete existed has no `deleted_at` column. `NULL`
     /// (not-deleted) is already correct for every existing row, so — like
     /// `confidence` below — no backfill beyond adding the column. Powers
-    /// the Ledger's bulk-delete "Undo": `delete_transaction`/
+    /// the Transactions tab's bulk-delete "Undo": `delete_transaction`/
     /// `bulk_delete_transactions` set this instead of actually removing
     /// the row, `restore_transactions` clears it back to `NULL`, and every
     /// production read of `transactions` filters `deleted_at IS NULL` (see
@@ -2050,7 +2050,7 @@ impl Store {
     ///
     /// `balance` is treated as authoritative for right now: calling this
     /// makes `current_balance` equal `balance` *immediately*, no matter
-    /// what's already on the ledger dated `as_of`. Only a transaction
+    /// what's already recorded dated `as_of`. Only a transaction
     /// added *after* this call (any date from here on, including later
     /// the same day) moves it further — that's the whole point of a
     /// manual correction, and a user typing "$20,000" who then sees some
@@ -2196,7 +2196,7 @@ impl Store {
     /// still physically exists and still points at this account, which
     /// would trip that constraint the moment the `DELETE FROM accounts`
     /// below runs. There's no "undo delete account" feature that would
-    /// ever need these back, unlike the Ledger's bulk-delete "Undo," so
+    /// ever need these back, unlike the Transactions tab's bulk-delete "Undo," so
     /// there's nothing lost by not going through the soft-delete path
     /// here. Holdings and balance-reset snapshots for this account are
     /// swept the same way. A recurring item pointing here just loses the
@@ -2500,7 +2500,7 @@ impl Store {
         Ok(ids)
     }
 
-    /// One manually-entered transaction (the Ledger's "Add transaction…"
+    /// One manually-entered transaction (the Transactions tab's "Add transaction…"
     /// form, as opposed to a file import) — reuses `save_transactions`'
     /// own insert path outright, so fingerprinting and the account's
     /// default-member assignment stay identical to an imported row, and
@@ -2514,7 +2514,7 @@ impl Store {
     /// Every transaction, except the synthetic ones `apply_debt_payment`
     /// generates on a debt account — those exist purely so that account's
     /// balance moves (see `account_balance_as_of`), not as something the
-    /// user ever added themselves, so surfacing one as its own Ledger row
+    /// user ever added themselves, so surfacing one as its own Transactions row
     /// would double it: the real payment already appears as the *source*
     /// transaction (which carries the "→ account (amount)" badge instead),
     /// and the generated one is just its balance-side bookkeeping twin.
@@ -2838,7 +2838,7 @@ impl Store {
 
     /// Soft-deletes a transaction — sets `deleted_at` rather than actually
     /// removing the row, so `restore_transactions` can bring it back later
-    /// (the Ledger's bulk-delete "Undo"). An unknown id is a harmless
+    /// (the Transactions tab's bulk-delete "Undo"). An unknown id is a harmless
     /// no-op, same as the old hard-delete was. Deliberately leaves
     /// `transaction_splits`/`transaction_tags`/`debt_payments` completely
     /// untouched — that's what makes restore complete: nothing needs
@@ -2857,7 +2857,7 @@ impl Store {
     /// `apply_debt_payment`) — the source transaction or the twin it
     /// generated on the debt account — the other side is soft-deleted
     /// too, symmetrically, so a debt payment doesn't half-disappear from
-    /// the Ledger while its balance-side bookkeeping twin lingers behind
+    /// Transactions while its balance-side bookkeeping twin lingers behind
     /// (or vice versa). The `debt_payments` link row itself is left
     /// alone; `restore_transactions` uses it the same way to bring both
     /// sides back together.
@@ -2930,7 +2930,7 @@ impl Store {
     }
 
     /// Undoes `delete_transaction`/`bulk_delete_transactions` (the
-    /// Ledger's bulk-delete "Undo") — clears `deleted_at` for exactly
+    /// Transactions tab's bulk-delete "Undo") — clears `deleted_at` for exactly
     /// these ids, plus each one's debt-payment partner if it has one
     /// (symmetric with `delete_transaction`'s own cascade). Tags, splits,
     /// and the `debt_payments` link row were never touched by the delete,
@@ -3020,7 +3020,7 @@ impl Store {
     /// Replaces every split line for `transaction_id` with `splits` (an
     /// empty slice clears them, un-splitting the transaction back to its
     /// own single category). No sum-matches-the-parent-amount validation
-    /// here — the Ledger UI enforces that before it lets you save (a
+    /// here — the Transactions UI enforces that before it lets you save (a
     /// "remaining to allocate" total that must hit exactly $0.00), same
     /// trust-the-UI stance as every other setter in this crate that
     /// doesn't re-validate what the caller already checked.
@@ -3876,7 +3876,7 @@ impl Store {
 
     /// Every transaction currently flagged as an anomaly — an unusually
     /// large charge for its category, or a likely duplicate of another
-    /// transaction — computed fresh over the whole ledger (personal-scale
+    /// transaction — computed fresh over all transactions (personal-scale
     /// data, same "don't over-engineer for scale" precedent as the
     /// per-account balance loop). One transaction can appear more than
     /// once (e.g. flagged as both a duplicate of two different other
@@ -3988,7 +3988,7 @@ impl Store {
 
         // "Duplicate": amount and normalized description must match
         // exactly, so bucketing by that pair first turns an O(n²)
-        // all-pairs scan of the whole ledger into all-pairs scans of just
+        // all-pairs scan of all transactions into all-pairs scans of just
         // the (typically tiny) groups that could possibly match — the
         // ±3-day date check is the only thing still checked pairwise,
         // and only within a bucket. `amount.to_string()` (not `amount`
@@ -4474,7 +4474,7 @@ impl Store {
         Ok(totals)
     }
 
-    /// Scans the whole ledger for merchant+amount pairs that recur on a
+    /// Scans all transactions for merchant+amount pairs that recur on a
     /// consistent weekly/biweekly/monthly/annual cadence (see
     /// `classify_cadence`) but aren't yet tracked in `recurring` and haven't
     /// been dismissed (see `dismiss_recurring_candidate`) — the offline
@@ -5163,7 +5163,7 @@ impl Store {
     /// in favor of a smooth trend line.
     ///
     /// The window is capped at 90 days but shrinks to however much history
-    /// actually exists (via the ledger's earliest transaction date) so a
+    /// actually exists (via the account's earliest transaction date) so a
     /// brand-new account with only two weeks of data isn't diluted by 76
     /// days of assumed inactivity. With no transactions at all, the slope
     /// is 0 (flat). `days = 0` returns just today's balance as a single
@@ -5212,7 +5212,7 @@ impl Store {
     /// Average monthly spend (money out only, as a positive number) over
     /// the trailing ~90 days ending `today` — same window-sizing as
     /// `cash_flow_forecast` just above (clamped to however much
-    /// transaction history actually exists, via the ledger's earliest
+    /// transaction history actually exists, via the earliest transaction
     /// date, so a brand-new file isn't diluted by assumed-inactive days),
     /// same income-vs-expense split as `monthly_totals` just below
     /// (`amount < 0` counts as spend). Unlike `cash_flow_forecast`, this
@@ -5812,7 +5812,7 @@ mod tests {
     /// Raw row count in `transactions`, unlike `all_transactions()` this
     /// does *not* exclude `apply_debt_payment`'s generated rows — for
     /// tests asserting on that cascade-delete/creation behavior itself
-    /// rather than on what the Ledger shows.
+    /// rather than on what the Transactions tab shows.
     fn raw_transaction_count(store: &Store) -> i64 {
         store.conn.query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0)).unwrap()
     }
